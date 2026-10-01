@@ -10,3 +10,4 @@
 - [QAI 安裝](../extensions/QAInteract/README.md)：使用者與安裝 Agent 的入口。
 
 文件不保存個人對話、權杖、附件或測試設定。
+- [驗證記錄](VERIFICATION.md)：本版已完成的測試與網路驗證邊界。
