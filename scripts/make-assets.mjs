@@ -1,0 +1,11 @@
+// Tiny dependency-free PNG generator for the application icon and demo UI diagrams.
+import { deflateSync } from 'node:zlib';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+function crc32(b){let c=0xffffffff;for(const v of b){c^=v;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0);}return(c^0xffffffff)>>>0;}
+function chunk(type,data){const t=Buffer.from(type),n=Buffer.alloc(4),c=Buffer.alloc(4);n.writeUInt32BE(data.length);c.writeUInt32BE(crc32(Buffer.concat([t,data])));return Buffer.concat([n,t,data,c]);}
+function canvas(width,height,bg){const pixels=Buffer.alloc((width*4+1)*height);for(let y=0;y<height;y++)for(let x=0;x<width;x++){const i=y*(width*4+1)+1+x*4; pixels.set([...bg,255],i);}return {rect(x,y,w,h,color){for(let yy=y;yy<Math.min(y+h,height);yy++)for(let xx=x;xx<Math.min(x+w,width);xx++){const i=yy*(width*4+1)+1+xx*4; pixels.set([...color,255],i);}},save(path){const head=Buffer.alloc(13);head.writeUInt32BE(width,0);head.writeUInt32BE(height,4);head[8]=8;head[9]=6;writeFileSync(path,Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',head),chunk('IDAT',deflateSync(pixels)),chunk('IEND',Buffer.alloc(0))]));}};}
+mkdirSync('assets',{recursive:true});mkdirSync('src/platform/desktop/ui',{recursive:true});
+const icon=canvas(32,32,[49,94,203]);icon.rect(7,9,19,3,[255,255,255]);icon.rect(7,7,3,7,[255,255,255]);icon.rect(6,10,3,3,[255,255,255]);icon.rect(6,20,19,3,[255,255,255]);icon.rect(22,18,3,7,[255,255,255]);icon.save('src/platform/desktop/ui/icon.png');
+for(const type of ['compact','explore']){const p=canvas(420,210,[245,247,251]);p.rect(0,0,420,28,[33,48,71]);p.rect(18,11,45,6,[221,229,239]);p.rect(315,11,85,5,[101,116,139]);if(type==='compact'){p.rect(36,60,185,13,[33,48,71]);p.rect(36,85,160,6,[154,169,188]);p.rect(36,100,137,6,[154,169,188]);p.rect(36,131,90,26,[49,94,203]);p.rect(260,52,123,122,[224,233,251]);p.rect(278,74,87,9,[116,145,211]);p.rect(278,97,69,7,[163,184,228]);}else{p.rect(24,46,190,12,[33,48,71]);for(let x=24;x<400;x+=130){p.rect(x,82,112,101,[228,235,248]);p.rect(x+12,95,88,42,[139,166,216]);p.rect(x+12,147,74,6,[101,116,139]);p.rect(x+12,160,54,5,[154,169,188]);}}p.save(`assets/${type}.png`);}
+console.log('Generated local icon and demo layout diagrams.');

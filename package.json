@@ -1,0 +1,57 @@
+{
+  "name": "agentdock",
+  "version": "0.5.0",
+  "private": true,
+  "description": "AgentDock modular desktop platform with optional QAInteract",
+  "type": "module",
+  "main": "dist/platform/main.js",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/build.mjs",
+    "setup": "node node_modules/electron/install.js",
+    "postinstall": "node node_modules/electron/install.js",
+    "start": "electron .",
+    "mcp": "node dist/mcp.js",
+    "demo": "node scripts/demo.mjs",
+    "test": "npm run build && node --test .build/tests/*.test.js",
+    "test:desktop": "npm run build && node scripts/test-desktop.mjs",
+    "test:startup": "npm run build && node scripts/test-startup.mjs",
+    "config": "node scripts/config.mjs",
+    "package:win": "npm run build && electron-builder --win dir --config.electronDist=node_modules/electron/dist && node scripts/prepare-distribution.mjs",
+    "test:platform": "npm run build && node scripts/test-platform.mjs",
+    "test:package": "node scripts/test-package.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "fflate": "^0.8.3",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.9.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.58.0",
+    "typescript": "^5.9.0"
+  },
+  "build": {
+    "appId": "local.agentinteractionlayer.desktop",
+    "productName": "AgentDock",
+    "directories": {
+      "output": ".packaging"
+    },
+    "files": [
+      "dist/platform/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "win": {
+      "target": "dir",
+      "signAndEditExecutable": false
+    }
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.build/
+.packaging/
+output/
+test-results/
+.local/
+.ail/
+archive/
+*.log
+*.bak
+.env
+.env.*
+!.env.example

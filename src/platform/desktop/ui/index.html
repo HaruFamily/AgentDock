@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' agentdock-module:; style-src 'self' agentdock-module:; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>AgentDock</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="dock.css"></head><body>
+<header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">⋈</span><div><strong>AgentDock</strong><span class="brand-caption">你的 Agent 工作台</span></div></div><div class="header-actions"><span class="connection">本機工作台</span><button id="pin" class="quiet" aria-pressed="false">置頂</button><button id="hide" class="quiet">收起 ↘</button></div></header>
+<div id="notice" role="alert" hidden></div>
+<div class="dock-layout"><nav class="dock-rail" aria-label="工作台功能">
+<button id="nav-modules" class="rail-button" aria-current="page"><span>▦</span>擴充</button>
+<button id="nav-agents" class="rail-button"><span>◎</span>Agent 清單</button>
+<button id="nav-connections" class="rail-button"><span>⇄</span>MCP 管理</button>
+<button id="nav-qa" class="rail-button" hidden><span>↔</span>回答中心<i id="qa-dot" hidden></i></button><small class="rail-version">v0.5</small></nav>
+<section id="modules-page" class="dock-page"><p class="eyebrow">01 / EXTENSIONS</p><h1>你的工作台，由你選配。</h1><p class="intro">匯入擴充，再選擇哪些 Agent 可以使用。</p><div id="module-cards"></div>
+<article class="module-card"><h2>從網址取得 QAI</h2><p>貼上 GitHub Releases 的 .admod 下載網址。也可以使用上方的「安裝模組」選取本機檔案。</p><label for="module-url">模組下載網址</label><div class="input-row"><input id="module-url" type="url" placeholder="https://…/QAInteract-0.5.0.admod"><button id="download-module" class="primary">下載並安裝</button></div></article>
+<article class="module-card" id="qai-target-card"><h2>QAI 要提供給哪些 Agent？</h2><p>勾選後預覽變更，再按確認套用。取消勾選會停用該 Agent 設定中的 QAI。</p><div id="qai-targets"></div><button id="prepare-qai" class="primary">預覽 QAI 連接設定</button></article>
+<p class="footnote">停用或移除擴充會保留資料。仍有待回答問題時，請先完成或取消問題。</p></section>
+<section id="agents-page" class="dock-page" hidden><p class="eyebrow">02 / AGENTS</p><h1>記住你的 Agent</h1><p class="intro">登錄客戶端與設定檔。同一個客戶端可登錄不同專案。</p>
+<form id="agent-form" class="module-card"><h2>新增 Agent</h2><div class="form-grid"><label>客戶端<select id="agent-kind"><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="claude-desktop">Claude Desktop</option></select></label><label>顯示名稱<input id="agent-name" required maxlength="100" placeholder="例如：我的 Codex"></label></div><label for="agent-path">設定檔位置</label><div class="input-row"><input id="agent-path" required placeholder="完整路徑"><button id="pick-config" type="button" class="quiet">瀏覽…</button></div><p id="path-help" class="muted"></p><button class="primary" type="submit">記住這個 Agent</button></form><div id="agent-list"></div>
+<p class="footnote">登錄只記錄位置，不會立即修改設定。GPT、Claude 等模型是透過這些客戶端使用 MCP。</p></section>
+<section id="connections-page" class="dock-page" hidden><p class="eyebrow">03 / MCP MANAGER</p><h1>一次整理 MCP 設定</h1><p class="intro">讀取已登錄的檔案；勾選變更會暫存，確認後才寫入。</p><div class="module-actions"><button id="refresh-config" class="quiet">重新讀取／捨棄勾選</button><button id="prepare-changes" class="primary">預覽 MCP 變更</button></div><div id="mcp-list"></div>
+<details class="module-card"><summary>新增其他遠端 MCP</summary><p>使用 MCP 服務端點網址，不是 GitHub 專案網址。需要登入的服務仍須在客戶端授權。</p><label>名稱<input id="remote-name" placeholder="例如：my-tools"></label><label>HTTPS 端點<input id="remote-url" type="url" placeholder="https://…/mcp"></label><div id="remote-targets"></div><button id="prepare-remote" class="primary">預覽新增</button></details>
+<article class="module-card"><h2>實際收到的問答呼叫</h2><p class="muted">代表曾呼叫 QAI，不代表客戶端目前在線。</p><div id="received-list"></div></article><p class="footnote">此頁只管理指定檔案，未合併其他專案、外掛或公司政策的 MCP。啟用後可能需要重新載入客戶端並允許工具。Claude 系列停用時，項目會移出原檔並暫存於 AgentDock，重新啟用即可還原。</p></section>
+<section id="module-host" hidden></section></div>
+<dialog id="plan-dialog"><h2>確認這次變更</h2><p>先備份現有檔案，再套用以下設定。完成後請重新載入相關客戶端。</p><div id="plan-summary"></div><div class="module-actions"><button id="cancel-plan" class="quiet">返回修改</button><button id="apply-plan" class="primary">確認套用</button></div></dialog>
+<script type="module" src="app.js"></script></body></html>

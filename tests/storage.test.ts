@@ -1,0 +1,51 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { QuestionStore } from '../extensions/QAInteract/src/storage.js';
+import { askSchema, emptyDraft, type PreparedAsk } from '../extensions/QAInteract/src/schema.js';
+
+const input = (key = 'one'): PreparedAsk => ({ ...askSchema.parse({ request_key: key, work_id: 'work', work_title: '測試工作', question: '選擇方向？', mode: 'multiple', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }), images: [], options: [{id: 'a', label: 'A', description: '', images: []}, {id: 'b', label: 'B', description: '', images: []}] });
+test('independent callers, deduplicated retries, durable drafts and answers', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ail-store-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new QuestionStore(dir);
+  const a = store.create('owner-a', 'Agent A', input());
+  const b = store.create('owner-b', 'Agent B', input());
+  assert.notEqual(a.id, b.id);
+  assert.equal(store.create('owner-a', 'Agent A', input()).id, a.id);
+  assert.throws(() => store.create('owner-a', 'Agent A', {...input(),question:'不同的問題'}),/request_key/);
+  assert.throws(() => store.get(a.id, 'owner-b'));
+  const draft = { ...emptyDraft(), selected: ['a'], text: '我的補充', notes: { b: '不要 B，但保留配色' } };
+  store.saveDraft(a.id, draft);
+  const restored = new QuestionStore(dir);
+  assert.deepEqual(restored.get(a.id).draft, draft);
+  restored.answer(a.id, draft);
+  assert.equal(restored.get(b.id).status, 'pending');
+  assert.throws(() => restored.answer(a.id, draft), /重複/);
+  assert.equal(new QuestionStore(dir).get(a.id).answer?.notes.b, '不要 B，但保留配色');
+});
+test('validation rejects invalid choices, foreign attachments, empty and double submissions', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ail-valid-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new QuestionStore(dir), a = store.create('a', 'Agent', {...input(), mode: 'single'});
+  assert.throws(() => store.answer(a.id, emptyDraft()));
+  assert.throws(() => store.answer(a.id, {...emptyDraft(), selected:['a','b']}));
+  assert.throws(() => store.answer(a.id, {...emptyDraft(), selected:['unknown']}));
+  const b = store.create('b', 'Other', input());
+  const file = store.addUpload(b.id, 'notes.txt', 'data:text/plain;base64,aGVsbG8=');
+  assert.throws(() => store.answer(a.id, {...emptyDraft(), attachment_ids:[file.id]}));
+  store.answer(a.id, {...emptyDraft(), text:'另一個做法'});
+  assert.equal(store.get(a.id).answer?.selected.length, 0);
+  assert.throws(() => store.asset(b.id, file.id, 'a'));
+  assert.throws(() => store.asset(b.id, file.id, 'b', true));
+  store.answer(b.id, store.get(b.id).draft);
+  assert.equal(store.asset(b.id, file.id, 'b', true).bytes.toString(), 'hello');
+});
+test('cancel is distinct from answering and images are validated', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ail-cancel-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new QuestionStore(dir), q = store.create('a', 'Agent', input());
+  store.cancel(q.id);
+  assert.equal(store.get(q.id).status, 'cancelled'); assert.equal(store.get(q.id).answer, undefined);
+  assert.throws(() => store.answer(q.id, {...emptyDraft(), text:'too late'}));
+  assert.throws(() => store.create('a', 'Agent', {...input('bad-image'), images:[{name:'x.png', data_url:'data:image/png;base64,aGVsbG8=',caption:''}]}));
+});
