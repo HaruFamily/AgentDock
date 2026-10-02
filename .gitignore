@@ -1,14 +1,9 @@
-node_modules/
-dist/
-.build/
-.packaging/
+# personal runtime data (agents, questions, attachments, backups of state)
+data/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# legacy Electron build (0.5); delete after confirming the Python version works
 output/
-test-results/
-.local/
-.ail/
-archive/
-*.log
-*.bak
-.env
-.env.*
-!.env.example

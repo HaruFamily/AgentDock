@@ -1,27 +1,33 @@
 # 開發
 
-從倉庫根目錄執行。需要 Node.js >=22.12；Windows 桌面與封裝驗證使用 Windows x64。
+需求：Windows、[uv](https://docs.astral.sh/uv/)。Python 版本與套件由 `pyproject.toml` 決定，uv 會自動安裝。
 
 ```powershell
-npm ci
-npm run build
-npm start
+uv sync                     # 建立 .venv（改了相依套件後也執行一次）
+uv run python -m agentdock  # 以主控台執行，看得到錯誤
+uv run pytest -q            # 全部測試（也可雙擊 Test AgentDock.cmd）
 ```
 
-```powershell
-npm test
-npm run test:platform
-npm run test:desktop
-npm run test:startup
-npm run package:win
-npm run test:package
+平常使用雙擊 `Start AgentDock.cmd`（pythonw，無主控台）。改完程式：從小球右鍵「結束」，再開一次。
+錯誤記錄在 `data/agentdock.log`。
+
+## 加入外部工具
+
+在 `agentdock/tools/` 新增模組，例如 `mytool.py`：
+
+```python
+from PySide6.QtWidgets import QLabel
+from agentdock.tools import ToolSpec
+
+def create(ctx):  # ctx.data_dir / ctx.store / ctx.notify(text)
+    return QLabel("我的工具")
+
+TOOL = ToolSpec(title="我的工具", create=create, order=50)
 ```
 
-- src、extensions 是源碼；不要直接改 dist/output 修正程式。
-- node_modules、dist、.build、.packaging、test-results、.local、output 都是本機生成且被 Git 忽略。
-- 以 AIL_DATA_DIR 指向唯一測試資料夾；不要使用真實個人 Agent 設定做自動測試。
-- package:win 產生 output/AgentDock、output/QAInteract 及 ZIP。若 output/AgentDock 已有使用者 data/modules，會拒絕覆蓋；先搬到個人使用位置。
-- 修改模組內容後正式發行需提高版本；相同版本不同內容禁止覆蓋。
-- 標準 npm ci 可重建依賴，不需保留旧開發目錄。
+工具自己的資料請放在 `ctx.data_dir / "<工具名稱>"`。需要的新套件加到 `pyproject.toml` 後執行 `uv sync`。
 
-GitHub repo 與本機資料夾不必與產品模組一對一；本專案用一個倉庫維護平台及所有第一方擴充。
+## 測試邊界
+
+測試只用暫存目錄；`test_broker_mcp.py` 會啟動真正的 MCP stdio 行程並設定 `AGENTDOCK_NO_LAUNCH=1`，不會開啟 UI。
+UI 測試使用 `QT_QPA_PLATFORM=offscreen`。

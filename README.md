@@ -1,44 +1,36 @@
 # AgentDock
 
-Windows 桌面 Agent 工作台。**平台獨立使用，擴充按需下載。**
+個人用的 Windows 浮動 Agent 工作台（Python 版）。桌面上一顆永遠置頂的小球，點開是面板：
 
-[下載發行版](https://github.com/HaruFamily/AgentDock/releases) · [QAI 安裝說明](extensions/QAInteract/README.md) · [專案現況](docs/STATUS.md)
+- **問答（QAI）**：Agent 呼叫 `ask_user` 時小球變橘色並跳出問題；可選項、寫備註、輸入文字、附檔或貼圖回答。
+- **Agent 與 MCP**：上半部是「MCP 庫」，每個 MCP 只定義一次（遠端網址、uvx/npx 套件、GitHub Release 下載、自訂指令）；
+  下半部是各 Agent（Codex、OpenCode、Claude Code、Claude Desktop/Cowork），用「＋ MCP」加入、「−」移除、勾選啟停。
+  變更會累積，最後一次預覽、備份、寫入。QAI 是 MCP 庫裡的內建項目。
+- **外部工具**：放進 `agentdock/tools/` 的 Python 工具會自動成為面板分頁。
 
-## 使用 AgentDock
+## 使用
 
-1. 在 Releases 下載 `AgentDock-0.5.0-win-x64.zip`，解壓到可寫入的位置。
-2. 開啟 `Start.cmd` 或 `AgentDock.exe`。不需要另外安裝 Node.js。
-3. 「Agent 清單」登錄客戶端、名稱與設定檔位置。
-4. 「擴充」匯入另行下載的 `QAInteract-0.5.0.admod`，或貼上它的直接下載網址。
-5. 勾選 QAI 要提供給哪些 Agent → 預覽 → 確認套用。
-6. 重新載入客戶端，請 Agent 呼叫 `ask_user` 驗證。
+1. 需要 [uv](https://docs.astral.sh/uv/)（已用來跑其他 MCP 就有）。
+2. 雙擊 `Start AgentDock.cmd`。第一次會自動安裝 Python 與套件，之後直接開啟。
+3. 改完程式碼，結束後再開一次就生效，不需要建置或打包。
 
-程式關閉視窗時會收至系統匣；右鍵圖示可結束。資料保存在 exe 旁的 `data`，已安裝擴充在 `modules`。搬移程式時一起保留，並重新套用 Agent 連接路徑。
+小球：點一下展開／收合，拖曳移動，右鍵選單可結束。系統匣圖示也可以展開或結束。
+面板右上「置頂」可切換面板是否永遠在最上層；小球永遠置頂。
 
-## 只需要 QAI
+## 資料
 
-把 [QAI 的說明頁](https://github.com/HaruFamily/AgentDock/tree/main/extensions/QAInteract) 交給 Agent，請它依說明安裝。
-QAI 發行包獨立於平台；已有相容平台便沿用，沒有則可下載同版平台。沒有自訂 `.git?path=` 協定。
+- `mcp-library.json`（進 Git）：MCP 庫的定義，不含祕密與絕對路徑，可在多台電腦共用。
+- `data/`（不進 Git）：`agents.json`、`questions.json`、`attachments/`、`secrets.json`（MCP 的 API key 等）、
+  `mcp/<名稱>/`（下載的 MCP 執行檔）、停用中的 Claude MCP（`disabled-*.json`）、`ui.json`、`agentdock.log`。
+
+換一台電腦：pull 後打開 AgentDock，MCP 庫中標示「需下載」或「缺少祕密」的項目照提示補上即可。
 
 ## 資料夾
 
 | 位置 | 內容 |
 | --- | --- |
-| `src/platform` | 平台原始碼 |
-| `src/shared` | 共用協定與工具 |
-| `extensions/QAInteract` | QAI 原始碼、說明、獨立安裝入口 |
-| `tests`、`scripts` | 測試與開發工具 |
-| `docs` | 現況、架構、開發、發行與歷史文件 |
-| `docs/skills` | 可供 Agent 使用的開發 Skill |
-| `AGENTS.md` | Agent 進入本專案時的開發指引 |
-| `output` | 本機產出的可使用程式與 ZIP，不提交 Git |
-| `.local/agentdock` | 開發時的個人執行資料，不提交 Git |
+| `agentdock/` | 程式：`qa/` 問答、`agents.py` 設定管理、`broker.py`、`mcp_server.py`、`ui/` 介面、`tools/` 外部工具 |
+| `tests/` | pytest（含真實 MCP stdio 往返與離屏 UI 測試） |
+| `docs/` | 現況、架構、開發、驗證與歷史 |
 
-一個 GitHub repository 管理原始碼，同一個 Releases 提供多個獨立下載檔。
-**GitHub 的 Source code ZIP 是原始碼；一般使用者請下載 Release 附件。**
-
-開發入口：[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。歷史：[docs/history/CHANGELOG.md](docs/history/CHANGELOG.md)。
-
-本版管理 Codex、OpenCode、Claude Code、Claude Desktop 的指定設定檔；已寫入設定不等於客戶端已連線。
-第三方 MCP 可啟停或新增 HTTPS 遠端端點，尚無任意 GitHub 專案自動安裝器。
-UsageMonitor、AgentConnector 尚未實作。程式尚未簽章；只執行信任來源。
+開發：[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。歷史：[docs/history/CHANGELOG.md](docs/history/CHANGELOG.md)。

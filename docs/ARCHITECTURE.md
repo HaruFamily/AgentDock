@@ -1,22 +1,23 @@
 # 架構
 
-AgentDock 是平台產品，不另安裝一個叫 Core 的程式。
+單一 Python 程式，兩種執行方式：
 
-- src/platform：Electron 主程序、UI、Agent 設定、外部模組管理。
-- src/shared：平台 broker、模組介面、MCP 到桌面的 client。
-- extensions/QAInteract：問答服務、UI、儲存與 MCP adapter。
-- tests/helpers：測試用整合介面，平台本身不依賴 QAI。
+1. **浮動 App**（`python -m agentdock`）：PySide6 小球、面板、系統匣；持有 QuestionStore 並啟動 broker。
+2. **MCP stdio 服務**（`python -m agentdock.mcp_server`）：由 Codex／Claude 等客戶端啟動，每個客戶端一個行程。
 
-平台的 asar 不包含 QAI 問答實作或 MCP SDK；QAI 的 .admod 以 ZIP 包含已打包 JS、UI、manifest 及授權說明。
-載入前檢查路徑白名單、版本、解壓大小和 SHA-256。雜湊可發現損壞，不代表發行者身分簽章。
-模組在同一個使用者信任邊界內執行，並非沙箱化第三方程式。
+```
+客戶端 ──stdio──> mcp_server ──HTTP 127.0.0.1 + token──> broker ──> QuestionStore <── UI
+```
 
-MCP stdio 使用 Node 或平台自帶的 Electron Node 模式，透過本機 127.0.0.1 broker 找到共用桌面。
-broker 使用隨機 token 並拒絕瀏覽器 Origin；答案只能由桌面 IPC 提交。
-待答問題及草稿持久化；外部 Agent 等待逾時不刪除問題。
-
-正式版資料：exe/data；擴充：exe/modules。開發版資料：.local/agentdock。
-docs 只放維護文件，與上述執行資料完全分開。AIL_* 環境變數名稱暫留相容。
-
-設定管理只處理登錄檔案。Codex/OpenCode 使用 enabled；Claude 系列停用時移出設定並存入 data，重新啟用還原。
-TOML 寫回會重排並移除註解；JSONC 保留 MCP 區塊外內容。確認時檢查原檔未變，先備份，批次失敗嘗試復原。
+- `broker.py`：隨機埠、隨機 token，寫入 `data/endpoint.json`；拒絕帶 Origin 的請求。HTTP 只能建立、查詢、取附件，不能提交答案；答案只能從 UI 提交。
+- `client.py`：mcp_server 用來找 broker；App 沒開時以 pythonw 啟動 `--background`。
+- `qa/store.py`：`questions.json` 與 `attachments/`，格式與 0.5 相同。執行緒安全；事件經 Qt 信號轉到 UI 執行緒。
+- 呼叫者身分：`AGENTDOCK_CLIENT_ID`（設定檔中為 `agentdock-<agent id>`）雜湊成 owner；只能讀自己的問題。
+- `library.py`：MCP 庫。定義在 `mcp-library.json`（佔位符 `{AGENTDOCK}` `{DATA}` `{HOME}` `{BIN}`），祕密在 `data/secrets.json`，
+  下載物在 `data/mcp/<key>/`。`render()` 依客戶端類型產生設定項目；`in_sync()` 判斷是否「需更新」；`from_config()` 把既有設定收進庫。
+- `agents.py`：以操作清單（enable/disable/remove/add/update）規劃變更。Codex／OpenCode 用 `enabled` 停用；Claude 系列沒有此旗標，停用時移出設定存到 `data/disabled-<id>.json`，啟用時還原。
+  寫入前確認原檔未被改動，先備份成 `*.agentdock-<時間>-<id>.bak`，批次失敗會嘗試復原。
+- QAI 是 MCP 庫的內建項目，指向 venv 的 `python.exe -m agentdock.mcp_server`，並設 `PYTHONPATH` 與 `AGENTDOCK_DATA_DIR`。
+  設定檔中的名稱是 `agentdock-qa`；舊名稱 agentdock_qa（含 Electron 版）會在「全部更新」時自動換新。
+- `ui/`：`ball.py` 小球、`panel.py` 面板外框、`qa_view.py` 問答、`agents_view.py` Agent 與 MCP 分頁（MCP 庫＋Agent 卡片＋待套用列）、`app.py` 組合與單一實例鎖。
+- `tools/`：外部工具分頁的註冊點。

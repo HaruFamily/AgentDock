@@ -1,0 +1,25 @@
+{
+ "schema": 1,
+ "servers": [
+  {
+   "key": "codebase-memory-mcp",
+   "type": "github",
+   "description": "程式碼知識圖譜（DeusData/codebase-memory-mcp）",
+   "repo": "DeusData/codebase-memory-mcp",
+   "asset": "^codebase-memory-mcp-windows-amd64\\.zip$",
+   "exe": "codebase-memory-mcp.exe"
+  },
+  {
+   "key": "google-sheets",
+   "type": "uvx",
+   "package": "mcp-google-sheets@latest",
+   "options": [
+    "--with",
+    "mcp<2"
+   ],
+   "env": {
+    "SERVICE_ACCOUNT_PATH": "D:\\PinsData\\Private\\Tools\\GoogleSheetMcp\\GoogleSheetMcp_SSH_secure-bonus-503203-q6.json"
+   }
+  }
+ ]
+}
