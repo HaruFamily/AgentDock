@@ -1,14 +1,13 @@
 # 開發
 
-需求：Windows、[uv](https://docs.astral.sh/uv/)。Python 版本與套件由 `pyproject.toml` 決定，uv 會自動安裝。
+需求：Windows。不需要另外安裝 Python 或 uv：`AgentDock.exe` 第一次執行時，`scripts\setup.ps1` 會把 uv、
+Python（版本見 `.python-version`）、套件與快取都放進 `runtime\`（環境變數設定在 `scripts\env.ps1`）。
 
-```powershell
-uv sync                     # 建立 .venv（改了相依套件後也執行一次）
-uv run python -m agentdock  # 以主控台執行，看得到錯誤
-uv run pytest -q            # 全部測試（也可雙擊 Test AgentDock.cmd）
-```
-
-平常使用雙擊 `Start AgentDock.cmd`（pythonw，無主控台）。改完程式：從小球右鍵「結束」，再開一次。
+- 平常使用：雙擊 `AgentDock.exe`（無主控台）。改完程式：從浮動卡片右鍵「結束」，再開一次。
+- 測試：雙擊 `Test AgentDock.cmd`（使用同一個 runtime 環境）。
+- 想看到錯誤輸出：`runtime\venv\Scripts\python.exe -m agentdock`。
+- 也可以用自己的 uv：`uv sync` 會建立 `.venv`，AgentDock 會優先使用 `runtime\venv`、沒有時才用 `.venv`。
+- 啟動器原始碼在 `launcher/launcher.c`，用 `launcher/build.sh`（mingw-w64）重新建置 `AgentDock.exe`。
 錯誤記錄在 `data/agentdock.log`。
 
 ## 加入外部工具

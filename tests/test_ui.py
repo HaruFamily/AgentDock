@@ -3,9 +3,99 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QRadioButton, QLineEdit, QPushButton
 from agentdock.qa.store import QuestionStore
+from agentdock.ui import theme
 from agentdock.ui.qa_view import QaView
 
 app = QApplication.instance() or QApplication([])
+
+
+@pytest.mark.parametrize("mode", ["single", "multiple"])
+def test_option_entire_row_clicks_without_toggling_notes(tmp_path, mode):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QAbstractButton
+    store = QuestionStore(tmp_path)
+    q = store.create("a" * 64, "C", {"request_key": "row", "work_id": "w", "work_title": "W",
+        "question": "Pick", "images": [], "mode": mode, "wait_seconds": 60,
+        "options": [{"id": "x", "label": "X", "description": "Description", "images": []},
+                    {"id": "y", "label": "Y", "description": "", "images": []}]})
+    view = QaView(store)
+    view.resize(600, 800)
+    view.open_question(q["id"])
+    view.show()
+    app.processEvents()
+    rows = view.blocks[q["id"]]["option_rows"]
+    row = rows["x"]["row"]
+    choice = next(b for b in row.findChildren(QAbstractButton) if b.text() == "X")
+    QTest.mouseClick(choice, Qt.MouseButton.LeftButton, pos=QPoint(choice.width() - 4, choice.height() // 2))
+    assert view.drafts[q["id"]]["selected"] == ["x"]
+    if mode == "multiple":
+        QTest.mouseClick(row, Qt.MouseButton.LeftButton, pos=QPoint(row.width() - 2, row.height() - 2))
+        assert view.drafts[q["id"]]["selected"] == []
+    else:
+        QTest.mouseClick(rows["y"]["row"], Qt.MouseButton.LeftButton, pos=QPoint(2, 2))
+        assert view.drafts[q["id"]]["selected"] == ["y"]
+    before = list(view.drafts[q["id"]]["selected"])
+    rows["x"]["add"].click()
+    QTest.mouseClick(rows["x"]["note"].viewport(), Qt.MouseButton.LeftButton)
+    assert view.drafts[q["id"]]["selected"] == before
+    assert store.get(q["id"])["status"] == "pending"
+    choice.setEnabled(False)
+    QTest.mouseClick(row, Qt.MouseButton.LeftButton, pos=QPoint(2, 2))
+    assert view.drafts[q["id"]]["selected"] == before
+    view.close()
+
+
+def test_persistent_icon_toggles_card(tmp_path):
+    from agentdock.ui.app import Dock, LauncherIcon
+    from agentdock.ui.card import FloatingCard
+    dock = Dock.__new__(Dock)
+    dock.ball = FloatingCard()
+    dock.icon = LauncherIcon()
+    dock.ui = {}
+    dock.ui_file = tmp_path / "ui.json"
+    dock.icon.set_mode("heart")
+    dock.icon.move(600, 500)
+    dock.icon.mode_changed.connect(dock._icon_clicked)
+    dock.ball.mode_changed.connect(dock._mode_changed)
+    dock.ball.show()
+    dock._sync_icon()
+    assert dock.icon.isVisible() and dock.ball.mode == "card"
+    dock.icon.set_mode("card")  # the launcher click requests a toggle without resizing
+    assert dock.ball.mode == "heart" and dock.ball.isVisible()
+    assert dock.ball.pos() == dock.icon.pos()
+    dock.ball.set_mode("card")
+    assert dock.icon.isVisible() and dock.ball.isVisible()
+    assert not dock.ball.geometry().intersects(dock.icon.geometry())
+    dock.ball.close()
+    dock.icon.close()
+
+
+def test_startup_centers_icon_on_right_even_with_saved_position(tmp_path):
+    from agentdock.ui.app import Dock, LauncherIcon
+    from agentdock.ui.card import FloatingCard
+    for saved in ({}, {"card_mode": "card", "icon_pos": [500, 200]}, {"ball": [50, 80]}):
+        dock = Dock.__new__(Dock)
+        dock.ball = FloatingCard()
+        dock.icon = LauncherIcon()
+        dock.icon.set_mode("heart")
+        dock.ball.set_mode("heart")
+        dock.ui = saved.copy()
+        dock.ui_file = tmp_path / "ui.json"
+        dock.ball.mode_changed.connect(dock._mode_changed)
+        dock.ball.page_changed.connect(lambda _page: dock._save_ui())
+        dock._restore_ui()
+        dock.ball.show()
+        dock._sync_icon()
+        assert dock.ball.mode == "heart" and dock.ball.isVisible()
+        assert not dock.icon.isVisible()
+        assert dock.ball.pos() == dock.icon.pos()
+        from agentdock.ui.card import MARGIN
+        area = app.primaryScreen().availableGeometry()
+        assert dock.ball.x() + dock.ball.width() - MARGIN == area.right() + 1
+        assert dock.ball.y() == area.top() + (area.height() - dock.ball.height()) // 2
+        dock.ball.close()
+        dock.icon.close()
 
 
 def test_answer_through_widgets(tmp_path):
@@ -32,7 +122,7 @@ def test_answer_through_widgets(tmp_path):
     view._open_note(store.get(q["id"]), "y")
     view.blocks[q["id"]]["option_rows"]["y"]["note"].setPlainText("理由\n第二行")
     view.blocks[q["id"]]["text"].setPlainText("補充")
-    submit = [b for b in view.detail.findChildren(QPushButton) if b.text() == "提交"][0]
+    submit = [b for b in view.detail.findChildren(QPushButton) if b.text() == theme.t("submit")][0]
     submit.click()
     done = store.get(q["id"])
     assert done["status"] == "answered"
@@ -53,8 +143,11 @@ def test_new_question_does_not_steal_open_question(tmp_path):
     assert view.active == first["id"] and view.blocks[first["id"]]["text"].toPlainText() == "typing…"
 
 
-def test_mcp_dialog_and_agent_page(tmp_path):
+def test_mcp_dialog_and_agent_page(tmp_path, monkeypatch):
     import json
+    import agentdock.library as libmod
+    runner = str(tmp_path / "runtime" / "uv" / "uvx.exe")
+    monkeypatch.setattr(libmod, "local_uvx", lambda: runner)
     from agentdock.agents import AgentManager
     from agentdock.library import Library
     from agentdock.ui.agents_view import AgentsView, McpDialog
@@ -79,7 +172,7 @@ def test_mcp_dialog_and_agent_page(tmp_path):
     assert len(view.ops) == 2 and view.bar.isVisibleTo(view)
     m.apply(m.prepare(view.ops))
     data = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]
-    assert data["sheets"] == {"command": "uvx", "args": ["mcp-google-sheets@latest"], "env": {"API_TOKEN": "abc"}} and "x" not in data
+    assert data["sheets"] == {"command": runner, "args": ["mcp-google-sheets@latest"], "env": {"API_TOKEN": "abc"}} and "x" not in data
 
 
 def test_agent_page_collapse_remove_adopts_and_edit(tmp_path):
@@ -181,7 +274,7 @@ def test_group_page_submits_all(tmp_path):
     view.show_first_pending()
     assert set(view.blocks) == {g[0]["id"], g[1]["id"]}
     view.blocks[g[0]["id"]]["text"].setPlainText("first")
-    submit = [b for b in view.detail.findChildren(QPushButton) if b.text() == "全部提交"][0]
+    submit = [b for b in view.detail.findChildren(QPushButton) if b.text() == theme.t("submit_all")][0]
     submit.click()                                 # Q2 empty -> rejected, nothing committed
     assert all(m["status"] == "pending" for m in store.group_members(g[0]["id"]))
     view._open_note(store.get(g[1]["id"]), "b")
@@ -190,3 +283,84 @@ def test_group_page_submits_all(tmp_path):
     submit.click()
     done = store.group_members(g[0]["id"])
     assert [m["status"] for m in done] == ["answered", "answered"] and done[1]["answer"]["notes"] == {"b": "why"}
+
+
+def test_agent_page_keeps_scroll_position(tmp_path):
+    import json
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView
+    L = Library(tmp_path / "repo", tmp_path / "data")
+    m = AgentManager(tmp_path / "data")
+    for i in range(6):
+        cfg = tmp_path / f"c{i}.json"
+        cfg.write_text(json.dumps({"mcpServers": {f"s{j}": {"command": "x"} for j in range(8)}}), encoding="utf-8")
+        p = m.add(f"A{i}", "claude-code", str(cfg))
+    view = AgentsView(m, L)
+    view.resize(400, 300)
+    view.show()
+    app.processEvents()
+    bar = view.scroll.verticalScrollBar()
+    assert bar.maximum() > 200
+    bar.setValue(bar.maximum() - 50)
+    before = bar.value()
+    settle = lambda: [app.processEvents() for _ in range(5)]
+    view._set_op(p.id, "s3", "remove")
+    settle()
+    assert bar.value() == before
+    view._add_to_agent({"id": p.id, "kind": "claude-code"}, L.get("s1") or L.entries()[0])
+    view.refresh()
+    settle()
+    assert bar.value() == before
+
+
+def test_queued_addition_shows_in_sorted_place(tmp_path):
+    import json
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView
+    from agentdock.ui.widgets import Row
+    L = Library(tmp_path / "repo", tmp_path / "data")
+    L.save({"key": "m-mid", "type": "command", "command": "x"})
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"mcpServers": {"a-first": {"command": "x"}, "z-last": {"command": "x"}}}), encoding="utf-8")
+    p = AgentManager(tmp_path / "data").add("A", "claude-code", str(cfg))
+    view = AgentsView(AgentManager(tmp_path / "data"), L)
+    view._add_to_agent({"id": p.id, "kind": "claude-code"}, L.get("m-mid"))
+    view.refresh()
+    fold = view.lay.itemAt(0).widget()
+    names = [r.name.text() for r in fold.findChildren(Row) if r.name.text() in ("a-first", "m-mid", "z-last")]
+    assert names[:3] == ["a-first", "m-mid", "z-last"]
+
+
+def test_mcp_removed_outside_agentdock_is_flagged(tmp_path):
+    import json
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView
+    cfg = tmp_path / "claude.json"
+    cfg.write_text(json.dumps({"mcpServers": {"mine": {"command": "x"}, "other": {"command": "y"}}}), encoding="utf-8")
+    m, L = AgentManager(tmp_path / "data"), Library(tmp_path / "repo", tmp_path / "data")
+    p = m.add("Claude", "claude-code", str(cfg))
+    state, summaries = {}, []
+    view = AgentsView(m, L, ui_state=state, save_state=lambda: None)
+    view.summary_changed.connect(lambda text, alert: summaries.append((text, alert)))
+    assert state["known_mcp"][p.id] == ["mine", "other"] and not view.missing
+    # a client update rewrites the file without "mine"
+    cfg.write_text(json.dumps({"mcpServers": {"other": {"command": "y"}}}), encoding="utf-8")
+    view.refresh()
+    view._emit_summary(1)
+    assert view.missing == {p.id: ["mine"]}
+    assert any(n["server"] == "mine" and n["op"] == "add" for n in view.needs)
+    assert "1 個 MCP 被移除" in summaries[-1][0] and summaries[-1][1]
+    # 補回 = queue an add; after applying, nothing is missing any more
+    view._update_all()
+    m.apply(m.prepare(view.ops))
+    view.ops.clear()
+    view.refresh()
+    assert "mine" in json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"] and not view.missing
+    # removed again outside, then dismissed with ×: no longer reported
+    cfg.write_text(json.dumps({"mcpServers": {"other": {"command": "y"}}}), encoding="utf-8")
+    view.refresh()
+    view._forget_missing(p.id, "mine")
+    assert not view.missing and state["known_mcp"][p.id] == ["other"]

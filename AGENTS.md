@@ -9,7 +9,8 @@
 - `mcp_server.py` 與它匯入的模組不可匯入 PySide6，也不可寫入 stdout（那是 MCP 通道）。
 - 設定管理先預覽，確認後備份及套用。測試只用暫存目錄，不寫真實客戶端設定。
 - 外部工具放在 `agentdock/tools/<名稱>.py` 並定義 `TOOL = ToolSpec(...)`；載入失敗不得影響主程式。
-- 修改後執行 `uv run pytest -q`。只有使用者授權時才推送。
+- 修改後執行測試：Windows 上 `Test AgentDock.cmd`（或 `uv run pytest -q`）。只有使用者授權時才推送。
+- 免安裝：所有執行環境放在資料夾內的 `runtime\`（AgentDock.exe → scripts\setup.ps1）；不寫入開始功能表、PATH 或登錄檔（擴充的「加入 PATH」與右鍵「開機自動啟動」的 HKCU Run 除外，須使用者操作）。
 - 不因缺少圖譜工具阻止工作，也不得聲稱使用了不可用工具。圖譜證據不完整時直接讀來源。
 
 ## Codebase Memory

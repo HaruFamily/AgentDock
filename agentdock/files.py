@@ -35,3 +35,21 @@ def atomic_json(path: Path, value: Any) -> None:
 def load_json(path: Path, default: Any) -> Any:
     text = read_text(path)
     return json.loads(text) if text.strip() else default
+
+
+def backup_path(path: Path) -> Path:
+    import time
+    return path.with_name(f"{path.name}.agentdock-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.bak")
+
+
+def prune_backups(path: Path, keep: int = 3) -> list[Path]:
+    """Keep only the newest `keep` AgentDock backups of one file (<name>.agentdock-<ms>-<id>.bak)."""
+    found = sorted(path.parent.glob(f"{path.name}.agentdock-*.bak"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+    removed = []
+    for old in found[keep:]:
+        try:
+            old.unlink()
+            removed.append(old)
+        except OSError:
+            pass
+    return removed

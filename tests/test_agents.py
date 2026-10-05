@@ -80,3 +80,30 @@ def test_store_claude_default(tmp_path, monkeypatch):
     pkg.mkdir(parents=True)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     assert default_path("claude-desktop") == str(pkg / "claude_desktop_config.json")
+
+
+def test_opencode_default_prefers_existing_jsonc(tmp_path, monkeypatch):
+    from agentdock.agents import default_path
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    folder = tmp_path / ".config" / "opencode"
+    folder.mkdir(parents=True)
+    assert default_path("opencode").endswith("opencode.json")
+    (folder / "opencode.jsonc").write_text("{}", encoding="utf-8")
+    assert default_path("opencode").endswith("opencode.jsonc")
+    (folder / "opencode.json").write_text("{}", encoding="utf-8")
+    assert default_path("opencode").endswith("opencode.json")
+
+
+def test_prune_backups_keeps_newest(tmp_path):
+    import os
+    from agentdock.files import prune_backups
+    cfg = tmp_path / "c.json"
+    cfg.write_text("{}")
+    for i in range(5):
+        b = tmp_path / f"c.json.agentdock-{i}-x.bak"
+        b.write_text(str(i))
+        os.utime(b, ns=(i * 10**9, i * 10**9))
+    (tmp_path / "c.json.bak-mine").write_text("keep")
+    prune_backups(cfg, keep=3)
+    assert sorted(p.name for p in tmp_path.glob("c.json.agentdock-*.bak")) == [f"c.json.agentdock-{i}-x.bak" for i in (2, 3, 4)]
+    assert (tmp_path / "c.json.bak-mine").exists()

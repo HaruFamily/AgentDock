@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
+from PySide6.QtGui import QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
+                               QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
                                QStackedWidget, QVBoxLayout, QWidget)
 
 from agentdock.qa.store import QuestionStore
-from agentdock.ui.widgets import ElidedLabel, Row, dot, icon_button, muted
+from agentdock.ui import theme
+from agentdock.ui.widgets import ElidedLabel, RibbonBar, Row, dot, icon_button, muted
 
 HINTS = {"text": "用文字回答，也可以加入檔案或貼上圖片。",
          "single": "選一項，或直接在下方輸入自己的答案。",
@@ -81,6 +82,44 @@ class ClickableImage(QLabel):
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         if e.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
+
+
+class FullRowCheckBox(QCheckBox):
+    def hitButton(self, pos) -> bool:  # noqa: N802
+        return self.rect().contains(pos)
+
+
+class FullRowRadioButton(QRadioButton):
+    def hitButton(self, pos) -> bool:  # noqa: N802
+        return self.rect().contains(pos)
+
+
+class OptionRow(QWidget):
+    """Click the row background to select; embedded inputs keep their own clicks."""
+
+    def __init__(self, choice) -> None:
+        super().__init__()
+        self.choice = choice
+        self._press = None
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press = e.position().toPoint()
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.MouseButton.LeftButton and self._press is not None:
+            pos, self._press = self._press, None
+            released = e.position().toPoint()
+            if (self.rect().contains(released)
+                    and (released - pos).manhattanLength() < QApplication.startDragDistance()):
+                self.choice.click()
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
 
 
 class PasteTextEdit(QPlainTextEdit):
@@ -157,6 +196,8 @@ def _when(iso: str) -> str:
 
 class QaView(QWidget):
     pending_changed = Signal(int)
+    pending_items = Signal(list)  # [{id, source, question}] — one per pending unit, for the floating card
+    answered = Signal()           # an answer was submitted from this view
 
     def __init__(self, store: QuestionStore) -> None:
         super().__init__()
@@ -220,6 +261,9 @@ class QaView(QWidget):
 
         self.detail = QWidget()
         self.stack.addWidget(self.detail)
+        self._submit_now = None
+        for keys in ("Ctrl+Return", "Ctrl+Enter"):
+            QShortcut(QKeySequence(keys), self, activated=lambda: self._submit_now and self._submit_now())
         self.refresh()
 
     # ------------------------------------------------------------------ list
@@ -271,6 +315,8 @@ class QaView(QWidget):
         units = self._units(self.store.list())
         pending = [u for u in units if self._unit_status(u) == "pending"]
         self.pending_changed.emit(len(pending))
+        self.pending_items.emit([{"id": u[0]["id"], "source": u[0].get("source", ""), "question": u[0].get("question", "")}
+                                 for u in sorted(pending, key=lambda u: u[0]["created_at"])])
         self.pending_btn.setText(f"待回答 ({len(pending)})" if pending else "待回答")
         shown = [u for u in units if (self._unit_status(u) != "pending") == self.history]
         stamp = (lambda u: max(q.get("resolved_at", "") for q in u)) if self.history else (lambda u: u[0]["created_at"])
@@ -474,19 +520,21 @@ class QaView(QWidget):
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
 
-        bar = QFrame()
+        bar = RibbonBar()
         bar.setObjectName("ActionBar")
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(14, 8, 12, 8)
-        self.save_label = muted("" if readonly else "草稿會自動保存")
+        self.save_label = muted("" if readonly else theme.t("draft"))
         self.save_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bl.addWidget(self.save_label, 1)
         if not readonly:
-            cancel = button("取消問題", flat=True, danger=True)
+            cancel = button(theme.t("cancel_q"), flat=True, danger=True)
             cancel.setToolTip("告訴 Agent 不回答" + ("這組問題" if many else "這題") + "（不會被當成同意）")
             cancel.clicked.connect(lambda: self._cancel(members))
-            submit = button("全部提交" if many else "提交", primary=True)
+            submit = button(theme.t("submit_all") if many else theme.t("submit"), primary=True)
+            submit.setToolTip("Ctrl+Enter")
             submit.clicked.connect(lambda: self._submit(members))
+            self._submit_now = lambda: self._submit(members)
             bl.addWidget(cancel)
             bl.addWidget(submit)
         outer.addWidget(bar)
@@ -512,13 +560,13 @@ class QaView(QWidget):
             opts = QVBoxLayout()
             opts.setSpacing(2)
             for option in q["options"]:
-                row = QWidget()
+                choice = FullRowRadioButton(option["label"]) if q["mode"] == "single" else FullRowCheckBox(option["label"])
+                row = OptionRow(choice)
                 row.setObjectName("OptionRow")
                 row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
                 rl = QVBoxLayout(row)
                 rl.setContentsMargins(8, 6, 8, 6)
                 rl.setSpacing(4)
-                choice = QRadioButton(option["label"]) if q["mode"] == "single" else QCheckBox(option["label"])
                 choice.setChecked(option["id"] in draft["selected"])
                 choice.setEnabled(not readonly)
                 group.addButton(choice)
@@ -534,6 +582,7 @@ class QaView(QWidget):
                     desc = muted(option["description"])
                     desc.setWordWrap(True)
                     desc.setContentsMargins(26, 0, 0, 0)
+                    desc.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                     rl.addWidget(desc)
                 if option.get("images"):
                     rl.addWidget(self._images(q, option["images"], 72))
@@ -700,7 +749,9 @@ class QaView(QWidget):
                 self.store.answer_group(answers)
             for m in members:
                 self.drafts.pop(m["id"], None)
+            self._submit_now = None
             self.back()
+            self.answered.emit()
         except Exception as e:
             self.error(e)
 

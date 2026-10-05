@@ -10,15 +10,43 @@
    "exe": "codebase-memory-mcp.exe"
   },
   {
-   "key": "google-sheets",
+   "key": "mcp-google-sheets",
    "type": "uvx",
    "package": "mcp-google-sheets@latest",
    "options": [
     "--with",
     "mcp<2"
    ],
-   "env": {
-    "SERVICE_ACCOUNT_PATH": "D:\\PinsData\\Private\\Tools\\GoogleSheetMcp\\GoogleSheetMcp_SSH_secure-bonus-503203-q6.json"
+   "secrets": [
+    "SERVICE_ACCOUNT_PATH"
+   ]
+  }
+ ],
+ "extensions": [
+  {
+   "key": "rtk",
+   "type": "github",
+   "description": "RTK（rtk-ai/rtk）：改寫 Agent 執行的 shell 指令，壓縮輸出以節省 token。需要在 PATH 上。",
+   "repo": "rtk-ai/rtk",
+   "asset": "^rtk-x86_64-pc-windows-msvc\\.zip$",
+   "exe": "rtk.exe",
+   "path": true,
+   "hooks": {
+    "claude-code": {
+     "event": "PreToolUse",
+     "matcher": "Bash",
+     "command": "rtk hook claude"
+    },
+    "codex": {
+     "event": "PreToolUse",
+     "matcher": "Bash",
+     "command": "rtk hook codex"
+    },
+    "opencode": {
+     "plugin": "rtk.ts",
+     "source": "{AGENTDOCK}/agentdock/assets/opencode/rtk.ts",
+     "source_url": "https://raw.githubusercontent.com/rtk-ai/rtk/{TAG}/hooks/opencode/rtk.ts"
+    }
    }
   }
  ]

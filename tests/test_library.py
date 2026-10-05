@@ -7,6 +7,16 @@ from agentdock.agents import Profile
 P = Profile(id="11111111-1111-1111-1111-111111111111", name="Codex", kind="codex", path="x")
 
 
+def test_local_uvx_uses_only_existing_portable_runner(tmp_path, monkeypatch):
+    from agentdock import paths
+    monkeypatch.setattr(paths, "ROOT", tmp_path)
+    assert paths.local_uvx() is None
+    runner = tmp_path / "runtime" / "uv" / "uvx.exe"
+    runner.parent.mkdir(parents=True)
+    runner.write_bytes(b"test runner")
+    assert paths.local_uvx() == str(runner)
+
+
 def test_definitions_secrets_and_render(tmp_path, monkeypatch):
     L = Library(tmp_path / "repo", tmp_path / "data")
     with pytest.raises(ValueError):
@@ -26,15 +36,20 @@ def test_definitions_secrets_and_render(tmp_path, monkeypatch):
         L.remove("agentdock-qa")
 
 
-def test_import_existing_config(tmp_path):
+@pytest.mark.parametrize("portable", [False, True])
+def test_import_existing_config(tmp_path, monkeypatch, portable):
+    runner = str(tmp_path / "runtime" / "uv" / "uvx.exe") if portable else None
+    monkeypatch.setattr(libmod, "local_uvx", lambda: runner)
     L = Library(tmp_path / "repo", tmp_path / "data")
     entry, secrets = L.from_config("google-sheets", {"command": "uvx", "args": ["--with", "mcp<2", "mcp-google-sheets@latest"],
                                                      "env": {"SERVICE_ACCOUNT_PATH": "C:/x.json", "GOOGLE_TOKEN": "t"}})
     assert entry["type"] == "uvx" and entry["package"] == "mcp-google-sheets@latest" and entry["options"] == ["--with", "mcp<2"]
-    assert entry["secrets"] == ["GOOGLE_TOKEN"] and secrets == {"GOOGLE_TOKEN": "t"}
+    # the token is a secret; the absolute path is per computer, so it stays out of Git as well
+    assert entry["secrets"] == ["GOOGLE_TOKEN", "SERVICE_ACCOUNT_PATH"] and "env" not in entry
+    assert secrets == {"GOOGLE_TOKEN": "t", "SERVICE_ACCOUNT_PATH": "C:/x.json"}
     L.save(entry, secrets)
     rendered = L.render(L.get("google-sheets"), "claude-desktop", P)
-    assert rendered["command"] == "uvx" and rendered["args"] == ["--with", "mcp<2", "mcp-google-sheets@latest"]
+    assert rendered["command"] == (runner or "uvx") and rendered["args"] == ["--with", "mcp<2", "mcp-google-sheets@latest"]
     entry2, _ = L.from_config("pkg", {"command": "cmd", "args": ["/c", "npx", "-y", "@scope/srv", "--flag"]})
     assert entry2["type"] == "npx" and entry2["package"] == "@scope/srv" and entry2["args"] == ["--flag"]
 
@@ -121,3 +136,37 @@ def test_qai_wait_slice_for_claude_desktop(tmp_path):
     qai = L.get("agentdock-qa")
     assert L.render(qai, "claude-desktop", P)["env"]["AGENTDOCK_MAX_WAIT"] == "50"
     assert "AGENTDOCK_MAX_WAIT" not in L.render(qai, "codex", P)["env"]
+
+
+def test_local_paths_stay_out_of_git_and_secrets_travel(tmp_path):
+    import json
+    import pytest
+    from agentdock import secretbox
+    from agentdock.library import Library
+    repo, data = tmp_path / "repo", tmp_path / "data"
+    repo.mkdir()
+    (repo / "mcp-library.json").write_text(json.dumps({"schema": 1, "servers": [
+        {"key": "sheets", "type": "uvx", "package": "mcp-google-sheets@latest",
+         "env": {"SERVICE_ACCOUNT_PATH": "D:\\Keys\\sa.json", "MODE": "x"}}]}), encoding="utf-8")
+    L = Library(repo, data)
+    assert L.localize_paths() == 1
+    stored = json.loads((repo / "mcp-library.json").read_text(encoding="utf-8"))["servers"][0]
+    assert "D:\\\\Keys" not in json.dumps(stored) and stored["secrets"] == ["SERVICE_ACCOUNT_PATH"]
+    assert stored["env"] == {"MODE": "x"} and L.secrets()["SERVICE_ACCOUNT_PATH"] == "D:\\Keys\\sa.json"
+    assert L.render(L.get("sheets"), "codex", None)["env"]["SERVICE_ACCOUNT_PATH"] == "D:\\Keys\\sa.json"
+    # a second computer: the value is recovered from an Agent config that already has it, never overwritten
+    other = Library(repo, tmp_path / "data2")
+    assert other.recover_secrets(other.get("sheets"), {"env": {"SERVICE_ACCOUNT_PATH": "E:\\sa.json"}}) == ["SERVICE_ACCOUNT_PATH"]
+    assert other.recover_secrets(other.get("sheets"), {"env": {"SERVICE_ACCOUNT_PATH": "F:\\x"}}) == []
+    # typed into 環境變數 in the dialog: moved to secrets as well
+    L.save({"key": "tool", "type": "command", "command": "x.exe", "env": {"CFG": "C:\\tool\\cfg.ini"}})
+    assert L.get("tool")["secrets"] == ["CFG"] and "env" not in L.get("tool")
+    # password-protected bundle
+    L.set_secrets({"API_KEY": "k1"})
+    sealed = secretbox.seal(L.secrets(), "pw")
+    assert "k1" not in sealed and "sa.json" not in sealed
+    with pytest.raises(ValueError):
+        secretbox.open_sealed(sealed, "wrong")
+    values = secretbox.open_sealed(sealed, "pw")
+    add, added, kept = secretbox.merge(other.secrets(), values)
+    assert added == ["API_KEY", "CFG"] and kept == ["SERVICE_ACCOUNT_PATH"]   # E:\sa.json on the second computer stays

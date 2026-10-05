@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from agentdock.paths import ROOT, data_dir, gui_python
+from agentdock.paths import ROOT, data_dir, gui_command
 from agentdock.broker import PROTOCOL
 
 
@@ -69,7 +69,7 @@ def ensure_app() -> BrokerClient:
     if sys.platform == "win32":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     # stdout must never be inherited: it is the MCP stdio channel.
-    subprocess.Popen([gui_python(), "-m", "agentdock", "--background"], cwd=str(ROOT), env=env,
+    subprocess.Popen(gui_command("--background"), cwd=str(ROOT), env=env,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      creationflags=flags, start_new_session=sys.platform != "win32")
     for _ in range(100):
@@ -77,4 +77,4 @@ def ensure_app() -> BrokerClient:
         ready = _find()
         if ready:
             return ready
-    raise RuntimeError("AgentDock 未能啟動。請手動執行 Start AgentDock.cmd 檢查錯誤。")
+    raise RuntimeError("AgentDock 未能啟動。請手動雙擊 AgentDock.exe 檢查錯誤。")

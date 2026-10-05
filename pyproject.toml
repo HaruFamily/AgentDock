@@ -1,6 +1,6 @@
 [project]
 name = "agentdock"
-version = "0.6.0"
+version = "0.7.1"
 description = "Personal floating Agent workbench: QAI ask_user answer panel + Agent/MCP config management"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
   "tomlkit>=0.13",
   "pydantic>=2.7",
   "psutil>=5.9",
+  "cryptography>=42",
 ]
 
 [dependency-groups]

@@ -10,9 +10,10 @@ resolution-markers = [
 
 [[package]]
 name = "agentdock"
-version = "0.6.0"
+version = "0.7.1"
 source = { virtual = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "mcp" },
     { name = "psutil" },
     { name = "pydantic" },
@@ -27,6 +28,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42" },
     { name = "mcp", specifier = ">=1.20,<2" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.7" },

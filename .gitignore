@@ -1,5 +1,7 @@
 # personal runtime data (agents, questions, attachments, backups of state)
 data/
+# local Git history archives may contain personal historical source
+docs/history/local-backups/
 .venv/
 __pycache__/
 *.pyc
@@ -7,3 +9,6 @@ __pycache__/
 
 # legacy Electron build (0.5); delete after confirming the Python version works
 output/
+
+# folder-local Python, uv, packages and caches (AgentDock.exe prepares it)
+runtime/

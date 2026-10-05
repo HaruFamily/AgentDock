@@ -11,7 +11,6 @@ import json
 import re
 import os
 import shutil
-import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +18,7 @@ from typing import Any, Literal
 
 import tomlkit
 
-from agentdock.files import atomic_json, atomic_write, load_json, read_text
+from agentdock.files import atomic_json, atomic_write, backup_path, load_json, prune_backups, read_text
 
 Kind = Literal["codex", "opencode", "claude-code", "claude-desktop"]
 KINDS: dict[str, str] = {"codex": "Codex", "opencode": "OpenCode", "claude-code": "Claude Code", "claude-desktop": "Claude Desktop / Cowork"}
@@ -33,7 +32,11 @@ def default_path(kind: str) -> str:
     if kind == "codex":
         return str(Path(os.environ.get("CODEX_HOME") or home / ".codex") / "config.toml")
     if kind == "opencode":
-        return str(home / ".config" / "opencode" / "opencode.json")
+        folder = home / ".config" / "opencode"
+        # OpenCode reads opencode.json and opencode.jsonc; use the one that already exists.
+        if not (folder / "opencode.json").exists() and (folder / "opencode.jsonc").exists():
+            return str(folder / "opencode.jsonc")
+        return str(folder / "opencode.json")
     if kind == "claude-code":
         return str(home / ".claude.json")
     # Claude Desktop: the Microsoft Store (MSIX) build redirects AppData\Roaming into its package.
@@ -381,8 +384,9 @@ class AgentManager:
                 path = Path(f.profile.path)
                 backup = None
                 if path.exists():
-                    backup = path.with_name(f"{path.name}.agentdock-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.bak")
+                    backup = backup_path(path)
                     shutil.copy2(path, backup)
+                    prune_backups(path)
                 # Write parked entries first so a failed config write never loses their values.
                 for target, text in ((self._parked_path(f.profile), json.dumps(f.parked, ensure_ascii=False)), (path, f.next)):
                     existed, before = target.exists(), read_text(target)

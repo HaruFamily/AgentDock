@@ -1,8 +1,22 @@
 """Small shared widgets for the flat, list-style panels."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QColor, QPainter, QLinearGradient, QPen
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from agentdock.ui import theme
+
+
+class RibbonBar(QFrame):
+    """Shared striped ribbon footer; the clean look retains the standard frame."""
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        super().paintEvent(e)
+        if not theme.CUTE:
+            return
+        if theme.PRIVATE:
+            theme.PRIVATE.draw_bar(self)
+
 
 
 def icon_button(text: str, tip: str, *, danger: bool = False) -> QPushButton:

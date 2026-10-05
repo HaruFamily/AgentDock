@@ -5,6 +5,7 @@
 - [DEVELOPMENT](DEVELOPMENT.md)：執行、測試、加入外部工具。
 - [VERIFICATION](VERIFICATION.md)：已完成的驗證與尚待實機確認的項目。
 - [CHANGELOG](history/CHANGELOG.md)：版本歷史。
+- [ARCHIVES](history/ARCHIVES.md)：本機歷史備份的存放與分享邊界。
 - [agentdock-maintainer](skills/agentdock-maintainer/SKILL.md)：Agent 維護流程。
 
 文件不保存個人對話、權杖、附件或測試設定。

@@ -1,5 +1,2 @@
 @echo off
-cd /d "%~dp0"
-uv sync || (pause & exit /b 1)
-uv run pytest -q
-pause
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\test.ps1"

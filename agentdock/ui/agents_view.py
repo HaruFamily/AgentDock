@@ -1,21 +1,22 @@
 """Agent page: MCP library on top, Agent cards below. Changes queue up and are written in one preview/apply."""
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
-                               QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
+                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
                                QVBoxLayout, QWidget)
 
 from agentdock import clients
-from agentdock.agents import KINDS, AgentManager, Plan, default_path
+from agentdock.agents import KINDS, QAI_NAMES, AgentManager, default_path
+from agentdock.extensions import PRESETS, UNSUPPORTED, ExtensionManager, merge_summary
 from agentdock.library import DEFAULT_ASSET, QAI_KEY, TYPES, Library
 from agentdock.ui.qa_view import button, chip, label
-from agentdock.ui.widgets import ElidedLabel, Row, dot, icon_button, muted
+from agentdock.ui.widgets import DRAG_MIME, ElidedLabel, RibbonBar, Row, icon_button, muted
 
 
 def _top(flags: Qt.WindowType = Qt.WindowType.Dialog) -> Qt.WindowType:
@@ -24,13 +25,13 @@ def _top(flags: Qt.WindowType = Qt.WindowType.Dialog) -> Qt.WindowType:
 
 # ============================================================================ dialogs
 class PreviewDialog(QDialog):
-    def __init__(self, plan: Plan, parent: QWidget) -> None:
+    def __init__(self, summary: list[dict[str, Any]], parent: QWidget) -> None:
         super().__init__(parent, _top())
         self.setWindowTitle("確認變更")
         self.setMinimumWidth(420)
         lay = QVBoxLayout(self)
         lay.addWidget(label("以下設定檔會先備份再寫入：", muted=True))
-        for item in plan.summary:
+        for item in summary:
             box = QFrame()
             box.setProperty("card", True)
             bl = QVBoxLayout(box)
@@ -158,8 +159,8 @@ class McpDialog(QDialog):
         self.w["exe"].setPlaceholderText("壓縮檔內的執行檔名，例如 codebase-memory-mcp.exe")
         self.w["command"].setPlaceholderText("可用 {HOME}、{AGENTDOCK}、{BIN} 等佔位符")
         self.w["args"].setPlaceholderText("一行一個參數")
-        self.w["env"].setPlaceholderText("KEY=VALUE，一行一個（會進 Git，不要放祕密）")
-        self.w["secrets"].setPlaceholderText("API_KEY=值，一行一個（只存在本機 data\\secrets.json）\n編輯時留空值＝保留原本的值")
+        self.w["env"].setPlaceholderText("KEY=VALUE，一行一個（會進 Git，不要放祕密；本機路徑會自動移到下一欄）")
+        self.w["secrets"].setPlaceholderText("API_KEY=值、本機檔案路徑，一行一個（只存在本機 data\\secrets.json）\n編輯時留空值＝保留原本的值")
         self.w["timeout_sec"].setRange(0, 86400)
         self.w["timeout_sec"].setSpecialValueText("預設")
         self.w["local"].setPlaceholderText("已用官方安裝程式裝過時的位置，一行一個，例如\n{LOCALAPPDATA}\\Programs\\xxx\\xxx.exe")
@@ -168,7 +169,7 @@ class McpDialog(QDialog):
             self.w[edit].setFixedHeight(64)
         labels = {"key": "名稱", "description": "說明", "url": "網址", "package": "套件", "repo": "GitHub 專案",
                   "asset": "檔案規則", "tag": "版本", "exe": "執行檔", "download_url": "下載網址", "command": "指令", "local": "本機已安裝", "options": "執行選項",
-                  "args": "參數", "env": "環境變數", "secrets": "祕密", "timeout_sec": "逾時（秒）"}
+                  "args": "參數", "env": "環境變數", "secrets": "祕密／本機路徑", "timeout_sec": "逾時（秒）"}
         self.form.addRow("類型", self.type)
         for key, widget in self.w.items():
             self.form.addRow(labels[key], widget)
@@ -234,10 +235,152 @@ class McpDialog(QDialog):
 
 
 # ============================================================================ background worker
+class ExtensionDialog(QDialog):
+    """Add or edit an extension: same field-by-field form as MCP, plus how it plugs into each Agent type."""
+    FIELDS = {"github": ["repo", "asset", "tag", "exe"], "download": ["download_url", "exe"], "command": ["command"]}
+    HOOK_KINDS = {"claude-code": "Claude Code", "codex": "Codex"}
+
+    def __init__(self, parent: QWidget | None, library: Library, entry: dict[str, Any] | None = None) -> None:
+        super().__init__(parent, _top())
+        self.library, self.original, self.saved = library, entry, None
+        self.setWindowTitle("編輯擴充" if entry else "新增擴充")
+        self.setMinimumWidth(500)
+        outer = QVBoxLayout(self)
+        if not entry:
+            from agentdock.extensions import PRESETS
+            for preset in PRESETS:
+                b = button(f"套用範例：{preset['key']}", flat=True)
+                b.clicked.connect(lambda _=False, p=preset: self._load(p))
+                outer.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+        self.form = QFormLayout()
+        outer.addLayout(self.form)
+        self.type = QComboBox()
+        for key in self.FIELDS:
+            self.type.addItem({"command": "已安裝的指令"}.get(key, TYPES[key]), key)
+        self.w: dict[str, QWidget] = {k: QLineEdit() for k in
+                                      ("key", "description", "repo", "asset", "tag", "exe", "download_url", "command")}
+        self.w["key"].setPlaceholderText("例如 rtk")
+        self.w["repo"].setPlaceholderText("owner/repo，例如 rtk-ai/rtk")
+        self.w["asset"].setPlaceholderText(f"檔名規則（預設 {DEFAULT_ASSET}）")
+        self.w["tag"].setPlaceholderText("latest")
+        self.w["exe"].setPlaceholderText("壓縮檔內的執行檔名，例如 rtk.exe")
+        self.w["download_url"].setPlaceholderText("https://…")
+        self.w["command"].setPlaceholderText("PATH 上的指令名稱或完整路徑，例如 rtk")
+        labels = {"key": "名稱", "description": "說明", "repo": "GitHub 專案", "asset": "檔案規則", "tag": "版本",
+                  "exe": "執行檔", "download_url": "下載網址", "command": "指令"}
+        self.form.addRow("類型", self.type)
+        for key, widget in self.w.items():
+            self.form.addRow(labels[key], widget)
+        self.path = QCheckBox("Agent 用名稱呼叫它（需要在 PATH 上）")
+        self.path.setChecked(True)
+        self.form.addRow("", self.path)
+
+        self.form.addRow(self._group_title("接到哪些 Agent"))
+        self.hooks: dict[str, dict[str, Any]] = {}
+        for kind, title in self.HOOK_KINDS.items():
+            on = QCheckBox(f"{title}：hook")
+            event, matcher, command = QLineEdit("PreToolUse"), QLineEdit("Bash"), QLineEdit()
+            event.setPlaceholderText("事件")
+            matcher.setPlaceholderText("工具")
+            command.setPlaceholderText("hook 指令，例如 rtk hook " + ("claude" if kind == "claude-code" else "codex"))
+            pair = QHBoxLayout()
+            pair.addWidget(event, 1)
+            pair.addWidget(matcher, 1)
+            self.form.addRow(on, pair)
+            self.form.addRow("", command)
+            self.hooks[kind] = {"on": on, "event": event, "matcher": matcher, "command": command, "extra": {}}
+            on.toggled.connect(self._sync)
+        plugin_on = QCheckBox("OpenCode：plugin")
+        plugin, source = QLineEdit(), QLineEdit()
+        plugin.setPlaceholderText("檔名，例如 rtk.ts")
+        source.setPlaceholderText("範本檔，例如 {AGENTDOCK}/agentdock/assets/opencode/rtk.ts")
+        browse = button("瀏覽…")
+        browse.clicked.connect(self._browse_source)
+        row = QHBoxLayout()
+        row.addWidget(source, 1)
+        row.addWidget(browse)
+        self.form.addRow(plugin_on, plugin)
+        self.form.addRow("", row)
+        self.hooks["opencode"] = {"on": plugin_on, "plugin": plugin, "source": source, "browse": browse, "extra": {}}
+        plugin_on.toggled.connect(self._sync)
+        self.form.addRow("", label("Claude Desktop／Cowork 沒有 hook 機制，無法加入。", muted=True))
+
+        self.type.currentIndexChanged.connect(self._sync)
+        if entry:
+            self._load(entry)
+        self._sync()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        self.error = label("", name="Notice")
+        self.error.hide()
+        outer.addWidget(self.error)
+        outer.addWidget(buttons)
+
+    @staticmethod
+    def _group_title(text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setObjectName("GroupLabel")
+        return lab
+
+    def _browse_source(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "選擇 OpenCode plugin 範本", "", "Plugin (*.ts *.js)")
+        if path:
+            self.hooks["opencode"]["source"].setText(path)
+
+    def _sync(self) -> None:
+        shown = set(self.FIELDS[self.type.currentData()]) | {"key", "description"}
+        for key, widget in self.w.items():
+            self.form.setRowVisible(widget, key in shown)
+        for kind, h in self.hooks.items():
+            on = h["on"].isChecked()
+            for name in ("event", "matcher", "command", "plugin", "source", "browse"):
+                if name in h:
+                    h[name].setEnabled(on)
+
+    def _load(self, e: dict[str, Any]) -> None:
+        self.type.setCurrentIndex(max(0, self.type.findData(e.get("type", "github"))))
+        for key, widget in self.w.items():
+            widget.setText(str(e.get(key, "")))
+        self.path.setChecked(bool(e.get("path", True)))
+        hooks = e.get("hooks", {})
+        for kind, h in self.hooks.items():
+            spec = dict(hooks.get(kind) or {})
+            h["on"].setChecked(bool(spec))
+            for name in ("event", "matcher", "command", "plugin", "source"):
+                if name in h and name in spec:
+                    h[name].setText(str(spec.pop(name)))
+            h["extra"] = spec  # keep fields the form does not show (e.g. timeout)
+        self._sync()
+
+    def _save(self) -> None:
+        try:
+            t = self.type.currentData()
+            entry: dict[str, Any] = {"type": t}
+            if self.original:  # keep anything the form does not edit
+                entry = {**{k: v for k, v in self.original.items() if k not in self.w and k not in ("hooks", "path")}, "type": t}
+            for key in ("key", "description", *self.FIELDS[t]):
+                entry[key] = self.w[key].text().strip()
+            entry["path"] = self.path.isChecked()
+            hooks: dict[str, Any] = {}
+            for kind, h in self.hooks.items():
+                if not h["on"].isChecked():
+                    continue
+                names = ("plugin", "source") if kind == "opencode" else ("event", "matcher", "command")
+                hooks[kind] = {**h["extra"], **{n: h[n].text().strip() for n in names}}
+            entry["hooks"] = hooks
+            self.saved = self.library.save_extension(entry, replace=self.original["key"] if self.original else None)
+            self.accept()
+        except Exception as e:
+            self.error.setText(str(e))
+            self.error.show()
+
+
 class _Worker(QObject):
     progress = Signal(str)
     done = Signal(str, str)  # (key, message; "!" prefix = error)
     updates = Signal(dict)  # {key: latest_tag}
+    tested = Signal(str, str)  # (key, report)
 
 
 # ============================================================================ building blocks
@@ -428,6 +571,8 @@ def _type_rank(t: str) -> int:
 
 # ============================================================================ main view
 class AgentsView(QWidget):
+    summary_changed = Signal(str, bool)  # one line for the floating card, alert
+
     def __init__(self, manager: AgentManager, library: Library, on_changed: Callable[[], None] = lambda: None,
                  ui_state: dict[str, Any] | None = None, save_state: Callable[[], None] = lambda: None) -> None:
         super().__init__()
@@ -437,6 +582,9 @@ class AgentsView(QWidget):
         self.ui_state = ui_state if ui_state is not None else {}
         self.save_state = save_state
         self.ops: list[dict[str, Any]] = []
+        self.ext = ExtensionManager(library)
+        self.ext_ops: list[dict[str, Any]] = []   # [{profile, ext, op: install|uninstall}]
+        self.ext_pending_delete: set[str] = set()  # removed from the library once their uninstalls are applied
         self.busy: set[str] = set()
         self.needs: list[dict[str, Any]] = []      # agent entries out of sync with the library
         self.new_versions: list[dict[str, Any]] = []  # library entries with a newer GitHub release
@@ -444,12 +592,23 @@ class AgentsView(QWidget):
         self._worker.progress.connect(lambda text: self.info(text, sticky=True))
         self._worker.done.connect(self._download_done)
         self._worker.updates.connect(lambda _u: self.refresh())
+        self._worker.tested.connect(self._test_done)
         self._notice_timer = QTimer(self, singleShot=True, interval=8000)
         self._restart_timer = QTimer(self, interval=30000)
         self._restart_timer.timeout.connect(self.check_restarts)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        settings_actions = QHBoxLayout()
+        settings_actions.setContentsMargins(16, 4, 14, 4)
+        settings_actions.addStretch()
+        self.settings_menu_button = button("設定選單", flat=True)
+        settings_menu = QMenu(self.settings_menu_button)
+        backup_menu = settings_menu.addMenu("進階／備份與還原")
+        backup_menu.addAction("匯出敏感設定（加密）…", lambda: self.guard(self._export_secrets))
+        backup_menu.addAction("匯入敏感設定（加密）…", lambda: self.guard(self._import_secrets))
+        self.settings_menu_button.setMenu(settings_menu)
+        settings_actions.addWidget(self.settings_menu_button)
         self.notice = QLabel("")
         self.notice.setObjectName("Toast")
         self.notice.setWordWrap(True)
@@ -457,6 +616,15 @@ class AgentsView(QWidget):
         self._notice_timer.timeout.connect(self.notice.hide)
         root.addWidget(self.notice)
         scroll = QScrollArea()
+        self.scroll = scroll
+        self._keep_scroll: int | None = None
+        self._keep_timer = QTimer(self, singleShot=True, interval=400)
+        self._keep_timer.timeout.connect(lambda: setattr(self, "_keep_scroll", None))
+
+        def hold(_min: int, maximum: int) -> None:
+            if self._keep_scroll is not None:
+                scroll.verticalScrollBar().setValue(min(self._keep_scroll, maximum))
+        scroll.verticalScrollBar().rangeChanged.connect(hold)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.body = QWidget()
@@ -465,7 +633,7 @@ class AgentsView(QWidget):
         self.lay.setSpacing(14)
         scroll.setWidget(self.body)
         root.addWidget(scroll, 1)
-        self.bar = QFrame()
+        self.bar = RibbonBar()
         self.bar.setObjectName("ActionBar")
         bl = QHBoxLayout(self.bar)
         bl.setContentsMargins(14, 8, 12, 8)
@@ -482,6 +650,7 @@ class AgentsView(QWidget):
         bl.addWidget(self.update_btn)
         bl.addWidget(self.apply_btn)
         root.addWidget(self.bar)
+        root.addLayout(settings_actions)
         self.refresh()
 
     # ------------------------------------------------------------------ helpers
@@ -520,7 +689,7 @@ class AgentsView(QWidget):
         return fold
 
     def _sort(self, which: str) -> str:
-        default = {"agents": "custom", "agent_mcp": "name", "library": "name"}[which]
+        default = {"agents": "custom", "agent_mcp": "name", "library": "name"}.get(which, "name")
         return self.ui_state.get("sort", {}).get(which, default)
 
     def _set_sort(self, which: str, value: str) -> None:
@@ -532,7 +701,7 @@ class AgentsView(QWidget):
         """⇅ menu. items: [(setting key, {value: label}), ...] — one checkable group per setting."""
         btn = icon_button("⇅", "排序")
         menu = QMenu(btn)
-        titles = {"agents": "Agent 排序", "agent_mcp": "Agent 內的 MCP 排序", "library": "排序"}
+        titles = {"agents": "Agent 排序", "agent_mcp": "Agent 內的 MCP 排序", "library": "排序", "extensions": "排序"}
         for n, (which, options) in enumerate(items):
             if n:
                 menu.addSeparator()
@@ -568,25 +737,56 @@ class AgentsView(QWidget):
             self.ops.append({"profile": pid, "server": server, "op": op, **({"entry": entry} if entry is not None else {})})
         self.refresh()
 
+    def _ext_op(self, pid: str, key: str) -> dict[str, Any] | None:
+        return next((o for o in self.ext_ops if o["profile"] == pid and o["ext"] == key), None)
+
+    def _set_ext_op(self, pid: str, key: str, op: str | None) -> None:
+        self.ext_ops = [o for o in self.ext_ops if not (o["profile"] == pid and o["ext"] == key)]
+        if op:
+            self.ext_ops.append({"profile": pid, "ext": key, "op": op})
+        self.refresh()
+
     def _clear_ops(self) -> None:
         self.ops.clear()
+        self.ext_ops.clear()
+        self.ext_pending_delete.clear()
         self.refresh()
 
     def _apply(self) -> None:
         plan = self.manager.prepare(self.ops)
-        if not plan.files:
+        ext_plan = self.ext.prepare(self.ext_ops, self.manager.list())
+        if not plan.files and not ext_plan.files:
+            self.ops.clear()
+            self.ext_ops.clear()
             self.info("沒有需要變更的設定。")
             return
-        if PreviewDialog(plan, self).exec() != QDialog.DialogCode.Accepted:
+        summary = merge_summary(plan.summary, [s for s in ext_plan.summary if ext_plan.files])
+        if PreviewDialog(summary, self).exec() != QDialog.DialogCode.Accepted:
             return
-        results = self.manager.apply(plan)
+        results = self.manager.apply(plan) if plan.files else []
+        try:
+            results += self.ext.apply(ext_plan) if ext_plan.files else []
+        except Exception as e:
+            self.ops.clear()  # the MCP part is already written
+            raise RuntimeError(f"MCP 設定已寫入，但擴充寫入失敗：{e}") from None
+        known = self.ui_state.get("known_mcp", {})
+        for op in self.ops:   # removed on purpose: not "missing" later
+            if op["op"] == "remove" and op["server"] in known.get(op["profile"], []):
+                known[op["profile"]].remove(op["server"])
         self.ops.clear()
-        for entry in self.library.entries():
+        self.ext_ops.clear()
+        for key in self.ext_pending_delete:
+            self.library.remove_extension(key)
+        self.ext_pending_delete.clear()
+        for entry in self.library.entries() + self.library.extensions():
             self.library.cleanup(entry)
         now = time.time()
         restart = self.ui_state.setdefault("restart", {})
         for f in plan.files:
             restart[f.profile.id] = now
+        if ext_plan.files:
+            for pid in ext_plan.profiles:
+                restart[pid] = now
         self.save_state()
         backups = [r["backup"] for r in results if r["backup"]]
         self.info("已套用。標示「需重啟」的 Agent 重開後生效。" + (f"（已備份 {len(backups)} 個設定檔）" if backups else ""))
@@ -632,10 +832,90 @@ class AgentsView(QWidget):
         for need in self.needs:
             if not self._op_for(need["profile"], need["server"]):
                 self.ops.append(need)
+        for need in self.ext_needs:
+            if not self._ext_op(need["profile"], need["ext"]):
+                self.ext_ops.append(need)
         if self.new_versions:
             self.info("正在下載新版，完成後會自動排入待套用。", sticky=True)
 
+    # ------------------------------------------------------------------ secrets between computers
+    def _password(self, title: str, label: str) -> str | None:
+        text, ok = QInputDialog.getText(self, title, label, QLineEdit.EchoMode.Password)
+        return text if ok else None
+
+    def _export_secrets(self) -> None:
+        from pathlib import Path
+        from agentdock import secretbox
+        values = {k: v for k, v in self.library.secrets().items() if v}
+        if not values:
+            self.info("這台電腦還沒有任何敏感設定可以匯出。")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "匯出敏感設定（加密）", str(Path.home() / "AgentDock.adsecrets"),
+                                              "AgentDock 加密設定 (*.adsecrets)")
+        if not path:
+            return
+        first = self._password("匯出敏感設定（加密）", f"設定一組密碼（匯入時要用；共 {len(values)} 項）：")
+        if first is None:
+            return
+        if self._password("匯出敏感設定（加密）", "再輸入一次密碼：") != first:
+            raise ValueError("兩次密碼不一樣，沒有匯出。")
+        Path(path).write_text(secretbox.seal(values, first), encoding="utf-8")
+        self.info(f"已匯出 {len(values)} 項到 {path}。這個檔案用密碼加密；帶到另一台電腦後在這裡「匯入敏感設定（加密）」。")
+
+    def _import_secrets(self) -> None:
+        from pathlib import Path
+        from agentdock import secretbox
+        path, _ = QFileDialog.getOpenFileName(self, "匯入敏感設定（加密）", str(Path.home()), "AgentDock 加密設定 (*.adsecrets)")
+        if not path:
+            return
+        password = self._password("匯入敏感設定（加密）", "匯出時設定的密碼：")
+        if password is None:
+            return
+        incoming = secretbox.open_sealed(Path(path).read_text(encoding="utf-8"), password)
+        add, added, kept = secretbox.merge(self.library.secrets(), incoming)
+        if add:
+            self.library.set_secrets(add)
+        parts = [f"已加入 {len(added)} 項" if added else "沒有新的項目"]
+        if kept:
+            parts.append(f"{len(kept)} 項保留這台電腦原本的值（{'、'.join(kept)}；本機路徑多半本來就不同）")
+        self.info("；".join(parts) + "。用到它們的 MCP 會在「全部更新」時套用。")
+
     # ------------------------------------------------------------------ data
+    def _track_known(self, rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+        """Notice MCPs that disappeared from an Agent's config without going through AgentDock (a client update
+        that rewrote its settings, another tool, a hand edit). ui.json keeps the names last seen per Agent;
+        removals done here (or dismissed with ×) are dropped from it, so only outside removals show up."""
+        known: dict[str, list[str]] = self.ui_state.setdefault("known_mcp", {})
+        ids = {row["id"] for row in rows}
+        changed = False
+        for pid in [p for p in known if p not in ids]:
+            known.pop(pid)
+            changed = True
+        missing: dict[str, list[str]] = {}
+        for row in rows:
+            if row["error"] or not row["exists"]:
+                continue   # unreadable or not there yet: nothing to compare
+            current = {s["name"] for s in row["servers"]}
+            before = set(known.get(row["id"], current))
+            gone = sorted(n for n in before - current
+                          if not (n in QAI_NAMES and current & set(QAI_NAMES)))   # QAI renamed, not removed
+            if gone:
+                missing[row["id"]] = gone
+            now = sorted(current | set(gone))
+            if known.get(row["id"]) != now:
+                known[row["id"]] = now
+                changed = True
+        if changed:
+            self.save_state()
+        return missing
+
+    def _forget_missing(self, pid: str, name: str) -> None:
+        names = self.ui_state.get("known_mcp", {}).get(pid, [])
+        if name in names:
+            names.remove(name)
+            self.save_state()
+        self.refresh()
+
     def _adopt_unknown(self, rows: list[dict[str, Any]]) -> None:
         """Everything an agent already uses becomes a library entry, so "not in library" never shows up."""
         for row in rows:
@@ -651,12 +931,36 @@ class AgentsView(QWidget):
 
     # ------------------------------------------------------------------ render
     def refresh(self) -> None:
+        """Rebuild the page, keeping the scroll position (so a change never sends you back to the top)."""
+        bar = self.scroll.verticalScrollBar() if hasattr(self, "scroll") else None
+        keep = bar.value() if bar else 0
+        self.body.setUpdatesEnabled(False)
+        try:
+            self._rebuild()
+        finally:
+            self.body.setUpdatesEnabled(True)
+        if bar:
+            # The rebuilt page reaches its final height over a few layout passes; re-apply the position
+            # whenever the scroll range changes until things settle.
+            self._keep_scroll = keep
+            bar.setValue(keep)
+            self._keep_timer.start()
+
+    def _rebuild(self) -> None:
         self._clear_layout(self.lay)
         rows = self.manager.inspect()
+        self.missing = self._track_known(rows)
         self._adopt_unknown(rows)
         self.library.upgrade_commands()
+        self.library.localize_paths()
+        for row in rows:
+            for server in row["servers"]:
+                entry = self.library.get(server["name"])
+                if entry and entry.get("secrets"):
+                    self.library.recover_secrets(entry, server["config"])
         entries = self.library.entries()
         self.needs, self.new_versions = [], []
+        self.ext_needs: list[dict[str, Any]] = []  # extension ops that bring an Agent up to date
 
         agents = self._fold("section:agents", "Agent", section=True)
         add_agent = icon_button("＋", "新增 Agent")
@@ -700,22 +1004,26 @@ class AgentsView(QWidget):
             lib.body_lay.addWidget(self._library_row(entry))
         lib.set_badge(f"({len(entries)}{'*' if self._lib_alerts else ''})", alert=bool(self._lib_alerts))
         self.lay.addWidget(lib)
+        self.lay.addWidget(self._extension_section())
         self.lay.addStretch()
         self._paint_bar()
+        self._emit_summary(len(rows))
 
     def _paint_bar(self) -> None:
         pending_needs = [n for n in self.needs if not self._op_for(n["profile"], n["server"])]
+        pending_needs += [n for n in getattr(self, "ext_needs", []) if not self._ext_op(n["profile"], n["ext"])]
         updates = len(pending_needs) + len(self.new_versions)
+        pending = len(self.ops) + len(self.ext_ops)
         parts = []
         if updates:
             parts.append(f"{updates} 項需要更新")
-        if self.ops:
-            parts.append(f"{len(self.ops)} 項變更待套用")
+        if pending:
+            parts.append(f"{pending} 項變更待套用")
         self.bar.setVisible(bool(parts))
         self.bar_label.setText("  ·  ".join(parts))
         self.update_btn.setVisible(bool(updates))
-        self.apply_btn.setVisible(bool(self.ops))
-        self.clear_btn.setVisible(bool(self.ops))
+        self.apply_btn.setVisible(bool(pending))
+        self.clear_btn.setVisible(bool(pending))
 
     def _agent_group(self, row: dict[str, Any]) -> QWidget:
         pid = row["id"]
@@ -766,25 +1074,55 @@ class AgentsView(QWidget):
                     0 if server["enabled"] else 1,                          # disabled after active
                     server["name"].lower())
 
+        pending = [{"name": op["server"], "enabled": True, "system": False, "qai": op["server"] == QAI_KEY,
+                    "config": op.get("entry"), "_pending": True}
+                   for op in self.ops if op["profile"] == pid and op["op"] == "add"
+                   and op["server"] not in {s["name"] for s in row["servers"]}]
         group = None
-        for server in sorted(row["servers"], key=order):
-            present.add(server["name"])
+        for server in sorted(row["servers"] + pending, key=order):  # a queued addition shows where it will end up
             t = mcp_type(server)
+            if server.get("_pending"):
+                if by_type and t not in ("builtin", "_system") and t != group:
+                    group = t
+                    fold.body_lay.addWidget(self._group_label(TYPE_GROUP.get(t, t)))
+                line = Row(server["name"], note="將加入")
+                undo = icon_button("↶", "復原")
+                undo.clicked.connect(lambda _=False, n=server["name"]: self._set_op(pid, n, None))
+                line.add(undo)
+                fold.body_lay.addWidget(line)
+                continue
+            present.add(server["name"])
             if by_type and t not in ("builtin", "_system") and t != group:
                 group = t
                 fold.body_lay.addWidget(self._group_label(TYPE_GROUP.get(t, t)))
             line, alert = self._server_row(profile, row, server)
             alerts += alert
             fold.body_lay.addWidget(line)
-        for op in self.ops:
-            if op["profile"] == pid and op["op"] == "add" and op["server"] not in present:
-                line = Row(op["server"], note="將加入")
-                undo = icon_button("↶", "復原")
-                undo.clicked.connect(lambda _=False, n=op["server"]: self._set_op(pid, n, None))
-                line.add(undo)
-                fold.body_lay.addWidget(line)
-        if not row["servers"] and not any(o["profile"] == pid for o in self.ops):
+        for name in self.missing.get(pid, []):
+            if self._op_for(pid, name):
+                continue
+            entry = self.library.get(name)
+            line = Row(name, note="被移除了", alert="這個 MCP 被其他程式從設定檔移除了（例如客戶端更新時重寫設定）。"
+                                                   "按「補回」加回來；確定不要了就按 ×。")
+            if entry:
+                rendered = self.library.render(entry, row["kind"], profile)
+                self.needs.append({"profile": pid, "server": name, "op": "add", "entry": rendered})
+                back = icon_button("補回", "加回這個 MCP（和其他變更一起預覽後寫入）")
+                back.setProperty("small", True)
+                back.clicked.connect(lambda _=False, e=entry: self.guard(lambda: (self._add_to_agent(row, e), self.refresh())))
+                line.add(back)
+            forget = icon_button("×", "不要了：之後不再提醒")
+            forget.clicked.connect(lambda _=False, n=name: self._forget_missing(pid, n))
+            line.add(forget)
+            fold.body_lay.addWidget(line)
+            alerts += 1
+        if not row["servers"] and not any(o["profile"] == pid for o in self.ops) and not self.missing.get(pid):
             fold.body_lay.addWidget(muted("沒有 MCP"))
+        ext_rows = self._extension_rows(profile)
+        if ext_rows:
+            fold.body_lay.addWidget(self._group_label("擴充"))
+            for line in ext_rows:
+                fold.body_lay.addWidget(line)
         fold.set_meta(kind)
         fold.set_badge(f"({len(row['servers'])}{'*' if alerts else ''})", alert=bool(alerts))
         self._agent_alerts += int(bool(alerts))
@@ -885,6 +1223,7 @@ class AgentsView(QWidget):
             if installed:
                 menu.addAction("重新下載", lambda e=entry: self._download(e))
             menu.addSeparator()
+        menu.addAction("測試（各 Agent 目前的設定）", lambda k=key: self._test_mcp(k))
         menu.addAction("編輯…", lambda e=entry: self._edit_mcp(e))
         menu.addAction("刪除…", lambda k=key: self.guard(lambda: self._delete_mcp(k)))
         more.clicked.connect(lambda _=False, m=menu, b=more: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
@@ -932,6 +1271,13 @@ class AgentsView(QWidget):
             problems = self.library.problems(entry)
             action = menu.addAction(f"{title}（{'、'.join(problems)}）" if problems else title)
             action.triggered.connect(lambda _=False, e=entry: self.guard(lambda: self._add_to_agent(row, e)))
+        exts = self._addable_extensions(self.manager.get(row["id"]))
+        if exts:
+            menu.addSection("擴充")
+            for entry in exts:
+                problems = self.library.ext_problems(entry)
+                action = menu.addAction(f"{entry['key']}（{'、'.join(problems)}）" if problems else entry["key"])
+                action.triggered.connect(lambda _=False, e=entry: self._set_ext_op(row["id"], e["key"], "install"))
         menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
     def _add_to_agent(self, row: dict[str, Any], entry: dict[str, Any]) -> None:
@@ -1007,6 +1353,12 @@ class AgentsView(QWidget):
         key = entry["key"]
         if key in self.busy:
             return
+        target = self.library.deploy_target(entry) if "hooks" in entry else None
+        if target is not None and update and not self.library.managed_by_agentdock(entry):
+            answer = QMessageBox.question(self, f"更新 {key}", f"Agent 目前用的是\n{target}\n（不是 AgentDock 安裝的）。\n\n"
+                                          "下載新版後會直接取代這個檔案，所有 Agent 都會改用新版。繼續？")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self.busy.add(key)
         self.info(f"準備{'更新' if update else '下載'} {key}…")
         self.refresh()
@@ -1026,13 +1378,17 @@ class AgentsView(QWidget):
             self.refresh()
             self.info(message[1:], error=True)
             return
+        ext = self.library.get_extension(key)
+        if ext:
+            self._extension_updated(ext, message)
+            return
         n = self.queue_updates(key)
         self.refresh()
         self.info(message + (f"；{n} 個 Agent 會一起改用新版，按「預覽並套用」後重開客戶端。" if n else ""))
 
     def check_updates(self) -> None:
         """Background, at most once a day per MCP (see Library.check_update)."""
-        self._check_updates([e for e in self.library.entries() if e["type"] == "github"])
+        self._check_updates([e for e in self.library.entries() + self.library.extensions() if e["type"] == "github"])
 
     def _check_updates(self, entries: list[dict[str, Any]], force: bool = False) -> None:
         def run() -> None:
@@ -1049,3 +1405,275 @@ class AgentsView(QWidget):
                 self._worker.progress.emit("、".join(f"{k} 有新版 {v}" for k, v in found.items()) or "已是最新版本。")
 
         threading.Thread(target=run, daemon=True).start()
+
+    # ------------------------------------------------------------------ extensions (hooks / plugins)
+    def _addable_extensions(self, profile: Any) -> list[dict[str, Any]]:
+        return [e for e in self.library.extensions()
+                if self.ext.status(e, profile) is False and not self._ext_op(profile.id, e["key"])]
+
+    def _extension_rows(self, profile: Any) -> list[QWidget]:
+        out: list[QWidget] = []
+        by_type = self._sort("agent_mcp") == "type"
+        for entry in sorted(self.library.extensions(), key=lambda e: (_type_rank(e["type"]) if by_type else 0, e["key"].lower())):
+            key, op = entry["key"], self._ext_op(profile.id, entry["key"])
+            state = self.ext.status(entry, profile)
+            if state is None or not (state or op):
+                continue
+            kind = "plugin" if profile.kind == "opencode" else "hook"
+            if op and op["op"] == "install":
+                line = Row(key, note=f"將加入 {kind}")
+            elif op:
+                line = Row(key, note="將移除", dim=True, strike=True)
+            else:
+                problems = self.library.ext_problems(entry)
+                alert = ("、".join(problems) + "：Agent 執行時會找不到它") if problems else ""
+                if not self.ext.in_sync(entry, profile):
+                    alert = alert or f"{kind} 和新版不同，會在「全部更新」時更新"
+                    self.ext_needs.append({"profile": profile.id, "ext": key, "op": "install"})
+                line = Row(key, note=kind, alert=alert)
+            if entry.get("description"):
+                line.setToolTip(entry["description"])
+            if op:
+                undo = icon_button("↶", "復原")
+                undo.clicked.connect(lambda _=False, k=key: self._set_ext_op(profile.id, k, None))
+                line.add(undo)
+            else:
+                minus = icon_button("×", f"從這個 Agent 移除 {kind}（擴充庫中的定義會保留）", danger=True)
+                minus.clicked.connect(lambda _=False, k=key: self._set_ext_op(profile.id, k, "uninstall"))
+                line.add(minus)
+            out.append(line)
+        return out
+
+    def _extension_section(self) -> QWidget:
+        sec = self._fold("section:extensions", "擴充庫", section=True)
+        sec.setToolTip("hook、plugin 等非 MCP 的擴充（例如 rtk）。在 Agent 的「＋」加入。")
+        add = icon_button("＋", "新增擴充")
+        menu = QMenu(add)
+        have = {e["key"] for e in self.library.extensions()}
+        for preset in PRESETS:
+            act = menu.addAction(f"{preset['key']}（範本）", lambda p=preset: self.guard(lambda: self._add_preset(p)))
+            act.setEnabled(preset["key"] not in have)
+        menu.addAction("自訂…", self._new_extension)
+        add.clicked.connect(lambda _=False: menu.exec(add.mapToGlobal(add.rect().bottomLeft())))
+        add._menu = menu
+        sec.add_action(self._sort_button([("extensions", MCP_SORTS)]))
+        sec.add_action(add)
+        by_type = self._sort("extensions") == "type"
+        entries = sorted(self.library.extensions(), key=lambda e: (_type_rank(e["type"]) if by_type else 0, e["key"].lower()))
+        alerts = 0
+        if not entries:
+            sec.body_lay.addWidget(muted("還沒有擴充。按右邊 ＋ 可加入 rtk 等範本。"))
+        group = None
+        for entry in entries:
+            if by_type and entry["type"] != group:
+                group = entry["type"]
+                sec.body_lay.addWidget(self._group_label({"command": "已安裝的指令"}.get(group, TYPE_GROUP.get(group, group))))
+            line, alert = self._extension_library_row(entry)
+            alerts += alert
+            sec.body_lay.addWidget(line)
+        sec.set_badge(f"({len(entries)}{'*' if alerts else ''})", alert=bool(alerts))
+        return sec
+
+    def _extension_library_row(self, entry: dict[str, Any]) -> tuple[QWidget, int]:
+        key, t = entry["key"], entry["type"]
+        if key in self.ext_pending_delete:
+            return Row(key, note="套用後從擴充庫刪除", dim=True, strike=True), 0
+        installed = self.library.installed_exe(entry) if t in ("github", "download") else None
+        ours = self.library.managed_by_agentdock(entry)
+        latest = self.library.cached_update(entry)
+        if latest and key not in self.busy:
+            self.new_versions.append(entry)
+        problems = self.library.ext_problems(entry)
+        found = self.library.ext_found(entry)
+        version = self.library.current_version(entry)
+        if key in self.busy:
+            note = "處理中…"
+        elif version:
+            note = "v" + version.lstrip("vV")
+        else:
+            note = "已下載" if installed else ""
+        if latest:
+            note += f" → {latest}"
+        alert = "、".join(problems + ([f"有新版 {latest}"] if latest else []))
+        line = Row(key, note=note, alert=alert)
+        line.note.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        agents = "、".join(KINDS[k].split(" /")[0] for k in entry.get("hooks", {}))
+        tip = [entry.get("description", ""),
+               f"使用中：{found}" + ("" if ours else "（更新時 AgentDock 會用新版取代它）") if found else "",
+               f"可加入：{agents}" if agents else ""]
+        tip += [v for k, v in UNSUPPORTED.items() if k not in entry.get("hooks", {})]
+        line.setToolTip("\n".join(x for x in tip if x))
+        more = icon_button("⋯", "更多")
+        menu = QMenu(more)
+        if t == "github" and version:
+            menu.addAction("檢查更新", lambda e=entry: self._check_updates([e], force=True))
+        if t in ("github", "download") and key not in self.busy:
+            if latest:
+                menu.addAction(f"更新到 {latest}", lambda e=entry: self._download(e, update=True))
+            elif not installed and not found:
+                menu.addAction("下載", lambda e=entry: self._download(e))
+            elif ours:
+                menu.addAction("重新下載", lambda e=entry: self._download(e))
+        menu.addSeparator()
+        menu.addAction("編輯…", lambda e=entry: self._edit_extension(e))
+        menu.addAction("刪除…", lambda k=key: self.guard(lambda: self._delete_extension(k)))
+        more.clicked.connect(lambda _=False, m=menu, b=more: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        if key not in self.busy and latest and t == "github":
+            up = button("更新", flat=True)
+            up.clicked.connect(lambda _=False, e=entry: self._download(e, update=True))
+            line.add(up)
+        elif key not in self.busy:
+            if "需下載" in problems:
+                dl = button("下載", flat=True)
+                dl.clicked.connect(lambda _=False, e=entry: self._download(e))
+                line.add(dl)
+            elif "未加入 PATH" in problems:
+                path_btn = button("加入 PATH", flat=True)
+                path_btn.setToolTip("把它複製到 AgentDock 的 data\\bin，並把該資料夾加入使用者 PATH")
+                path_btn.clicked.connect(lambda _=False, e=entry: self.guard(lambda: self._publish(e)))
+                line.add(path_btn)
+        line.add(more)
+        return line, int(bool(alert))
+
+    def _publish(self, entry: dict[str, Any]) -> None:
+        from agentdock import userpath
+        folder = userpath.bin_dir(self.library.data)
+        if not userpath.on_user_path(folder):
+            answer = QMessageBox.question(self, "加入 PATH", f"會把 {entry['key']} 複製到\n{folder}\n並把這個資料夾加入使用者 PATH。\n"
+                                          "已開著的 Agent 要重開才找得到它。繼續？")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        linked = self.library.publish(entry)
+        self.info(f"已加入 PATH：{linked}。重開 Agent（以及它的終端機）後生效。")
+
+    def _add_preset(self, preset: dict[str, Any]) -> None:
+        self.library.save_extension(preset)
+        self.info(f"已加入擴充庫：{preset['key']}。下載後在 Agent 的「＋」加入。")
+
+    def _new_extension(self) -> None:
+        dialog = ExtensionDialog(self, self.library)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.info(f"已加入擴充庫：{dialog.saved['key']}")
+            self.refresh()
+
+    def _edit_extension(self, entry: dict[str, Any]) -> None:
+        dialog = ExtensionDialog(self, self.library, entry)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.info("已更新。已加入的 Agent 若要套用新的 hook 設定，請先移除再加入。")
+            self.refresh()
+
+    def _delete_extension(self, key: str) -> None:
+        """Delete from the library AND queue removal from every Agent that has it."""
+        entry = self.library.get_extension(key)
+        users = [p for p in self.manager.list() if entry and self.ext.status(entry, p)]
+        if users:
+            names = "、".join(p.name for p in users)
+            answer = QMessageBox.question(self, "刪除擴充", f"{key} 正被 {names} 使用。\n刪除後也會從這些 Agent 移除（按「預覽並套用」後寫入）。確定刪除？")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        # queue removals while the definition still exists, then drop it from the library at apply time
+        self.ext_ops = [o for o in self.ext_ops if o["ext"] != key]
+        if users:
+            for p in users:
+                self.ext_ops.append({"profile": p.id, "ext": key, "op": "uninstall"})
+            self.ext_pending_delete.add(key)
+            self.info(f"{key} 的移除已排入待套用；套用後會從擴充庫刪除。")
+        else:
+            self.library.remove_extension(key)
+            self.info(f"已從擴充庫刪除 {key}。")
+
+    # ------------------------------------------------------------------ test
+    def _test_mcp(self, key: str) -> None:
+        """Start the MCP exactly as each Agent's config says and do the handshake (see probe.py)."""
+        targets = [(r["name"], s["config"]) for r in self.manager.inspect() for s in r["servers"] if s["name"] == key]
+        if not targets:
+            self.info(f"沒有 Agent 使用 {key}。")
+            return
+        if key in self.busy:
+            return
+        self.busy.add(key)
+        self.info(f"測試 {key}…（第一次可能要下載套件，最多 2 分鐘）", sticky=True)
+        self.refresh()
+
+        def run() -> None:
+            from agentdock import probe
+            lines, seen = [], {}
+            for agent, config in targets:
+                sig = json.dumps(config, sort_keys=True, ensure_ascii=False)
+                if sig not in seen:  # same config in several Agents: run once
+                    seen[sig] = probe.probe(config)
+                r = seen[sig]
+                lines.append(f"[{agent}] {r['summary']}")
+                if r.get("argv"):
+                    lines.append("  指令：" + " ".join(r["argv"]))
+                if not r.get("ok") and r.get("stderr"):
+                    lines.append("  錯誤輸出（最後幾行）：\n    " + "\n    ".join(r["stderr"].splitlines()[-8:]))
+            report = "\n".join(lines)
+            try:
+                with (self.library.data / "mcp-test.log").open("a", encoding="utf-8") as f:
+                    f.write(f"==== {time.strftime('%Y-%m-%d %H:%M:%S')} {key}\n{report}\n\n")
+            except OSError:
+                pass
+            self._worker.tested.emit(key, report)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _test_done(self, key: str, report: str) -> None:
+        self.busy.discard(key)
+        self.refresh()
+        self.notice.hide()
+        box = QMessageBox(QMessageBox.Icon.Information, f"測試 {key}", report, parent=self)
+        box.setWindowFlags(_top(box.windowFlags()))
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        box.exec()
+
+    def _extension_updated(self, ext: dict[str, Any], message: str) -> None:
+        """After downloading an extension: put it where agents find it, then refresh every Agent that uses it."""
+        try:
+            deployed = self.library.deploy(ext)
+        except ValueError as e:
+            self.refresh()
+            self.info(f"{message}；但無法替換 Agent 使用中的版本：{e}", error=True)
+            return
+        parts = [f"{ext['key']} 已下載 {self.library.install_state(ext).get('tag', '')}".strip()]
+        if deployed:
+            parts.append(f"已更新 {deployed}")
+        elif self.library.ext_problems(ext):
+            parts.append("按「加入 PATH」讓 Agent 找得到它")
+        ops = self.ext.refresh_ops(ext, self.manager.list())
+        if ops:
+            try:
+                plan = self.ext.prepare(ops, self.manager.list())
+                if plan.files:
+                    self.ext.apply(plan)
+                    restart = self.ui_state.setdefault("restart", {})
+                    for pid in plan.profiles:
+                        restart[pid] = time.time()
+                    self.save_state()
+                    parts.append(f"已套用到 {len(plan.profiles)} 個 Agent（有備份）")
+            except Exception as e:
+                parts.append(f"套用到 Agent 失敗：{e}")
+        users = [p.name for p in self.manager.list() if self.ext.status(ext, p)]
+        if users and deployed:
+            parts.append("、".join(users) + " 下次執行指令時就會用新版")
+        self.refresh()
+        self.info("；".join(parts) + "。")
+
+    def _emit_summary(self, agents: int) -> None:
+        pending_needs = [n for n in self.needs if not self._op_for(n["profile"], n["server"])]
+        pending_needs += [n for n in self.ext_needs if not self._ext_op(n["profile"], n["ext"])]
+        missing = getattr(self, "missing", {})
+        gone = sum(1 for pid, names in missing.items() for name in names if not self._op_for(pid, name))
+        updates = len(pending_needs) + len(self.new_versions) \
+            - sum(1 for n in pending_needs if n.get("server") in missing.get(n["profile"], ()) and n["op"] == "add")
+        restart = len(self.ui_state.get("restart", {}))
+        parts = [f"{agents} 個 Agent" if agents else "還沒有 Agent"]
+        if gone:
+            parts.append(f"{gone} 個 MCP 被移除")
+        if updates:
+            parts.append(f"{updates} 項可更新")
+        if restart:
+            parts.append(f"{restart} 個需重啟")
+        if self.ops or self.ext_ops:
+            parts.append(f"{len(self.ops) + len(self.ext_ops)} 項待套用")
+        self.summary_changed.emit(" · ".join(parts), bool(gone or updates or restart or self.ops or self.ext_ops))
