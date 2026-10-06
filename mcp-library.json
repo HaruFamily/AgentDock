@@ -10,16 +10,19 @@
    "exe": "codebase-memory-mcp.exe"
   },
   {
-   "key": "mcp-google-sheets",
-   "type": "uvx",
-   "package": "mcp-google-sheets@latest",
-   "options": [
-    "--with",
-    "mcp<2"
+   "key": "google-clasp",
+   "type": "command",
+   "command": "{AGENTDOCK}/.venv/Scripts/python.exe",
+   "args": [
+    "-m",
+    "agentdock.clasp_cli",
+    "mcp"
    ],
-   "secrets": [
-    "SERVICE_ACCOUNT_PATH"
-   ]
+   "env": {
+    "PYTHONPATH": "{AGENTDOCK}",
+    "AGENTDOCK_DATA_DIR": "{AGENTDOCK}\\data"
+   },
+   "timeout_sec": 120
   }
  ],
  "extensions": [
