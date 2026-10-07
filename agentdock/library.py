@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from agentdock.files import atomic_json, load_json
 from agentdock.paths import console_python, local_uvx
 
-QAI_KEY = "agentchat"
+QAI_KEY = "inbox"
 TYPES = {
     "builtin": "內建",
     "remote": "遠端網址",
@@ -82,7 +82,7 @@ class Library:
     @staticmethod
     def builtin() -> dict[str, Any]:
         return {"key": QAI_KEY, "type": "builtin",
-                "description": "AgentChat：用 ask_user 提問、report_to_user 回報任務，共用對話歷史。", "timeout_sec": 1860}
+                "description": "Inbox：用 ask_user 提問、report_to_user 回報完成／失敗摘要；不鏡像原生聊天。", "timeout_sec": 1860}
 
     def entries(self) -> list[dict[str, Any]]:
         return [self.builtin()] + copy.deepcopy(self._stored())

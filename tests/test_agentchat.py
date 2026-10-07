@@ -27,8 +27,8 @@ def question(store, key="q", owner=OWNER, work_id="w"):
 
 def test_states_isolation_persistence_and_retries(tmp_path):
     store = QuestionStore(tmp_path)
-    started = store.receive(OWNER, "Codex", event("start", "user_message", text="Original instruction"))
-    assert store.conversations()[0]["state"] == "running"
+    started = store.receive(OWNER, "Codex", event("start", "completed", text="Original instruction"))
+    assert store.conversations()[0]["state"] == "unread"
     q = question(store)
     assert store.conversations()[0]["state"] == "waiting"
     with pytest.raises(ValueError, match="待回答"):
@@ -50,8 +50,8 @@ def test_states_isolation_persistence_and_retries(tmp_path):
     work = next(w for w in again.conversations() if w["owner"] == OWNER and w["work_id"] == "w")
     assert work["state"] == "" and len(work["entries"]) == 3
     assert any(w["state"] == "unread" for w in again.conversations())
-    store.receive(OWNER, "Codex", event("new-start", "started"))
-    assert next(w for w in QuestionStore(tmp_path).conversations() if w["owner"] == OWNER and w["work_id"] == "w")["state"] == ""
+    store.receive(OWNER, "Codex", event("new-start", "completed"))
+    assert next(w for w in QuestionStore(tmp_path).conversations() if w["owner"] == OWNER and w["work_id"] == "w")["state"] == "unread"
 
 
 def test_remove_does_not_answer_or_cancel_and_new_event_recreates(tmp_path):
@@ -63,7 +63,7 @@ def test_remove_does_not_answer_or_cancel_and_new_event_recreates(tmp_path):
     assert "answer" not in store.get(q["id"])
     again = QuestionStore(tmp_path)
     assert not again.conversations()
-    again.receive(OWNER, "Codex", event("later", "progress"))
+    again.receive(OWNER, "Codex", event("later", "completed"))
     assert len(again.conversations()) == 1
     assert len(again.conversations()[0]["entries"]) == 1
 
@@ -91,7 +91,7 @@ def test_retry_question_restores_removed_region_without_new_question(tmp_path):
 def test_open_conversation_starts_at_bottom_and_reads_visible_completion(tmp_path):
     app = QApplication.instance() or QApplication([])
     store = QuestionStore(tmp_path)
-    store.receive(OWNER, "Codex", event("start", "started", text="Long task\n" * 100))
+    store.receive(OWNER, "Codex", event("start", "completed", text="Long task\n" * 100))
     store.receive(OWNER, "Codex", event())
     view = QaView(store)
     view.resize(450, 300)
@@ -126,23 +126,6 @@ def test_timeline_resize_keeps_wrap_width_stable_and_settles(tmp_path):
     view.close()
 
 
-def test_image_only_update_refreshes_open_bubble(tmp_path):
-    from test_desktop_assets import PNG
-    from agentdock.ui.qa_view import ClickableImage
-    import base64
-    app = QApplication.instance() or QApplication([])
-    store = QuestionStore(tmp_path)
-    entry = dict(key='u', kind='user_message', text='image', created_at='2026-10-07T12:00:00Z',
-                 images=[dict(name='image.png', data_url='')])
-    store.import_chat(OWNER, 'Desktop', 'w', 'Task', [entry])
-    view = QaView(store)
-    view.open_conversation(OWNER, 'w')
-    app.processEvents()
-    entry['images'][0]['data_url'] = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
-    store.import_chat(OWNER, 'Desktop', 'w', 'Task', [entry])
-    view._refresh_timeline()
-    assert any(row.findChildren(ClickableImage) for row, _, _ in view._timeline_widgets.values())
-    view.close()
 
 
 def test_broker_receive_validation_and_no_answer_endpoint(tmp_path):
@@ -188,7 +171,7 @@ def test_conversation_ui_read_and_focus(tmp_path):
     editor = view.blocks[q["id"]]["text"]
     editor.setPlainText("Still typing")
     editor.setFocus()
-    store.receive(OWNER, "Codex", event("update", "progress", text="Background report"))
+    store.receive(OWNER, "Codex", event("update", "completed", work_id="other-work", text="Background report"))
     question(store, "q2")
     view.refresh()
     view.show_first_pending()
@@ -196,7 +179,7 @@ def test_conversation_ui_read_and_focus(tmp_path):
     assert editor.toPlainText() == "Still typing"
     view.open_conversation(OWNER, "w")
     assert store.get(q["id"])["draft"]["text"] == "Still typing"
-    assert any(b.text() == "查看問答與附件" for b in view.timeline.findChildren(QPushButton))
+    assert any(b.text() == "回答問題" for b in view.timeline.findChildren(QPushButton))
     view.close()
 
 
@@ -216,7 +199,7 @@ def test_report_tool_real_stdio(tmp_path):
             async with ClientSession(r, w) as session:
                 await session.initialize()
                 assert "report_to_user" in {t.name for t in (await session.list_tools()).tools}
-                first = await session.call_tool("report_to_user", event("start", "user_message", text="Actual task"))
+                first = await session.call_tool("report_to_user", event("start", "completed", text="Actual task"))
                 assert not first.isError
                 result = await session.call_tool("report_to_user", event())
                 retry = await session.call_tool("report_to_user", event())
@@ -234,9 +217,7 @@ def test_report_tool_real_stdio(tmp_path):
 def test_agent_groups_and_chat_bubble_sides(tmp_path):
     app = QApplication.instance() or QApplication([])
     store = QuestionStore(tmp_path)
-    store.receive(OWNER, "OpenCode", event("start", "user_message", text="修正選取後刷新與失焦"))
     q = question(store)
-    store.receive(OWNER, "OpenCode", event("progress", "progress", text="已找到失焦原因"))
     store.answer(q["id"], {"text": "請保留目前的選取"})
     store.receive(OWNER, "OpenCode", event())
     store.receive(OWNER, "OpenCode", event(work_id="other"))
@@ -250,13 +231,10 @@ def test_agent_groups_and_chat_bubble_sides(tmp_path):
     view.open_conversation(OWNER, "w")
     app.processEvents()
     rows = [w for w in view.timeline.findChildren(QWidget) if w.objectName() == "ChatMessage"]
-    assert [w.property("messageKind") for w in rows] == ["user_message", "question", "progress", "answer", "completed"]
+    assert [w.property("messageKind") for w in rows] == ["question", "answer", "completed"]
     for row in rows:
         bubble = row.findChild(QWidget, "ChatBubble")
-        if row.property("chatSide") == "right":
-            assert bubble.x() > 0 and bubble.geometry().right() >= row.width() - 2
-        else:
-            assert bubble.x() == 0 and bubble.width() < row.width()
+        assert bubble.x() == 0 and bubble.width() == row.width()
     next_q = question(store, "next")
     view.refresh()
     view.open_question(next_q["id"])
@@ -264,7 +242,7 @@ def test_agent_groups_and_chat_bubble_sides(tmp_path):
     view._submit(store.group_members(next_q["id"]))
     assert view.stack.currentIndex() == 2
     assert view.conversation == (OWNER, "w")
-    assert not any(w.text() == "下一個回答" for w in view.timeline.findChildren(QLabel))
+    assert any("下一個回答" in w.text() for w in view.timeline.findChildren(QLabel))
     view.open_question(next_q["id"])
     assert view.blocks[next_q["id"]]["text"].toPlainText() == "下一個回答"
     view.close()

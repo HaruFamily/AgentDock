@@ -1173,10 +1173,11 @@ class AgentsView(QWidget):
         entry = self.library.get(name)
         alert, note = "", ""
         if server["qai"] and name != QAI_KEY:
-            alert = f"AgentChat 舊名稱，會在「全部更新」時換成 {QAI_KEY}"
+            alert = f"Inbox 舊名稱，會在「全部更新」時換成 {QAI_KEY}"
             self.needs.append({"profile": pid, "server": name, "op": "remove"})
             if not any(s["name"] == QAI_KEY for s in row["servers"]):
                 self.needs.append({"profile": pid, "server": QAI_KEY, "op": "add",
+                                   "enabled": any(s["enabled"] for s in row["servers"] if s["qai"]),
                                    "entry": self.library.render(self.library.get(QAI_KEY), row["kind"], profile)})
         elif entry and not (op and op["op"] == "update") \
                 and self.library.in_sync(entry, row["kind"], profile, server["config"]) is False:

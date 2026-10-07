@@ -65,28 +65,3 @@ def test_passive_visible_chat_stays_unread_until_active(tmp_path, monkeypatch):
     store.flush_reads()
     assert store.conversations()[0]['state'] == ''
     view.close()
-
-
-def test_codex_commentary_not_in_pages_but_completion_visible(tmp_path):
-    from agentdock.chat_sync import codex_record
-    from test_chat_sync import item, codex
-    state = {}
-    entries, _ = codex_record(item('a', 'AgentMessage', 'working', phase='commentary'), state)
-    store = QuestionStore(tmp_path)
-    store.import_chat('o', 'Codex', 's', 'Task', entries)
-    assert store.conversation_page('o', 's')['entries'] == []
-    entries, _ = codex_record(item('b', 'AgentMessage', 'done', phase='final_answer'), state)
-    store.import_chat('o', 'Codex', 's', 'Task', entries)
-    entries, _ = codex_record(codex('task_complete'), state)
-    store.import_chat('o', 'Codex', 's', 'Task', entries)
-    assert [e['text'] for e in store.conversation_page('o', 's')['entries']] == ['done']
-
-
-def test_completion_time_controls_unread_after_later_activity(tmp_path):
-    store = QuestionStore(tmp_path)
-    store.import_chat('o', 'Agent', 's', 'Task', [
-        dict(key='u',kind='user_message',text='continue',created_at='2026-10-07T12:00:05Z'),
-        dict(key='a',kind='completed',text='done',created_at='2026-10-07T12:00:00Z',
-             finished_at='2026-10-07T12:00:10Z')], live_since='2026-10-07T12:00:01Z')
-    assert store.conversations()[0]['state'] == 'unread'
-    assert store.conversations()[0]['updated_at'] == '2026-10-07T12:00:10Z'

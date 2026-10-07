@@ -22,7 +22,7 @@ from agentdock.files import atomic_json, atomic_write, backup_path, load_json, p
 
 Kind = Literal["codex", "opencode", "claude-code", "claude-desktop"]
 KINDS: dict[str, str] = {"codex": "Codex", "opencode": "OpenCode", "claude-code": "Claude Code", "claude-desktop": "Claude Desktop / Cowork"}
-QAI_NAMES = ("agentchat", "agentdock-qa", "agentdock_qa", "agent_interaction")  # current name first, then legacy
+QAI_NAMES = ("inbox", "agentchat", "agentdock-qa", "agentdock_qa", "agent_interaction")  # current name first, then legacy
 QAI_TIMEOUT_SECONDS = 1860
 
 
@@ -351,7 +351,15 @@ class AgentManager:
                         raise ValueError(f"{p.name} 已有 {name}。")
                     if p.kind == "claude-desktop" and o["entry"].get("url"):
                         raise ValueError("Claude Desktop 的遠端 MCP 請使用 App 的「連接器」介面。")
-                    servers[name] = copy.deepcopy(o["entry"])
+                    entry = copy.deepcopy(o["entry"])
+                    if o.get("enabled", True) is False:
+                        if direct:
+                            entry["enabled"] = False
+                            servers[name] = entry
+                        else:
+                            parked[name] = entry
+                    else:
+                        servers[name] = entry
                     notes.append(f"{name} → 加入")
                 else:  # update keeps the current enabled/parked state
                     entry = copy.deepcopy(o["entry"])

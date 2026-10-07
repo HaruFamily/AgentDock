@@ -1,4 +1,4 @@
-"""AgentChat: task conversations with shared question and report history."""
+"""Inbox: task conversations with shared question and report history."""
 from __future__ import annotations
 
 import re
@@ -217,13 +217,15 @@ class QaView(QWidget):
     pending_changed = Signal(int)
     pending_items = Signal(list)  # [{id, source, question}] — one per pending unit, for the floating card
     answered = Signal()           # an answer was submitted from this view
+    closed = Signal()
     read_finished = Signal()
     PAGE_SIZE = 30
     PREVIEW_CHARS = 3000
 
-    def __init__(self, store: QuestionStore) -> None:
+    def __init__(self, store: QuestionStore, *, inline: bool = False) -> None:
         super().__init__()
         self.store = store
+        self.inline = inline
         self.active: str | None = None
         self.history = False
         self.conversation: tuple[str, str] | None = None
@@ -233,7 +235,6 @@ class QaView(QWidget):
         self._timeline_pages = [None]
         self._timeline_widgets = {}
         self.read_finished.connect(self.refresh)
-        QApplication.instance().installEventFilter(self)
         self.drafts: dict[str, dict[str, Any]] = {}
         self._rendered_key = ""
         self._save_timer = QTimer(self, singleShot=True, interval=500)
@@ -254,33 +255,35 @@ class QaView(QWidget):
         self.stack = QStackedWidget()
         root.addWidget(self.stack)
 
-        # list page ---------------------------------------------------------
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        tabs = QHBoxLayout()
-        tabs.setContentsMargins(16, 10, 14, 6)
-        tabs.setSpacing(14)
-        tabs.addWidget(label("AgentChat", wrap=False))
-        tabs.addStretch()
-        self.sync_label = label("", muted=True, wrap=False)
-        tabs.addWidget(self.sync_label)
-        lay.addLayout(tabs)
-        rule = QFrame()
-        rule.setObjectName("Rule")
-        rule.setFixedHeight(1)
-        lay.addWidget(rule)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list_body = QWidget()
-        self.list_lay = QVBoxLayout(self.list_body)
-        self.list_lay.setContentsMargins(12, 6, 12, 12)
-        self.list_lay.setSpacing(0)
-        scroll.setWidget(self.list_body)
-        lay.addWidget(scroll, 1)
-        self.stack.addWidget(page)
+        if inline:
+            self.stack.addWidget(QWidget())
+        else:
+            # list page ---------------------------------------------------------
+            page = QWidget()
+            lay = QVBoxLayout(page)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+            tabs = QHBoxLayout()
+            tabs.setContentsMargins(16, 10, 14, 6)
+            tabs.setSpacing(14)
+            tabs.addWidget(label("Inbox", wrap=False))
+            tabs.addStretch()
+            tabs.addWidget(label("問答與任務結果", muted=True, wrap=False))
+            lay.addLayout(tabs)
+            rule = QFrame()
+            rule.setObjectName("Rule")
+            rule.setFixedHeight(1)
+            lay.addWidget(rule)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.list_body = QWidget()
+            self.list_lay = QVBoxLayout(self.list_body)
+            self.list_lay.setContentsMargins(12, 6, 12, 12)
+            self.list_lay.setSpacing(0)
+            scroll.setWidget(self.list_body)
+            lay.addWidget(scroll, 1)
+            self.stack.addWidget(page)
 
         self.detail = QWidget()
         self.stack.addWidget(self.detail)
@@ -288,20 +291,14 @@ class QaView(QWidget):
         self.stack.addWidget(self.timeline)
         self._submit_now = None
         for keys in ("Ctrl+Return", "Ctrl+Enter"):
-            QShortcut(QKeySequence(keys), self, activated=lambda: self._submit_now and self._submit_now())
+            shortcut = QShortcut(QKeySequence(keys), self, activated=lambda: self._submit_now and self._submit_now())
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.refresh()
 
     # ------------------------------------------------------------------ list
-    def set_sync_status(self, status: str) -> None:
-        self.sync_label.setText("接收需檢查" if "失敗" in status else "自動接收")
-        self.sync_label.setToolTip(status)
-
-    def _set_history(self, value: bool) -> None:
-        # Compatibility for older integrations: all history is now in conversations.
-        self.refresh_list()
-
     def refresh(self) -> None:
-        self.refresh_list()
+        if not self.inline:
+            self.refresh_list()
         if self.stack.currentIndex() == 2:
             self._refresh_timeline()
         if self.active and self.stack.currentIndex() == 1:
@@ -369,7 +366,7 @@ class QaView(QWidget):
             for index, work in enumerate(tasks):
                 self.list_lay.addWidget(self._task_row(work, index == len(tasks) - 1))
         if not shown:
-            empty = muted("本次啟動尚無新對話。收到新訊息或問題後，會依 Agent 與任務出現在這裡。")
+            empty = muted("尚無待辦或通知。Agent 提問或回報任務結果後，會出現在這裡。")
             empty.setWordWrap(True)
             empty.setContentsMargins(4, 12, 4, 0)
             self.list_lay.addWidget(empty)
@@ -420,7 +417,16 @@ class QaView(QWidget):
             messages.append({**q, "text": q["question"], "side": "left", "qid": q["id"]})
             if q.get("answer"):
                 answer = q["answer"]
-                text = "\n".join(f"• {o['label']}" for o in q["options"] if o["id"] in answer["selected"])
+                parts = [f"• {o['label']}" for o in q["options"] if o["id"] in answer["selected"]]
+                if answer.get("text"):
+                    parts.append(answer["text"])
+                for option in q["options"]:
+                    note = answer.get("notes", {}).get(option["id"])
+                    if note:
+                        parts.append(f"{option['label']}：{note}")
+                if not parts:
+                    parts.append("已提交附件" if answer["attachment_ids"] else "已提交回答")
+                text = "\n".join(parts)
                 messages.append({"id": q["id"] + "/answer", "kind": "answer", "text": text, "side": "right",
                                  "created_at": q["resolved_at"], "qid": q["id"],
                                  "images": [a for a in q["uploads"] if a["id"] in answer["attachment_ids"] and a["mime"].startswith("image/")]})
@@ -441,12 +447,16 @@ class QaView(QWidget):
         bubble = QFrame()
         bubble.setObjectName("ChatBubble")
         bubble.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        background = theme.ACCENT_SOFT if right else theme.CARD
-        bubble.setStyleSheet(f"QFrame#ChatBubble {{ background: {background}; border: 1px solid {theme.LINE}; border-radius: 12px; }}")
+        bubble.setStyleSheet(f"QFrame#ChatBubble {{ background: {theme.CARD}; border: 1px solid {theme.LINE}; border-radius: 6px; }}")
         content = QVBoxLayout(bubble)
         content.setContentsMargins(12, 9, 12, 10)
         content.setSpacing(6)
-        caption = label(_when(message["created_at"]), muted=True)
+        kind = message["kind"]
+        status = {"answer": "你的回答", "completed": "已完成", "failed": "失敗",
+                  "cancelled": "已取消", "question_cancelled": "已取消"}.get(kind, "問題")
+        if kind == "question":
+            status = "待回答" if message.get("status") == "pending" else "已回答的問題" if message.get("status") == "answered" else "已取消的問題"
+        caption = label(f"{status} · {_when(message['created_at'])}", muted=True)
         content.addWidget(caption)
         preview = self._message_preview(message["text"])
         text = label(preview)
@@ -485,14 +495,10 @@ class QaView(QWidget):
         row._full_button = full
         if message.get("qid"):
             pending = message["kind"] == "question" and message["status"] == "pending"
-            action = button("查看問答與附件", flat=not pending, primary=pending)
+            action = button("回答問題" if pending else "查看詳細資料", flat=not pending, primary=pending)
             action.clicked.connect(lambda _=False, qid=message["qid"]: self.open_question(qid))
             content.addWidget(action)
-        if right:
-            layout.addSpacing(12)
         layout.addWidget(bubble, 1)
-        if not right:
-            layout.addSpacing(12)
         return row, text
 
     def _message_preview(self, text: str) -> str:
@@ -674,6 +680,8 @@ class QaView(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if not self.inline:
+            self.window().installEventFilter(self)
         QTimer.singleShot(0, self._mark_visible_read)
 
     def eventFilter(self, watched, event):
@@ -720,6 +728,12 @@ class QaView(QWidget):
         self.stack.setCurrentIndex(1)
 
     def _leave_question(self) -> None:
+        if self.inline:
+            self._flush()
+            self.active = None
+            self._submit_now = None
+            self.closed.emit()
+            return
         if getattr(self, "_return_to_chat", False) and self.conversation:
             self.open_conversation(*self.conversation)
         else:
@@ -825,17 +839,12 @@ class QaView(QWidget):
 
         top = QHBoxLayout()
         top.setContentsMargins(8, 8, 14, 6)
-        top.setSpacing(6)
-        back = icon_button("‹", "返回")
-        back.clicked.connect(self._leave_question)
-        top.addWidget(back)
-        title = ElidedLabel(head["work_title"])
-        title.setObjectName("GroupTitle")
-        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        top.addWidget(title, 1)
-        history = button("對話歷史", flat=True)
-        history.clicked.connect(lambda: self.open_conversation(head["owner"], head["work_id"]))
-        top.addWidget(history)
+        if not self.inline:
+            back = icon_button("‹", "返回")
+            back.clicked.connect(self._leave_question)
+            top.addWidget(back)
+            title = ElidedLabel(head["work_title"])
+            top.addWidget(title, 1)
         if readonly:
             top.addWidget(muted("已回答" if status == "answered" else "已取消"))
         else:
@@ -871,8 +880,12 @@ class QaView(QWidget):
                 lay.addWidget(rule)
             lay.addWidget(self._block(q, readonly, f"第 {n} 題" if many else ""))
         lay.addStretch()
-        scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+        if self.inline:
+            scroll.deleteLater()
+            outer.addWidget(body)
+        else:
+            scroll.setWidget(body)
+            outer.addWidget(scroll, 1)
 
         bar = RibbonBar()
         bar.setObjectName("ActionBar")

@@ -10,10 +10,16 @@ from agentdock.qa.store import QuestionStore
 from agentdock.ui.qa_view import QaView
 
 
+def incoming(store, owner, source, session, title, entries):
+    for e in entries:
+        store.receive(owner, source, dict(request_key=e['key'], work_id=session, work_title=title,
+                                          kind='completed', text=e['text']))
+
+
 def populated(tmp_path, tasks=40, messages=200, text="History " * 200):
     rows = [dict(id=f"{w}:{i}", owner="owner", work_id=str(w), work_title=f"Task {w}", source="Codex",
-                 request_key=f"{w}:{i}", kind="progress", text=text,
-                 created_at=f"2026-10-07T12:{i // 60:02}:{i % 60:02}.000Z", read=True, external=True)
+                 request_key=f"{w}:{i}", kind="completed", text=text,
+                 created_at=f"2000-10-07T12:{i // 60:02}:{i % 60:02}.000Z", read=True, external=False)
             for w in range(tasks) for i in range(messages)]
     atomic_json(tmp_path / "chat.json", dict(events=rows, hidden_questions=[]))
     return QuestionStore(tmp_path)
@@ -51,8 +57,8 @@ def test_history_pages_remain_anchored_while_new_messages_arrive(tmp_path):
     view._history_page("older")
     page = set(view._timeline_widgets)
     assert page == {f"0:{i}" for i in range(40, 70)}
-    store.import_chat("owner", "Codex", "0", "Task 0", [
-        dict(key="new", kind="progress", text="new", created_at="2026-10-07T13:00:00.000Z")])
+    incoming(store, "owner", "Codex", "0", "Task 0", [
+        dict(key="new", kind="completed", text="new", created_at="2026-10-07T13:00:00.000Z")])
     view.refresh()
     assert set(view._timeline_widgets) == page
     seen = set(page)
@@ -67,35 +73,6 @@ def test_history_pages_remain_anchored_while_new_messages_arrive(tmp_path):
     view.close()
 
 
-def test_stream_updates_keep_other_widgets_and_bound_long_text(tmp_path, monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    store = QuestionStore(tmp_path)
-    def incoming(text):
-        store.import_chat("o", "Codex", "s", "Task", [
-            dict(key="fixed", kind="user_message", text="Keep this", created_at="2026-10-07T12:00:00.000Z"),
-            dict(key="stream", kind="progress", text=text, created_at="2026-10-07T12:00:01.000Z")])
-    incoming("old")
-    view = QaView(store)
-    view.open_conversation("o", "s")
-    rows = list(view._timeline_widgets.values())
-    user_row, agent_row = rows[0][0], rows[1][0]
-    scroll = view.timeline_scroll
-    incoming("new " * 10000)
-    view.refresh()
-    updated = list(view._timeline_widgets.values())
-    assert updated[0][0] is user_row and updated[1][0] is agent_row
-    assert view.timeline_scroll is scroll
-    from PySide6.QtGui import QTextDocument
-    rendered = QTextDocument()
-    rendered.setHtml(updated[1][1].text())
-    assert len(rendered.toPlainText()) <= view.PREVIEW_CHARS + 2
-    assert agent_row._full_text == "new " * 10000
-    clicked = []
-    monkeypatch.setattr(view, "_show_message", clicked.append)
-    agent_row._full_button.click()
-    assert clicked == ["new " * 10000]
-    app.processEvents()
-    view.close()
 
 
 def test_already_read_scrolling_does_not_save_or_copy_archive(tmp_path, monkeypatch):
@@ -118,8 +95,8 @@ def test_ui_snapshot_does_not_wait_for_background_disk_commit(tmp_path, monkeypa
         assert release.wait(5)
         original(path, data)
     monkeypatch.setattr("agentdock.qa.store.atomic_json", slow_save)
-    writer = threading.Thread(target=lambda: store.import_chat("owner", "Codex", "0", "Task 0", [
-        dict(key="new", kind="progress", text="new reply", created_at="2026-10-07T13:00:00.000Z")]))
+    writer = threading.Thread(target=lambda: incoming(store, "owner", "Codex", "0", "Task 0", [
+        dict(key="new", kind="completed", text="new reply", created_at="2026-10-07T13:00:00.000Z")]))
     writer.start()
     assert committing.wait(2)
     values = []
@@ -148,15 +125,15 @@ def test_open_at_bottom_follow_new_text_but_preserve_manual_scroll(tmp_path):
     app.processEvents()
     bar = view.timeline_scroll.verticalScrollBar()
     assert bar.maximum() > 0 and bar.value() == bar.maximum()
-    store.import_chat("owner", "Codex", "0", "Task 0", [dict(
-        key="latest", kind="progress", text="new\n" * 20, created_at="2026-10-07T13:00:00.000Z")])
+    incoming(store, "owner", "Codex", "0", "Task 0", [dict(
+        key="latest", kind="completed", text="new\n" * 20, created_at="2026-10-07T13:00:00.000Z")])
     view.refresh()
     app.processEvents()
     assert bar.value() == bar.maximum()
     bar.setValue(bar.maximum() // 3)
     position = bar.value()
-    store.import_chat("owner", "Codex", "0", "Task 0", [dict(
-        key="latest", kind="progress", text="streamed\n" * 35, created_at="2026-10-07T13:00:00.000Z")])
+    incoming(store, "owner", "Codex", "0", "Task 0", [dict(
+        key="latest-2", kind="completed", text="streamed\n" * 35, created_at="2026-10-07T13:00:00.000Z")])
     view.refresh()
     app.processEvents()
     assert bar.value() == position

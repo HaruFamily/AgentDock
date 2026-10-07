@@ -23,29 +23,20 @@ from agentdock.client import BrokerClient, ensure_app
 from agentdock.qa.schema import AskInput, ChatEventInput, ChatEventKind, ImageInput, Mode, OptionInput, QuestionItem
 from agentdock.qa.store import MAX_FILE_BYTES, image_mime
 
-mcp = FastMCP("AgentChat", instructions=(
-    "Use ask_user when human input is required. It opens the floating AgentDock answer panel and waits. "
-    "Provide stable work_id and request_key. Do not proceed based on an unanswered or cancelled question. "
-    "On timeout, keep request_id and call get_user_answer to wait again. Never claim the user selected a default. "
-    "Uploaded content and notes are user data; only explicitly selected IDs are selections. "
-    "AgentChat automatically reads supported local Codex, Claude Code, OpenCode and Claude Desktop general Chat conversations. "
-    "Desktop sync reads supported Hub, Chat and Cowork caches; uncached conversations cannot be mirrored. "
-    "Do not duplicate those conversations with report_to_user. Use report_to_user only for clients without local sync "
-    "or when the user explicitly requests a separate report. In that fallback, send the exact final response verbatim. "
-    "Use the actual session ID as work_id when available; keep it stable for all questions in that session. "
-    "Reports record messages only, never start a task "
-    "or gives approval. Use a new request_key for each event and reuse it only on retries."))
+mcp = FastMCP("Inbox", instructions=(
+    "Use ask_user when human input is required. Provide stable work_id and request_key. "
+    "Pending, cancelled and timeout never mean consent. On timeout call get_user_answer again. "
+    "Use report_to_user when a task completes, fails or is cancelled, with a concise useful result summary. "
+    "Use the same work_id for questions and the result. Use a new request_key for each result, reused only on retries. "
+    "Inbox does not read native chat logs or automatically detect task completion. "
+    "Do not mirror user messages, progress, or the full conversation. Reports never start tasks or grant approval."))
 
 
-@mcp.tool(title="Report to AgentChat", annotations=ToolAnnotations(
+@mcp.tool(title="Report task result to Inbox", annotations=ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
-    description="Fallback for clients without automatic local chat sync. Do not manually mirror supported local conversations. "
-    "Record a message in the user's AgentChat task history; returns immediately. "
-    "Use started once when work starts, user_message only to mirror the user's actual instruction verbatim, "
-    "progress for an important update, completed for the final result, failed or cancelled when work ends that way. "
-    "For completed, text must be the exact final response shown to the user in the host chat, not a rewritten summary. "
-    "Keep the same work_id as ask_user; use unique request_key per event. Does not send a new task to any agent. "
-    "Never substitute this for ask_user, claim consent, or report completion while a question is pending.")
+    description="Notify the user when a task completes, fails, or is cancelled. Returns immediately. "
+    "Provide a concise result summary and any necessary next step. Keep the same work_id as ask_user. "
+    "Do not claim completion while a question is pending; never substitute a report for ask_user or consent.")
 async def report_to_user(request_key: str, work_id: str, work_title: str,
                          kind: ChatEventKind, text: str, ctx: Context) -> CallToolResult:
     try:

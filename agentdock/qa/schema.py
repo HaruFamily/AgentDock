@@ -35,7 +35,7 @@ class OptionInput(BaseModel):
 
 Mode = Literal["text", "single", "multiple"]
 
-ChatEventKind = Literal["started", "user_message", "progress", "completed", "failed", "cancelled"]
+ChatEventKind = Literal["completed", "failed", "cancelled"]
 
 
 class ChatEventInput(BaseModel):

@@ -112,3 +112,9 @@
 使用者確認閃爍僅發生在拖曳時。完整浮動卡片加聊天頁的離屏事件計數，在多次縮放及 60 輪事件處理後 idle 無 Paint／Resize／LayoutRequest；未重現持續循環。Windows translucent 視窗改由 EdgeGrip 以 16 ms 合併手動 resize，避免原生 resize 路徑；release 使用最終指標座標同步完成。每次 resize 不再 raise 全部 grips，相同 pending／attention 不要求 repaint。
 
 新增測試验证合併多個拖曳事件、Windows 路徑不呼叫原生 resize、放開套用最終尺寸、相同狀態不重繪。相關 7 項通過。完整測試 137 passed、1 failed：既有祕密匯出測試把隨機 base64 中的 k1 誤認為明文；改為檢查完整 JSON 字串值後，該項與縮放測試重跑 3 passed。未更動加密實作。Windows 原生視覺閃爍是否消失仍待使用者重啟驗收。
+
+### Inbox 收斂驗證（2026-10-07）
+
+改版前已建立本機 checkpoint 4d97351，未推送。刪除原生接收器、Desktop 快取／HTTP 圖片讀取及其專用測試；保留並調整問答、附件、未讀、分頁、縮放、caller 隔離與實際 stdio MCP 測試。新增驗證：舊 external 事件不顯示但仍在磁碟、舊 native alias／來源封存不遮蔽 QA、結果未讀跨重啟保留、拒絕 started／user_message／progress、App 無接收器 import。全套 93 passed（45.19s）。
+
+未讀寫真實 data 做測試，未修改客戶端設定。使用者需重啟 App 並重新連接 MCP；結果通知需要 Agent 主動呼叫工具，不宣稱具備自動 hook 或完成偵測。前文原生接收／補圖研究僅屬歷史，不再描述目前功能。Windows 拖曳閃爍的實機驗收仍待確認。

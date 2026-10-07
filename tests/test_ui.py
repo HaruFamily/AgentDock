@@ -298,7 +298,7 @@ def test_deleting_from_library_removes_from_agents(tmp_path, monkeypatch):
     assert not L.get("godot-mcp-pro")
 
 
-@pytest.mark.parametrize("old_name", ["agentdock_qa", "agentdock-qa"])
+@pytest.mark.parametrize("old_name", ["agentchat", "agentdock_qa", "agentdock-qa"])
 def test_old_qai_name_migrates_and_sorting(tmp_path, old_name):
     from agentdock.agents import AgentManager
     from agentdock.library import Library, QAI_KEY
@@ -314,7 +314,7 @@ def test_old_qai_name_migrates_and_sorting(tmp_path, old_name):
     view._update_all()
     m.apply(m.prepare(view.ops))
     servers = tomlkit.parse(cfg.read_text(encoding="utf-8")).unwrap()["mcp_servers"]
-    assert QAI_KEY == "agentchat" and QAI_KEY in servers and old_name not in servers
+    assert QAI_KEY == "inbox" and QAI_KEY in servers and old_name not in servers
     view.ops.clear()
     view._reorder([b.id, p.id])
     assert [x.name for x in m.list()] == ["Another", "Codex"]
@@ -426,3 +426,27 @@ def test_mcp_removed_outside_agentdock_is_flagged(tmp_path):
     view.refresh()
     view._forget_missing(p.id, "mine")
     assert not view.missing and state["known_mcp"][p.id] == ["other"]
+
+@pytest.mark.parametrize('kind', ['codex', 'opencode', 'claude-code', 'claude-desktop'])
+@pytest.mark.parametrize('enabled', [True, False])
+def test_inbox_migration_keeps_enabled_state(tmp_path, kind, enabled):
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView
+    app = QApplication.instance() or QApplication([])
+    m = AgentManager(tmp_path / 'data')
+    library = Library(tmp_path / 'repo', tmp_path / 'data')
+    profile = m.add('Agent', kind, str(tmp_path / ('config.toml' if kind == 'codex' else 'config.json')))
+    entry = library.render(library.get('inbox'), kind, profile)
+    m.apply(m.prepare([{'profile': profile.id, 'server': 'agentchat', 'op': 'add', 'entry': entry,
+                       'enabled': enabled}]))
+    view = AgentsView(m, library)
+    view._update_all()
+    plan = m.prepare(view.ops)
+    assert any('agentchat' in change for item in plan.summary for change in item['changes'])
+    assert {r['name'] for r in m.inspect()[0]['servers']} == {'agentchat'}
+    m.apply(plan)
+    rows = m.inspect()[0]['servers']
+    assert len(rows) == 1 and rows[0]['name'] == 'inbox'
+    assert rows[0]['enabled'] is enabled
+    view.close()

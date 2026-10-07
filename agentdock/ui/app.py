@@ -17,14 +17,13 @@ from agentdock.broker import Broker
 from agentdock.files import atomic_json, load_json
 from agentdock.paths import ROOT, data_dir, venv_dir
 from agentdock.qa.store import QuestionStore
-from agentdock.chat_sync import ChatSync, sources
 from agentdock.tools import ToolContext, discover
 from agentdock.ui import theme
 from agentdock.ui.agents_view import AgentsView
 from agentdock.ui import winutil
 from agentdock.ui.card import MARGIN, FloatingCard, heart_icon
 from agentdock.ui.winutil import GlobalHotkey
-from agentdock.ui.qa_view import QaView
+from agentdock.ui.inbox_view import InboxView
 from agentdock.ui import fonts
 
 
@@ -32,7 +31,6 @@ class Bus(QObject):
     changed = Signal()
     new_question = Signal(dict)
     new_message = Signal(dict)
-    sync_status = Signal(str)
     show_requested = Signal()
 
 
@@ -55,7 +53,6 @@ class Dock(QObject):
         self.ui: dict[str, Any] = load_json(self.ui_file, {})
         self.bus = Bus()
         self.store = QuestionStore(self.data)
-        self.store.begin_chat_session()
         self.store.subscribe(self._store_event)
         self.manager = AgentManager(self.data)
         self.library = Library(ROOT, self.data)
@@ -75,7 +72,7 @@ class Dock(QObject):
         self.icon.moved.connect(lambda _p: self._save_ui())
         self.icon.quit_requested.connect(self.quit)
         self.icon.theme_requested.connect(self.apply_theme)
-        self.qa = QaView(self.store)
+        self.qa = InboxView(self.store)
         self.agents = AgentsView(self.manager, self.library, ui_state=self.ui, save_state=self._save_ui)
         self.ball.set_qa(self.qa)
         self.ball.set_settings(self.agents)
@@ -104,7 +101,6 @@ class Dock(QObject):
         self._chat_refresh = QTimer(self, singleShot=True, interval=100)
         self._chat_refresh.timeout.connect(self.qa.refresh)
         self.bus.changed.connect(lambda: self._chat_refresh.start() if not self._chat_refresh.isActive() else None)
-        self.bus.sync_status.connect(self.qa.set_sync_status)
         self.bus.new_question.connect(self._on_new_question)
         self.bus.new_message.connect(self._on_new_message)
         self.bus.show_requested.connect(self.summon)
@@ -127,8 +123,6 @@ class Dock(QObject):
         self.icon.show()
         self._sync_icon()
         self.broker.start()
-        self.chat_sync = ChatSync(self.store, self.data, lambda: sources(self.manager.list()), self.bus.sync_status.emit)
-        self.chat_sync.start()
         self._keep_visible()
         self._tick = QTimer(self, interval=3000)   # "Agent waiting / reconnecting" label of the open question
         self._tick.timeout.connect(self._tick_waiting)
@@ -163,11 +157,7 @@ class Dock(QObject):
                     window.bubble.close()
             self.ball.restyle()
             self.icon.restyle()
-            self.qa._rendered_key = ""
-            self.qa._list_key = None
             self.qa.refresh()
-            if self.qa.active and self.qa.stack.currentIndex() == 1:
-                self.qa.open_question(self.qa.active)
         if save:
             self.ui["theme"] = theme.NAME
             self._save_ui()
@@ -480,8 +470,6 @@ class Dock(QObject):
 
     def quit(self) -> None:
         self.qa._flush()
-        if getattr(self, "chat_sync", None):
-            self.chat_sync.close()
         self.store.flush_reads()
         if getattr(self, "hotkey", None):
             self.hotkey.unregister()
