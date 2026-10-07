@@ -267,6 +267,9 @@ class Library:
                     _https(spec["source_url"].replace("{TAG}", "x"))
             elif not all(str(spec.get(f, "")).strip() for f in ("event", "matcher", "command")):
                 raise ValueError(f"hooks.{kind} 需要 event、matcher、command。")
+            if 'events' in spec and (not isinstance(spec['events'], list) or
+                                    any(not isinstance(v, str) or not v.strip() for v in spec['events'])):
+                raise ValueError('events 必須是非空事件名稱的陣列。')
         if "path" in e:
             e["path"] = bool(e["path"])
         return e

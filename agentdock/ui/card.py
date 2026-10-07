@@ -335,6 +335,8 @@ class EdgeGrip(QWidget):
 
 # ---------------------------------------------------------------------------- the window
 class FloatingCard(QWidget):
+    drag_moved = Signal()
+    launcher_clicked = Signal()
     moved = Signal(QPoint)
     quit_requested = Signal()
     mode_changed = Signal(str)
@@ -375,6 +377,9 @@ class FloatingCard(QWidget):
         self._pulse.timeout.connect(self._on_pulse)
         self._twinkle_timer = QTimer(self, interval=700)
         self._twinkle_timer.timeout.connect(self._on_twinkle)
+        self._ripple_started = time.monotonic()
+        self._ripple_timer = QTimer(self, interval=33)
+        self._ripple_timer.timeout.connect(self.update)
 
         self.root = QVBoxLayout(self)
         self.root.setSpacing(8)
@@ -517,6 +522,7 @@ class FloatingCard(QWidget):
             self._pulse.stop()
             self._glow = 0.0
         self.pending = count
+        self._sync_ripple()
         self.setToolTip(f"AgentDock：{count} 題待回答" if count else "")
         self._paint_tabs()
         self.update()
@@ -636,7 +642,7 @@ class FloatingCard(QWidget):
 
     def _apply_mode(self) -> None:
         card = self.mode == CARD
-        self.header.setVisible(card)
+        self.header.setVisible(card and not getattr(self, 'external_tabs', False))
         self.stack.setVisible(card)
         for g in self.grips:
             g.setVisible(card)
@@ -657,6 +663,7 @@ class FloatingCard(QWidget):
             self.root.setContentsMargins(0, 0, 0, 0)
             self.setMinimumSize(0, 0)
             self.setFixedSize(HEART_SIZE + MARGIN * 2, HEART_SIZE + MARGIN * 2)
+        self._sync_ripple()
         self.update()
 
     def resizeEvent(self, e) -> None:  # noqa: N802
@@ -804,12 +811,47 @@ class FloatingCard(QWidget):
         if active == self.attention:
             return
         self.attention = active
+        self._sync_ripple()
         self.update()
+
+    def _sync_ripple(self) -> None:
+        active = self.isVisible() and self.mode == HEART and bool(self.attention or self.pending)
+        if active and not self._ripple_timer.isActive():
+            self._ripple_started = time.monotonic()
+            self._ripple_timer.start()
+        elif not active:
+            self._ripple_timer.stop()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._sync_ripple()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._ripple_timer.stop()
+        super().hideEvent(event)
+
+    def _paint_ripples(self, p: QPainter) -> None:
+        center = QPointF(self.width() / 2, self.height() / 2 + 2)
+        inner = HEART_SIZE / 2 - 1
+        outer = min(self.width() / 2, self.height() / 2 - 2) - 2
+        phase = ((time.monotonic() - self._ripple_started) / 1.6) % 1
+        p.save()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for offset in (0.0, 0.5):
+            progress = (phase + offset) % 1
+            radius = inner + (outer - inner) * progress
+            color = QColor(theme.ACCENT)
+            color.setAlphaF(0.9 * (1 - progress))
+            p.setPen(QPen(color, 2.5 * (1 - progress) + 0.5))
+            p.drawEllipse(center, radius, radius)
+        p.restore()
 
     def paintEvent(self, _e) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.mode == HEART:
+            if self.attention or self.pending:
+                self._paint_ripples(p)
             self._paint_heart(p)
             if self.attention and not self.pending:
                 p.setPen(Qt.PenStyle.NoPen)
@@ -858,7 +900,20 @@ class FloatingCard(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(0, 0, 0, 35))
         p.drawEllipse(c + QPointF(0, 2), size / 2, size / 2)
-        draw_round_icon(p, c, size * beat)
+        if getattr(self, 'capsule_launcher', False) and not (theme.PRIVATE and theme.CUTE):
+            fill = QLinearGradient(c.x(), c.y() - 21, c.x(), c.y() + 21)
+            fill.setColorAt(0, QColor(theme.ACCENT_DEEP))
+            fill.setColorAt(1, QColor(theme.ACCENT))
+            p.setPen(QPen(QColor(theme.ACCENT_DEEP), 1))
+            p.setBrush(fill)
+            p.drawEllipse(c, 21, 21)
+            # Four tiles identify this as a launcher for tools, not media controls.
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(theme.CANVAS))
+            for dx, dy in ((-7, -7), (2, -7), (-7, 2), (2, 2)):
+                p.drawRoundedRect(QRectF(c.x() + dx, c.y() + dy, 5, 5), 1.2, 1.2)
+        else:
+            draw_round_icon(p, c, size * beat)
         if self.pending:
             badge = QRectF(self.width() - MARGIN - 20, MARGIN - 4, 24, 20)
             p.setBrush(QColor(theme.DANGER))
@@ -925,6 +980,7 @@ class FloatingCard(QWidget):
         if self._dragging or delta.manhattanLength() > 4:
             self._dragging = True
             self.move(self._origin + delta)
+            self.drag_moved.emit()
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         if e.button() != Qt.MouseButton.LeftButton or self._press is None:
@@ -939,6 +995,7 @@ class FloatingCard(QWidget):
             if self.pending:
                 self.set_page("qa")
                 self.open_question.emit("")
+            self.launcher_clicked.emit()
 
     def contextMenuEvent(self, e) -> None:  # noqa: N802
         menu = QMenu(self)
@@ -957,6 +1014,12 @@ class FloatingCard(QWidget):
             act = looks.addAction(cfg["label"], lambda k=key: self.theme_requested.emit(k))
             act.setCheckable(True)
             act.setChecked(key == theme.NAME)
+        if dock := getattr(self, 'dock_layout', None):
+            direction = menu.addMenu("展開方向")
+            for key, label in (("horizontal", "橫式"), ("vertical", "直式")):
+                act = direction.addAction(label, lambda k=key: dock.set_orientation(k))
+                act.setCheckable(True)
+                act.setChecked(dock.orientation == key)
         see = menu.addMenu("背景透明度")
         for pct in (0, 15, 30, 45, 60):
             value = 1 - pct / 100

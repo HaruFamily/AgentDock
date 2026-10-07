@@ -1,11 +1,11 @@
-"""Two looks for the whole app: a default clean look and optional local customization.
+"""Built-in dark/light looks for the whole app and optional local customization.
 
 `apply(name)` switches the module-level colour names (painted widgets read them at paint time) and returns
 the Qt stylesheet; `t(key)` gives the wording for the current look (cute vs plain).
 """
 from __future__ import annotations
 
-THEMES: dict[str, dict] = {'clean': {'label': '極簡乾淨（黑綠）',
+THEMES: dict[str, dict] = {'clean': {'label': '墨夜・青檸',
            'ACCENT': '#a3ff12',
            'ACCENT_DEEP': '#b8ff50',
            'ACCENT_SOFT': '#203019',
@@ -31,6 +31,31 @@ THEMES: dict[str, dict] = {'clean': {'label': '極簡乾淨（黑綠）',
            'CUTE': False,
            'FONT': '"Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans CJK TC", "Segoe UI", '
                    'sans-serif'}}
+
+THEMES['white_orange'] = {
+    **THEMES['clean'],
+    'label': '晨光・暖橘',
+    'ACCENT': '#ff914d',
+    'ACCENT_DEEP': '#ee7d3b',
+    'ACCENT_SOFT': '#fff1e7',
+    'LAVENDER': '#eef2f6',
+    'ALERT': '#95600d',
+    'INK': '#40556b',
+    'MUTED': '#617287',
+    'LINE': '#d4dde5',
+    'CANVAS': '#f7f8fa',
+    'CARD': '#ffffff',
+    'DANGER': '#b94343',
+    'OK': '#36745c',
+    'HOVER': '#edf2f6',
+    'DIM': '#8996a5',
+    'ERR_BG': '#fff0ef',
+    'WARN_BG': '#fff3da',
+    'WARN_INK': '#875709',
+    'GOLD': '#ff914d',
+    'HEADER_A': '#ffffff',
+    'HEADER_B': '#f0f3f7',
+}
 
 NAME = "clean"
 # module-level names other modules read (updated by apply)

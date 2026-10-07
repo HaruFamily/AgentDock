@@ -1596,7 +1596,8 @@ class AgentsView(QWidget):
 
     def _add_preset(self, preset: dict[str, Any]) -> None:
         self.library.save_extension(preset)
-        self.info(f"已加入擴充庫：{preset['key']}。下載後在 Agent 的「＋」加入。")
+        next_step = '在 Agent 的「＋」加入並預覽套用。' if preset['type'] == 'command' else '下載後在 Agent 的「＋」加入。'
+        self.info(f"已加入擴充庫：{preset['key']}。{next_step}")
 
     def _new_extension(self) -> None:
         dialog = ExtensionDialog(self, self.library)

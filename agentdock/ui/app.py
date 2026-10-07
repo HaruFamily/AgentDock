@@ -25,6 +25,7 @@ from agentdock.ui.card import MARGIN, FloatingCard, heart_icon
 from agentdock.ui.winutil import GlobalHotkey
 from agentdock.ui.inbox_view import InboxView
 from agentdock.ui import fonts
+from agentdock.ui.dock_layout import ContentWindow, DockLayout
 
 
 class Bus(QObject):
@@ -63,7 +64,7 @@ class Dock(QObject):
         self.apply_theme(self.ui.get("theme", "princess" if local_theme else "clean"), save=False)
 
         # One window: the floating card (heart / pill / card with 額度・問答・設定 pages). Kept as self.ball.
-        self.ball = FloatingCard()
+        self.ball = ContentWindow()
         # A separate, always visible launcher; its card pages are never opened.
         self.icon = LauncherIcon()
         self.icon.set_mode("heart")
@@ -83,6 +84,8 @@ class Dock(QObject):
             except Exception:
                 logging.exception("tool %s failed", tool.title)
 
+        self.layout_controller = DockLayout(self.icon, self.ball, self.ui, self._save_ui)
+
         self.ball.moved.connect(lambda _p: self._save_ui())
         self.ball.quit_requested.connect(self.quit)
         self.ball.mode_changed.connect(self._mode_changed)
@@ -93,6 +96,7 @@ class Dock(QObject):
         if winutil.IS_WINDOWS:
             self.ball.autostart_state = lambda: winutil.autostart_get() is not None
         self.ball.open_question.connect(self._open_question)
+        self.ball.launcher_clicked.connect(self._open_notification)
         self.ball.bubble_answer.connect(self._bubble_answer)
         self.qa.pending_items.connect(self.ball.set_questions)
         self.qa.pending_changed.connect(self._pending)
@@ -109,6 +113,7 @@ class Dock(QObject):
             from agentdock.tools.tokengauge import QuotaModel
             self.quota = QuotaModel(self.data, self.notify)
             self.ball.set_quota(self.quota)
+            self.quota.set_active(False)
             QTimer.singleShot(2500, self._close_other_gauges)
         except Exception:
             logging.exception("quota")
@@ -119,7 +124,7 @@ class Dock(QObject):
         self._tray()
         self._restore_ui()
         self.qa.refresh()
-        self.ball.show()
+        self.ball.hide()
         self.icon.show()
         self._sync_icon()
         self.broker.start()
@@ -157,6 +162,8 @@ class Dock(QObject):
                     window.bubble.close()
             self.ball.restyle()
             self.icon.restyle()
+            if hasattr(self, 'layout_controller'):
+                self.layout_controller.restyle()
             self.qa.refresh()
         if save:
             self.ui["theme"] = theme.NAME
@@ -184,13 +191,18 @@ class Dock(QObject):
         # Called from the broker thread: hop to the UI thread via queued signals.
         if event == "new-question" and question:
             self.bus.new_question.emit(question)
-        elif event == "new-message" and question:
+        elif event in ("new-message", "native-approval") and question:
+            if event == 'native-approval':
+                question = {**question, '_native_approval': True}
             self.bus.new_message.emit(question)
         else:
             self.bus.changed.emit()
 
     def _on_new_message(self, message: dict) -> None:
         self.qa.refresh()
+        if message.get('_native_approval'):
+            from agentdock.activity import SOURCES
+            self.notify(f"{SOURCES[message['client']]} · {message['title']}\n待授權，請回原客戶端確認。")
 
     def _on_new_question(self, q: dict) -> None:
         self.qa.refresh()
@@ -230,8 +242,12 @@ class Dock(QObject):
         self.qa.refresh()
 
     def _pending(self, count: int) -> None:
+        self._pending_count = count
         self.ball.set_pending(count)
+        if hasattr(self, 'layout_controller'):
+            self.layout_controller.sync_tabs()
         unread = sum(w["state"] == "unread" for w in self.store.conversation_summaries())
+        unread += self.store.activity.attention()
         self.icon.set_attention(bool(count or unread))
         self.ball.set_attention(bool(count or unread))
         if self.tray:
@@ -255,7 +271,25 @@ class Dock(QObject):
             self.icon.set_mode("heart")
             self.toggle_card()
 
+    def _open_notification(self, new_only=False) -> bool:
+        if new_only and self.qa.notification_target(new_only=True) is None:
+            return False
+        target = self.qa.notification_target()
+        if target is None:
+            return False
+        if hasattr(self, 'layout_controller'):
+            self.layout_controller.select('qa', force=True)
+        else:
+            self.summon()
+            self.ball.set_page('qa')
+        self.qa.open_notification(target)
+        return True
+
     def _sync_icon(self) -> None:
+        if hasattr(self, 'layout_controller'):
+            self.icon.show()
+            self.layout_controller.place()
+            return
         # The original small window remains the launcher while the card is hidden.
         self.icon.setVisible(self.ball.mode == "card")
         if self.ball.mode == "heart":
@@ -273,6 +307,9 @@ class Dock(QObject):
 
     def _check_fullscreen(self) -> None:
         if self.ui.get("rest_in_fullscreen", True):
+            if hasattr(self, 'layout_controller'):
+                self.layout_controller.fullscreen(winutil.foreground_is_fullscreen())
+                return
             self.ball.rest(winutil.foreground_is_fullscreen())
 
     def _close_other_gauges(self) -> None:
@@ -289,6 +326,8 @@ class Dock(QObject):
             self.tray.showMessage("AgentDock", text, QSystemTrayIcon.MessageIcon.Information, 4000)
 
     def _tick_waiting(self) -> None:
+        if self.store.activity.rows:
+            self._pending(getattr(self, '_pending_count', 0))
         if self.ball.isVisible() and self.qa.isVisible():
             self.qa.tick()
 
@@ -320,6 +359,8 @@ class Dock(QObject):
         if self.app.activeModalWidget() or self.app.activePopupWidget():
             return
         winutil.force_topmost(self.ball)
+        if hasattr(self, 'layout_controller') and self.layout_controller.strip.isVisible():
+            winutil.force_topmost(self.layout_controller.strip)
         if self.icon.isVisible():
             winutil.force_topmost(self.icon)
 
@@ -327,11 +368,17 @@ class Dock(QObject):
         """After a monitor is unplugged / resolution changes: pull the card back on screen."""
         self.ball.keep_on_screen()
         self.icon.keep_on_screen()
+        if hasattr(self, 'layout_controller'):
+            self.layout_controller.place()
         self._raise_all()
         self._save_ui()
 
     def summon(self) -> None:
         """Ctrl+Alt+Q / tray / a second start: bring the card back, opened, in front."""
+        if hasattr(self, 'layout_controller'):
+            if not self._open_notification():
+                self.layout_controller.select(self.layout_controller.page, force=True)
+            return
         self.ball.rest_from = None
         self.ball.show()
         self.ball.set_mode("card")
@@ -345,6 +392,16 @@ class Dock(QObject):
         self._raise_all()
 
     def toggle_card(self) -> None:
+        if hasattr(self, 'layout_controller'):
+            layout = self.layout_controller
+            layout.suspended = False
+            if layout.expanded:
+                layout.hide()
+            elif not self._open_notification(new_only=True):
+                layout.show()
+            return
+        if self._open_notification():
+            return
         self.ball.set_mode("heart" if self.ball.mode == "card" else "card")
 
     def _tray(self) -> None:
@@ -438,6 +495,15 @@ class Dock(QObject):
             area.right() + 1 - self.icon.width() + MARGIN,
             area.top() + (area.height() - self.icon.height()) // 2))
         self.icon.keep_on_screen()
+        if hasattr(self, 'layout_controller'):
+            try:
+                self.ball.set_bg_opacity(float(self.ui.get('bg_opacity', 1.0)))
+            except (TypeError, ValueError):
+                pass
+            self.ball.set_page(self.layout_controller.page)
+            self.layout_controller.place()
+            self.ball.hide()
+            return
         # Page restoration emits save signals, so place the resting window first.
         self.ball.move(self.icon.pos())
         mode = "heart"  # Each new launch starts quietly, even if the last session was expanded.
@@ -469,6 +535,11 @@ class Dock(QObject):
             logging.exception("save ui")
 
     def quit(self) -> None:
+        self.ball._quitting = True
+        if hasattr(self, 'layout_controller'):
+            self.layout_controller.remember()
+            self.layout_controller.animation.stop()
+            self.layout_controller.strip.close()
         self.qa._flush()
         self.store.flush_reads()
         if getattr(self, "hotkey", None):

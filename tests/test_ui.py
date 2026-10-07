@@ -108,9 +108,11 @@ def test_option_entire_row_clicks_without_toggling_notes(tmp_path, mode):
 
 
 def test_persistent_icon_toggles_card(tmp_path):
+    from types import SimpleNamespace
     from agentdock.ui.app import Dock, LauncherIcon
     from agentdock.ui.card import FloatingCard
     dock = Dock.__new__(Dock)
+    dock.qa = SimpleNamespace(notification_target=lambda: None)
     dock.ball = FloatingCard()
     dock.icon = LauncherIcon()
     dock.ui = {}

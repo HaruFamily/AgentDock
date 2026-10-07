@@ -64,6 +64,46 @@
      "source_url": "https://raw.githubusercontent.com/rtk-ai/rtk/{TAG}/hooks/opencode/rtk.ts"
     }
    }
+  },
+  {
+   "key": "inbox-activity",
+   "type": "command",
+   "command": "{PYTHON}",
+   "path": false,
+   "description": "Inbox 授權提醒與近期活動。僅通知，仍在原客戶端批准；兩分鐘無事件顯示未知。Claude Desktop 一般聊天尚無接入。",
+   "hooks": {
+    "codex": {
+     "event": "UserPromptSubmit",
+     "matcher": "*",
+     "command": "{INBOX_HOOK}",
+     "events": [
+      "PreToolUse",
+      "PostToolUse",
+      "PermissionRequest",
+      "Stop",
+      "Interrupt",
+      "SessionEnd"
+     ]
+    },
+    "claude-code": {
+     "event": "UserPromptSubmit",
+     "matcher": "*",
+     "command": "{INBOX_HOOK}",
+     "events": [
+      "PreToolUse",
+      "PostToolUse",
+      "PostToolUseFailure",
+      "Notification",
+      "Stop",
+      "StopFailure",
+      "SessionEnd"
+     ]
+    },
+    "opencode": {
+     "plugin": "inbox-activity.js",
+     "source": "{AGENTDOCK}/agentdock/assets/opencode/inbox-activity.js"
+    }
+   }
   }
  ]
 }

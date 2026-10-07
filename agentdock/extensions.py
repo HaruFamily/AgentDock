@@ -7,7 +7,7 @@ A library extension lists, per client kind, how it plugs in:
   {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "..."}]}]}}).
 - opencode: a plugin file {plugin: "rtk.ts", source: "<template path>"} copied into <opencode dir>/plugins/.
 
-Claude Desktop / Cowork has no hook or plugin mechanism, so extensions never apply there.
+The Claude Desktop / Cowork MCP profile has no verified extension adapter here.
 
 Like MCP changes, everything is planned first (preview), re-checked, backed up and then written.
 An extension counts as installed for an Agent when its hook command / plugin file is present —
@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import uuid
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -27,6 +28,7 @@ from typing import Any
 from agentdock.agents import Profile, strip_jsonc
 from agentdock.files import atomic_write, backup_path, prune_backups, read_text
 from agentdock.library import Library
+from agentdock.paths import console_python
 
 # One-click library entries ("＋ → rtk（範本）"). Same shape as mcp-library.json "extensions".
 PRESETS: list[dict[str, Any]] = [{
@@ -41,7 +43,19 @@ PRESETS: list[dict[str, Any]] = [{
     },
 }]
 
-UNSUPPORTED = {"claude-desktop": "Claude Desktop / Cowork 不支援 hook 或 plugin"}
+PRESETS.append({
+    'key': 'inbox-activity', 'type': 'command', 'command': '{PYTHON}', 'path': False,
+    'description': 'Inbox 授權提醒與近期活動。僅通知，仍在原客戶端批准；兩分鐘無事件顯示未知。Claude Desktop 一般聊天尚無接入。',
+    'hooks': {
+        'codex': {'event': 'UserPromptSubmit', 'matcher': '*', 'command': '{INBOX_HOOK}',
+                  'events': ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'Stop', 'Interrupt', 'SessionEnd']},
+        'claude-code': {'event': 'UserPromptSubmit', 'matcher': '*', 'command': '{INBOX_HOOK}',
+                        'events': ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification', 'Stop', 'StopFailure', 'SessionEnd']},
+        'opencode': {'plugin': 'inbox-activity.js', 'source': '{AGENTDOCK}/agentdock/assets/opencode/inbox-activity.js'},
+    },
+})
+
+UNSUPPORTED = {"claude-desktop": "Claude Desktop 一般聊天／Cowork 尚無已驗證的擴充接入"}
 
 
 def agent_dir(profile: Profile) -> Path | None:
@@ -77,6 +91,17 @@ def target(library: Library, entry: dict[str, Any], profile: Profile) -> Target 
     spec = entry.get("hooks", {}).get(profile.kind)
     if not spec or profile.kind in UNSUPPORTED:
         return None
+    spec = copy.deepcopy(spec)
+    if spec.get('command') == '{INBOX_HOOK}':
+        args = [
+            console_python(), str(library.root / 'agentdock' / 'activity_hook.py'),
+            '--client', profile.kind, '--identity', 'agentdock-' + profile.id,
+            '--data', str(library.data)]
+        script = '& ' + ' '.join("'" + arg.replace("'", "''") + "'" for arg in args)
+        encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+        spec['command'] = 'powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + encoded
+        spec['timeout'] = 3
+    spec['_identity'] = 'agentdock-' + profile.id
     if profile.kind == "opencode":
         base = agent_dir(profile)
         return Target("plugin", base / "plugins" / spec["plugin"], spec) if base else None
@@ -112,8 +137,15 @@ def _matches(command: str, wanted: str) -> bool:
 
 
 def hook_present(data: dict[str, Any], spec: dict[str, Any]) -> bool:
+    if spec.get('events'):
+        return all(hook_present(data, s) for s in hook_specs(spec))
     groups = (data.get("hooks") or {}).get(spec["event"]) or []
     return any(_matches(c, spec["command"]) for g in groups for c in _commands(g))
+
+
+def hook_specs(spec):
+    return [{**{k: v for k, v in spec.items() if k != 'events'}, 'event': event}
+            for event in [spec['event'], *spec.get('events', [])]]
 
 
 def add_hook(data: dict[str, Any], spec: dict[str, Any]) -> None:
@@ -215,6 +247,9 @@ class ExtensionManager:
         text = read_text(source)
         if not text:
             raise ValueError(f"找不到 {entry['key']} 的 OpenCode plugin 範本：{source}")
+        if entry['key'] == 'inbox-activity':
+            text = text.replace('__INBOX_ENDPOINT__', json.dumps(str(self.library.data / 'endpoint.json')))
+            text = text.replace('__INBOX_IDENTITY__', json.dumps(spec['_identity']))
         return text
 
     def prepare(self, ops: list[dict[str, Any]], profiles: list[Profile]) -> ExtPlan:
@@ -249,11 +284,12 @@ class ExtensionManager:
                     except ValueError as e:
                         raise ValueError(f"{t.path} 語法錯誤，請先修正：{e}") from None
                 data = docs[t.path]
-                if install and not hook_present(data, t.spec):
-                    add_hook(data, t.spec)
-                elif not install:
-                    remove_hook(data, t.spec)
-                change = f"{entry['key']} → {'加入' if install else '移除'} {t.spec['event']} hook（{t.spec['command']}）"
+                for spec in hook_specs(t.spec):
+                    if install and not hook_present(data, spec):
+                        add_hook(data, spec)
+                    elif not install:
+                        remove_hook(data, spec)
+                change = f"{entry['key']} → {'加入' if install else '移除'} {', '.join(s['event'] for s in hook_specs(t.spec))} hook（{t.spec['command']}）"
             notes.setdefault(p.id, []).append(change)
             if p.id not in plan.profiles:
                 plan.profiles.append(p.id)

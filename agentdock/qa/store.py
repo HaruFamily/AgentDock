@@ -81,6 +81,8 @@ class QuestionStore:
             raise RuntimeError("questions.json 格式錯誤，請先保留並修復該檔案。")
         self.last_seen: dict[str, float] = {}
         self._listeners: list[Callable[[str, dict | None], None]] = []
+        from agentdock.activity import ActivityStore
+        self.activity = ActivityStore(directory, self._emit)
         self.chat_file = directory / "chat.json"
         self._chat = load_json(self.chat_file, {"events": [], "hidden_questions": []})
         if not isinstance(self._chat, dict) or not isinstance(self._chat.get("events"), list) or not isinstance(self._chat.get("hidden_questions"), list):
@@ -207,7 +209,7 @@ class QuestionStore:
                 continue
             tasks.append({**summary, "latest": copy.deepcopy(latest),
                           "pending": copy.deepcopy(pending)})
-        return tasks
+        return sorted(tasks + self.activity.tasks(), key=lambda t: t['updated_at'], reverse=True)
 
     def conversation_page(self, owner: str, work_id: str, limit: int = 30, before=None) -> dict | None:
         item = self._conversation_view()[0].get((owner, work_id))
@@ -224,7 +226,21 @@ class QuestionStore:
         index, summaries = self._conversation_view()
         return [{**s, "entries": copy.deepcopy(index[(s["owner"], s["work_id"])]["entries"])} for s in summaries]
 
+    def opened_questions(self) -> set[str]:
+        return set(self._chat.get('opened_questions', []))
+
+    def mark_question_opened(self, qid: str) -> None:
+        ids = {q['id'] for q in self.group_members(qid)}
+        with self._lock:
+            opened = self.opened_questions()
+            if ids <= opened:
+                return
+            self._save_chat({**self._chat, 'opened_questions': sorted(opened | ids)})
+
     def mark_read(self, owner: str, work_id: str, event_ids: list[str]) -> bool:
+        if work_id.startswith('native:') and self.activity.mark_read(owner, work_id, event_ids):
+            self._emit('change')
+            return True
         ids = set(event_ids)
         def unread(e):
             return e["id"] in ids and e["owner"] == owner and e["work_id"] == work_id and not e["read"]
@@ -276,6 +292,8 @@ class QuestionStore:
 
     def remove_conversation(self, owner: str, work_id: str) -> None:
         """Remove visible history, retaining question protocol records for in-flight callers/retries."""
+        if work_id.startswith('native:'):
+            self.activity.remove(owner, work_id)
         with self._lock:
             data = copy.deepcopy(self._chat)
             removed = [e for e in data["events"] if self._chat_key(e["owner"], e["work_id"]) == (owner, work_id)]

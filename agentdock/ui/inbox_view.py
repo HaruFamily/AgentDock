@@ -1,5 +1,6 @@
 """Latest task summaries with independent, inline question foldouts."""
 import weakref
+from datetime import datetime
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
@@ -24,6 +25,8 @@ class QuestionFoldout(QWidget):
         self.layout_box.addWidget(self.toggle)
 
     def set_expanded(self, expanded):
+        if expanded:
+            self.inbox.store.mark_question_opened(self.question['id'])
         if expanded and self.editor is None:
             self.editor = QaView(self.inbox.store, inline=True)
             self.editor.closed.connect(self.inbox.refresh)
@@ -115,13 +118,24 @@ class TaskRow(QFrame):
         self.status.setVisible(not units)
         if units:
             self.status.setText('待回答')
+        elif latest['kind'] == 'native':
+            state = latest['state']
+            text = {'running': '進行中（近期活動）', 'approval': '待授權 · 請回原客戶端確認',
+                    'unknown': '狀態未知 · 已超過 2 分鐘未更新或 Inbox 已重啟',
+                    'idle': '回合結束', 'ended': '工作階段結束',
+                    'interrupted': '已中斷', 'error': '執行出錯'}[state]
+            stamp = datetime.fromtimestamp(latest['at']).strftime('%H:%M:%S')
+            if state == 'unknown' and latest.get('approvals'):
+                text += '\n上次收到授權請求，是否已處理請至原客戶端確認'
+            self.status.setText(f'{text}\n最近活動 {stamp}' +
+                                (f"\n{latest['detail']}" if state == 'approval' and latest['detail'] else ''))
+            if not latest['read']:
+                self.read_id = latest['id']
         elif latest['kind'] == 'question':
-            self.status.setText('進行中')
-            self.status.setToolTip('')
+            self.status.setText('等待 Agent 回報')
         else:
-            self.status.setText('已完成')
-            self.status.setToolTip({'completed': '任務已完成', 'failed': '任務以失敗結束',
-                                    'cancelled': '任務已取消'}[latest['kind']])
+            self.status.setText({'completed': '已完成', 'failed': '失敗',
+                                 'cancelled': '已取消'}[latest['kind']])
             if not latest['read']:
                 self.read_id = latest['id']
         self.remove_button.setEnabled(not units)
@@ -167,7 +181,7 @@ class InboxView(QWidget):
         units = QaView._units(pending)
         self.pending_changed.emit(len(units))
         self.pending_items.emit([{'id': u[0]['id'], 'source': u[0]['source'], 'question': u[0]['question']} for u in units])
-        shown = [t for i, t in enumerate(tasks) if i < self._limit or t['pending']]
+        shown = [t for i, t in enumerate(tasks) if i < self._limit or t['pending'] or t['state'] == 'approval']
         wanted = {(t['owner'], t['work_id']) for t in shown}
         for key in set(self.rows) - wanted:
             row = self.rows.pop(key)
@@ -211,20 +225,53 @@ class InboxView(QWidget):
                     row.group.toggle.setChecked(True)
                     fold.toggle.setChecked(True)
                     self.scroll.ensureWidgetVisible(fold)
+                    QTimer.singleShot(0, fold, lambda f=fold: self.scroll.ensureWidgetVisible(f))
                     return
 
     def show_first_pending(self):
         # Opening Inbox does not choose a question or disturb an existing draft.
         self.refresh()
 
+    def notification_target(self, new_only=False):
+        tasks = self.store.inbox_tasks()
+        pending = [q for t in tasks for q in t['pending']]
+        opened = self.store.opened_questions()
+        new = [q for q in pending if q['id'] not in opened]
+        if new:
+            return ('question', max(new, key=lambda q: (q['created_at'], q['id']))['id'])
+        if pending and not new_only:
+            return ('question', min(pending, key=lambda q: (q['created_at'], q['id']))['id'])
+        # Native approval requests also need action before a finished result.
+        for task in tasks:
+            if task['state'] == 'approval' and (not new_only or not task['latest']['read']):
+                return ('task', task['owner'], task['work_id'])
+        for task in tasks:
+            latest = task['latest']
+            if latest['kind'] != 'question' and not latest['read'] and task['state'] not in ('unknown', 'running'):
+                return ('task', task['owner'], task['work_id'])
+        return None
+
+    def open_notification(self, target):
+        if target[0] == 'question':
+            self.open_question(target[1])
+        else:
+            self.open_conversation(*target[1:])
+
     def open_conversation(self, owner, work_id):
+        for i, task in enumerate(self.store.inbox_tasks()):
+            if (task['owner'], task['work_id']) == (owner, work_id):
+                self._limit = max(self._limit, i + 1)
+                break
         self.refresh()
         if (owner, work_id) in self.rows:
             row = self.rows[(owner, work_id)]
             row.group.toggle.setChecked(True)
             self.scroll.ensureWidgetVisible(row)
+            QTimer.singleShot(0, row, lambda r=row: self.scroll.ensureWidgetVisible(r))
 
     def tick(self):
+        if self.store.activity.rows:
+            self.refresh()
         for row in self.rows.values():
             for fold in row.foldouts.values():
                 if fold.editor and fold.toggle.isChecked(): fold.editor.tick()

@@ -6,7 +6,7 @@ def test_local_theme_missing_invalid_and_removed(tmp_path):
         assert not theme.load_private(tmp_path)
         theme.apply("princess")  # A saved preference from another device.
         assert theme.NAME == "clean"
-        assert list(theme.THEMES) == ["clean"]
+        assert list(theme.THEMES) == ["clean", "white_orange"]
         path = tmp_path / "private_theme.py"
         path.write_text("raise RuntimeError('broken')", encoding="utf-8")
         assert not theme.load_private(tmp_path)
@@ -29,7 +29,7 @@ def test_local_theme_missing_invalid_and_removed(tmp_path):
         assert not theme.load_private(tmp_path)
         theme.apply("princess")
         assert theme.NAME == "clean"
-        assert list(theme.THEMES) == ["clean"]
+        assert list(theme.THEMES) == ["clean", "white_orange"]
     finally:
         theme.THEMES.pop("princess", None)
         theme.PRIVATE = None

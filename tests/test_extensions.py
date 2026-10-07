@@ -125,6 +125,32 @@ def test_merge_summary():
     assert a[0]["changes"] == ["1"]
 
 
+def test_activity_install_preview_backup_and_remove(env):
+    L, m, p, home = env
+    preset = next(e for e in PRESETS if e['key'] == 'inbox-activity')
+    L.save_extension(preset)
+    source = 'agentdock/assets/opencode/inbox-activity.js'
+    (L.root / source).write_text((ROOT / source).read_text('utf-8'), 'utf-8')
+    manager = ExtensionManager(L)
+    ops = [{'profile': p[k].id, 'ext': preset['key'], 'op': 'install'} for k in ('cc', 'codex', 'oc')]
+    hook = home / '.codex' / 'hooks.json'
+    hook.write_text('{"other": 1}', 'utf-8')
+    plan = manager.prepare(ops, m.list())
+    assert hook.read_text('utf-8') == '{"other": 1}'
+    assert len(plan.files) == 3
+    results = manager.apply(plan)
+    assert any(r['backup'] for r in results)
+    data = json.loads(hook.read_text('utf-8'))
+    assert 'PermissionRequest' in data['hooks'] and 'Stop' in data['hooks']
+    assert all(manager.status(preset, p[k]) for k in ('cc', 'codex', 'oc'))
+    assert not manager.prepare(ops, m.list()).files
+    plugin = home / '.config/opencode/plugins/inbox-activity.js'
+    assert '__INBOX_' not in plugin.read_text('utf-8')
+    manager.apply(manager.prepare([{**o, 'op': 'uninstall'} for o in ops], m.list()))
+    assert json.loads(hook.read_text('utf-8')) == {'other': 1}
+    assert not plugin.exists()
+
+
 def test_path_problems_and_link(env, tmp_path, monkeypatch):
     L, _, _, _ = env
     rtk = L.get_extension("rtk")
