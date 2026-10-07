@@ -12,3 +12,6 @@ output/
 
 # folder-local Python, uv, packages and caches (AgentDock.exe prepares it)
 runtime/
+
+# local research and backups (never commit client cache metadata)
+/local-backups/

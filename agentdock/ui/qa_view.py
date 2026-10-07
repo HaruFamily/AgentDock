@@ -538,7 +538,8 @@ class QaView(QWidget):
             self.back()
             return
         stamp = (work["work_title"], work["source"], work["has_older"], len(self._timeline_pages),
-                 [(e["id"], e.get("status"), e["kind"], e.get("text"), e.get("read"), e.get("answer")) for e in work["entries"]])
+                 [(e["id"], e.get("status"), e["kind"], e.get("text"), e.get("read"), e.get("answer"),
+                   e.get("images")) for e in work["entries"]])
         if stamp == self._timeline_key:
             return
         self._timeline_key = stamp
@@ -617,6 +618,9 @@ class QaView(QWidget):
         scroll = QScrollArea()
         self.timeline_scroll = scroll
         scroll.setWidgetResizable(True)
+        # Reserve the gutter: toggling it changes wrapped bubble heights, which
+        # can toggle the scrollbar again while the window is being shrunk.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget()
         self._timeline_layout = QVBoxLayout(body)

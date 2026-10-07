@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 import time
 from typing import Any, Callable
 
@@ -263,7 +264,7 @@ QPushButton#BubbleOpt:hover {{ background: {theme.ACCENT}; color: {'white' if th
 
 # ---------------------------------------------------------------------------- resizing
 class EdgeGrip(QWidget):
-    """Invisible strip on the window border; dragging it resizes the window natively (startSystemResize)."""
+    """Resize grips, with coalesced manual resizing for Windows layered windows."""
 
     CURSORS = {
         Qt.Edge.LeftEdge: Qt.CursorShape.SizeHorCursor, Qt.Edge.RightEdge: Qt.CursorShape.SizeHorCursor,
@@ -280,6 +281,9 @@ class EdgeGrip(QWidget):
         else:
             self.setCursor(Qt.CursorShape.SizeFDiagCursor if edges in diag else Qt.CursorShape.SizeBDiagCursor)
         self._start = None
+        self._next_geometry = None
+        self._resize_frame = QTimer(self, singleShot=True, interval=16)
+        self._resize_frame.timeout.connect(self._flush_resize)
 
     def paintEvent(self, _e) -> None:  # noqa: N802
         # Nearly transparent but not fully: fully transparent pixels are click-through on Windows.
@@ -290,7 +294,8 @@ class EdgeGrip(QWidget):
         if e.button() != Qt.MouseButton.LeftButton:
             return
         handle = self.win.windowHandle()
-        if handle is not None and handle.startSystemResize(self.edges):
+        layered = sys.platform == "win32" and self.win.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        if not layered and handle is not None and handle.startSystemResize(self.edges):
             return
         self._start = (e.globalPosition().toPoint(), self.win.geometry())  # fallback: manual resize
 
@@ -301,16 +306,29 @@ class EdgeGrip(QWidget):
         d = e.globalPosition().toPoint() - origin
         g = QRect(geo)
         if self.edges & Qt.Edge.LeftEdge:
-            g.setLeft(min(geo.left() + d.x(), geo.right() - self.win.minimumWidth()))
+            g.setLeft(min(geo.left() + d.x(), geo.right() + 1 - self.win.minimumWidth()))
         if self.edges & Qt.Edge.RightEdge:
-            g.setRight(geo.right() + d.x())
+            g.setRight(max(geo.right() + d.x(), geo.left() + self.win.minimumWidth() - 1))
         if self.edges & Qt.Edge.TopEdge:
-            g.setTop(min(geo.top() + d.y(), geo.bottom() - self.win.minimumHeight()))
+            g.setTop(min(geo.top() + d.y(), geo.bottom() + 1 - self.win.minimumHeight()))
         if self.edges & Qt.Edge.BottomEdge:
-            g.setBottom(geo.bottom() + d.y())
-        self.win.setGeometry(g)
+            g.setBottom(max(geo.bottom() + d.y(), geo.top() + self.win.minimumHeight() - 1))
+        self._next_geometry = g
+        if not self._resize_frame.isActive():
+            self._resize_frame.start()
 
-    def mouseReleaseEvent(self, _e) -> None:  # noqa: N802
+    def _flush_resize(self) -> None:
+        geometry, self._next_geometry = self._next_geometry, None
+        if geometry is not None and geometry != self.win.geometry():
+            self.win.setGeometry(geometry)
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._start:
+            self.mouseMoveEvent(e)
+            self._resize_frame.stop()
+            self._flush_resize()
         self._start = None
         self.win.geometry_changed.emit()
 
@@ -490,6 +508,8 @@ class FloatingCard(QWidget):
 
     # ------------------------------------------------------------------ state from app.py
     def set_pending(self, count: int) -> None:
+        if count == self.pending:
+            return
         if count > self.pending:
             self._phase = 0
             self._pulse.start()
@@ -620,6 +640,8 @@ class FloatingCard(QWidget):
         self.stack.setVisible(card)
         for g in self.grips:
             g.setVisible(card)
+            if card:
+                g.raise_()
         if card:
             if theme.CUTE:
                 self.root.setContentsMargins(MARGIN + 25, MARGIN + 25, MARGIN + 25, MARGIN + 32)
@@ -658,7 +680,6 @@ class FloatingCard(QWidget):
         }
         for grip in self.grips:
             grip.setGeometry(rects[grip.edges])
-            grip.raise_()
 
     def _remember_size(self) -> None:
         if self.mode == CARD:
@@ -777,11 +798,23 @@ class FloatingCard(QWidget):
         self._twinkle += 1
         self.update()
 
+    attention = False
+
+    def set_attention(self, active: bool) -> None:
+        if active == self.attention:
+            return
+        self.attention = active
+        self.update()
+
     def paintEvent(self, _e) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.mode == HEART:
             self._paint_heart(p)
+            if self.attention and not self.pending:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor("#F04452"))
+                p.drawEllipse(QPointF(self.width() / 2 + 14, self.height() / 2 - 12), 5, 5)
         else:
             self._paint_card(p)
 

@@ -7,8 +7,8 @@ import logging
 import sys
 from typing import Any
 
-from PySide6.QtCore import QLockFile, QObject, QPoint, QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QFont, QIcon, QPainter, QColor
+from PySide6.QtCore import QLockFile, QObject, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QFont, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from agentdock.agents import AgentManager
@@ -38,22 +38,6 @@ class Bus(QObject):
 
 class LauncherIcon(FloatingCard):
     """Reuse the icon drawing and dragging without ever resizing into a card."""
-
-    attention = False
-
-    def set_attention(self, active: bool) -> None:
-        if self.attention != active:
-            self.attention = active
-            self.update()
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        if self.attention:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#F04452"))
-            painter.drawEllipse(QPointF(self.width() / 2 + 14, self.height() / 2 - 12), 5, 5)
 
     def set_mode(self, mode: str, auto: bool = False) -> None:
         if mode in ("card", "pill"):
@@ -259,6 +243,7 @@ class Dock(QObject):
         self.ball.set_pending(count)
         unread = sum(w["state"] == "unread" for w in self.store.conversation_summaries())
         self.icon.set_attention(bool(count or unread))
+        self.ball.set_attention(bool(count or unread))
         if self.tray:
             self.tray.setToolTip(f"AgentDock：{count} 題待回答，{unread} 個未讀對話" if count or unread else "AgentDock")
 

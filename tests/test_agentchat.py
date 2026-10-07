@@ -106,6 +106,45 @@ def test_open_conversation_starts_at_bottom_and_reads_visible_completion(tmp_pat
     view.close()
 
 
+def test_timeline_resize_keeps_wrap_width_stable_and_settles(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    store = QuestionStore(tmp_path)
+    store.receive(OWNER, 'Codex', event(text='A wrapped message with several words. ' * 12))
+    view = QaView(store)
+    view.resize(460, 900)
+    view.show()
+    view.open_conversation(OWNER, 'w')
+    for _ in range(10): app.processEvents()
+    width = view.timeline_scroll.viewport().width()
+    for height in (300, 900, 280, 800, 320):
+        view.resize(460, height)
+        for _ in range(10): app.processEvents()
+        assert view.timeline_scroll.viewport().width() == width
+        geometry = view.timeline_scroll.widget().geometry()
+        for _ in range(10): app.processEvents()
+        assert view.timeline_scroll.widget().geometry() == geometry
+    view.close()
+
+
+def test_image_only_update_refreshes_open_bubble(tmp_path):
+    from test_desktop_assets import PNG
+    from agentdock.ui.qa_view import ClickableImage
+    import base64
+    app = QApplication.instance() or QApplication([])
+    store = QuestionStore(tmp_path)
+    entry = dict(key='u', kind='user_message', text='image', created_at='2026-10-07T12:00:00Z',
+                 images=[dict(name='image.png', data_url='')])
+    store.import_chat(OWNER, 'Desktop', 'w', 'Task', [entry])
+    view = QaView(store)
+    view.open_conversation(OWNER, 'w')
+    app.processEvents()
+    entry['images'][0]['data_url'] = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
+    store.import_chat(OWNER, 'Desktop', 'w', 'Task', [entry])
+    view._refresh_timeline()
+    assert any(row.findChildren(ClickableImage) for row, _, _ in view._timeline_widgets.values())
+    view.close()
+
+
 def test_broker_receive_validation_and_no_answer_endpoint(tmp_path):
     store = QuestionStore(tmp_path)
     broker = Broker(tmp_path, store)

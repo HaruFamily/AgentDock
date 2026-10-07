@@ -16,6 +16,7 @@
 - `broker.py`：隨機埠、隨機 token，寫入 `data/endpoint.json`；拒絕帶 Origin 的請求。HTTP 只能建立、查詢、取附件，不能提交答案；答案只能從 UI 提交。
 - `client.py`：mcp_server 用來找 broker；App 沒開時以 pythonw 啟動 `--background`。
 - `qa/store.py`：`questions.json` 與 `attachments/`，格式與 0.5 相同。執行緒安全；事件經 Qt 信號轉到 UI 執行緒。
+- `desktop_chat.py`：Claude Desktop 一般 Chat 的 hub_transcript 快取接收。唯讀複製 IndexedDB／blob 至短期暫存快照，前後檔案版本不同即重試；內附 MIT CCL 解碼器（來源版本與局部修改見 `_vendor/chromium/NOTICE.txt`）。先保留最高 LevelDB sequence（包含刪除值），再解析一般文字及完成標記；不以快取淘汰推斷使用者刪除。額外解析舊 Chat 的選定分支及 Cowork 事件；內嵌圖片沿用共用圖片處理，MCP 參數／結果 ID 沿用既有 alias 協定。單一格式失敗隔離至該對話，來源提示錯誤並重試。
 - AgentChat 接收：`report_to_user` → `POST /chat/events` → `QuestionStore.receive()`；呼叫者身分來自 broker header，事件內不能指定 owner。`chat.json` 保存事件、已讀及隱藏問題 ID；依 `(owner, work_id)` 與原有問答合併成對話。
 - `ui/qa_view.py` 顯示對話列表、任務歷史與既有問答編輯器。事件去重依 owner／work_id／request_key，內容不同會拒絕；待答時拒絕正常結束回報。進行中只在本次行程由事件設定，重開不猜測執行狀態。讀取標記僅對可見完成訊息生效。
 - `chat_sync.py`：App 啟動背景接收執行緒，每 2 秒檢查本機檔案變更，未變更不重讀內容、不更新 UI。Codex 讀取 `state_*.sqlite` 的 name/title、rollout_path 與 history_mode，paginated 紀錄取 item_completed 的原生訊息，legacy 取 user_message/agent_message；task_complete 才標記結束。Claude Code 取主對話 JSONL 的文字、end_turn、custom-title/ai-title；OpenCode 用 `mode=ro`、query_only SQLite 同一讀取交易取 session/message/part，不使用登入憑證。排除子代理、工具與思考內容。

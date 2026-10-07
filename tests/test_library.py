@@ -164,7 +164,8 @@ def test_local_paths_stay_out_of_git_and_secrets_travel(tmp_path):
     # password-protected bundle
     L.set_secrets({"API_KEY": "k1"})
     sealed = secretbox.seal(L.secrets(), "pw")
-    assert "k1" not in sealed and "sa.json" not in sealed
+    # Random base64 ciphertext can contain the two-character substring k1.
+    assert json.dumps("k1") not in sealed and "sa.json" not in sealed
     with pytest.raises(ValueError):
         secretbox.open_sealed(sealed, "wrong")
     values = secretbox.open_sealed(sealed, "pw")

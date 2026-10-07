@@ -78,6 +78,11 @@ def image_content(content) -> list[dict]:
             url = url.get("url", "")
         if source.get("type") == "base64":
             url = f"data:{source.get('media_type', '')};base64,{source.get('data', '')}"
+        native_file = block.get("file")
+        if kind == "image" and isinstance(native_file, dict) and native_file.get("base64"):
+            raw = native_file["base64"]
+            if isinstance(raw, str):
+                url = raw if raw.startswith("data:") else f"data:{native_file.get('type', '')};base64,{raw}"
         result.append({"name": str(block.get("filename") or "圖片")[:200],
                        "data_url": url if isinstance(url, str) and url.startswith("data:") else ""})
         if len(result) == 8:
@@ -214,7 +219,7 @@ def codex_record(row: dict, state: dict) -> tuple[list[dict], list[str | dict]]:
 
 
 def claude_record(row: dict, state: dict) -> tuple[list[dict], list[str | dict]]:
-    if row.get("isSidechain") or row.get("isMeta"):
+    if row.get("isSidechain") or row.get("isMeta") or row.get("isSynthetic") or row.get("parent_tool_use_id"):
         return [], []
     if row.get("sessionId"):
         state["session"] = row["sessionId"]
@@ -223,7 +228,14 @@ def claude_record(row: dict, state: dict) -> tuple[list[dict], list[str | dict]]
         state["custom_title"] = True
     if row.get("type") == "ai-title" and not state.get("custom_title"):
         state["title"] = row.get("aiTitle") or state.get("title")
-    timestamp, uid = row.get("timestamp"), row.get("uuid")
+    timestamp, uid = row.get("timestamp") or row.get("created_at"), row.get("uuid")
+    if row.get("type") == "result" and timestamp:
+        kind = "failed" if row.get("is_error") else "completed"
+        last = state.pop("last", None)
+        if last:
+            return [{**last, "kind": kind, "finished_at": iso(timestamp)}], []
+        text = row.get("result") if isinstance(row.get("result"), str) else ""
+        return [event(uid or "result:" + str(timestamp), kind, text, timestamp)], []
     msg = row.get("message") or {}
     blocks = msg.get("content", [])
     links = [i for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"
@@ -241,11 +253,16 @@ def claude_record(row: dict, state: dict) -> tuple[list[dict], list[str | dict]]
             return [], links
         if text:
             state.setdefault("title", text.splitlines()[0][:160])
+        state.pop("last", None)
         return [event(uid, "user_message", text, timestamp, images=images)], links
     reason = msg.get("stop_reason")
-    kind = "completed" if reason in ("end_turn", "stop_sequence") else "progress"
+    kind = "completed" if reason in ("end_turn", "stop_sequence", "max_tokens") else "progress"
     if text or images:
-        return [event(uid, kind, text, timestamp, images=images)], links
+        entry = event(uid, kind, text, timestamp, images=images)
+        if reason == "tool_use":
+            entry["phase"] = "commentary"
+        state["last"] = entry
+        return [entry], links
     return [], links
 
 
@@ -273,6 +290,9 @@ def sources(profiles=(), home: Path | None = None) -> list[Source]:
     home = home or Path.home()
     candidates = []
     for profile in profiles:
+        if profile.kind == "claude-desktop":
+            candidates.append((profile.kind, Path(profile.path).parent / "IndexedDB", profile.name,
+                               hashlib.sha256(f"agentdock-{profile.id}".encode()).hexdigest()))
         if profile.kind in ("codex", "claude-code"):
             config = Path(profile.path)
             root = config.parent
@@ -285,6 +305,12 @@ def sources(profiles=(), home: Path | None = None) -> list[Source]:
     defaults = [("codex", Path(os.environ.get("CODEX_HOME") or home / ".codex"), "Codex"),
                 ("claude-code", Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"), "Claude Code"),
                 ("opencode", Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share") / "opencode", "OpenCode")]
+    desktop_roots = [home / "AppData/Roaming/Claude/IndexedDB"]
+    packages = home / "AppData/Local/Packages"
+    if packages.is_dir():
+        desktop_roots.extend(p / "LocalCache/Roaming/Claude/IndexedDB" for p in packages.glob("Claude_*"))
+    defaults.extend(("claude-desktop", root, "Claude Desktop") for root in desktop_roots
+                    if (root / "https_claude.ai_0.indexeddb.leveldb").is_dir())
     for kind, root, name in defaults:
         matching = [p for p in profiles if p.kind == kind]
         caller = hashlib.sha256(f"agentdock-{matching[0].id}".encode()).hexdigest() if len(matching) == 1 else None
@@ -361,6 +387,8 @@ class ChatSync:
             try:
                 if source.kind == "opencode":
                     self._opencode(source)
+                elif source.kind == "claude-desktop":
+                    self._desktop(source)
                 else:
                     self._json_files(source)
                 self.errors.pop(str(source.root), None)
@@ -370,13 +398,50 @@ class ChatSync:
                     logging.warning("AgentChat %s sync unavailable: %s", source.name, detail)
                 self.errors[str(source.root)] = detail
         status = "；".join(f"{s.name}：{'讀取失敗' if str(s.root) in self.errors else '接收中'}" for s in active_sources)
-        status = (status or "尚未找到本機對話紀錄") + "；Claude Desktop 一般聊天：僅支援 MCP 問答與回報"
+        status = (status or "尚未找到本機對話紀錄") + "；Desktop：接收本機對話快取，未快取內容無法接收"
         if status != self._last_status and self.on_status:
             self.on_status(status)
         self._last_status = status
         if before != json.dumps(self.state, sort_keys=True):
             self.state["last_scan"] = iso(time.time())
             atomic_json(self.file, self.state)
+
+    def _desktop(self, source):
+        from agentdock.desktop_chat import messages, read_cache, signature, references, load_assets
+        from agentdock.desktop_assets import cache_stamp
+
+        key = str(source.root)
+        asset_stamp = cache_stamp(source.root.parent / "Cache" / "Cache_Data")
+        if self._signatures.get(key) == (signature(source.root), asset_stamp):
+            return
+        values, stamp = read_cache(source.root)
+        assets = load_assets(source.root, values)
+        batches, failures = [], 0
+        for value in values:
+            try:
+                batch = messages(value, assets)
+                if batch is not None:
+                    batches.append((batch, references(value)))
+            except (ValueError, TypeError, KeyError, AttributeError):
+                failures += 1
+        for (sid, title, entries), links in batches:
+            output = [entry for entry, changed in entries
+                      if not self.session_since or changed >= self.session_since]
+            saved = {e["request_key"] for e in self.store._chat["events"]
+                     if e.get("external") and e["owner"] == source.owner and e["work_id"] == sid}
+            output.extend({**entry, "history_repair": True} for entry, changed in entries
+                          if self.session_since and changed < self.session_since
+                          and entry["key"] in saved and entry.get("images"))
+            links = [{**ref, "owner": source.mcp_owner or source.owner} if isinstance(ref, dict) else ref
+                     for ref in links]
+            if output or links:
+                self.store.import_chat(source.owner, source.name, sid, title, output, links,
+                                       self.live_since, self.notify_since)
+        # No inventory reconciliation: absence/tombstones may be cache eviction.
+        # Native message IDs persist in the store, so replay/restart is idempotent.
+        if failures:
+            raise ValueError(f"{failures} Desktop conversation format(s) unreadable; remaining conversations received")
+        self._signatures[key] = (stamp, asset_stamp)
 
     def _json_files(self, source):
         metadata = {}
@@ -443,7 +508,9 @@ class ChatSync:
             cursor["offset"] = 0
         # Old, unchanged files need no transcript replay on application launch.
         # Keep the last partial line so an in-flight append can finish it later.
-        if not repairs and self.session_since and key not in self._signatures and iso(info.st_mtime) < self.session_since:
+        # Windows file timestamps can lag a just-completed write. The mtime is
+        # only a fast-path hint; near startup read rows and use native timestamps.
+        if not repairs and self.session_since and key not in self._signatures and iso(info.st_mtime + 2) < self.session_since:
             with path.open("rb") as stream:
                 if source.kind == "codex":
                     try:
@@ -533,8 +600,11 @@ class ChatSync:
                         terminal = bool(finished) and msg.get("finish") in ("stop", "end_turn", "length", "content-filter")
                         kind = "failed" if msg.get("error") else "completed" if terminal else "progress"
                         if text or images or kind != "progress":
-                            output.append(event(row["id"], kind, text, row["time_created"],
-                                                finished_at=iso(finished or row["time_created"]), images=images))
+                            entry = event(row["id"], kind, text, row["time_created"],
+                                          finished_at=iso(finished or row["time_created"]), images=images)
+                            if msg.get("finish") in ("tool-calls", "tool_use"):
+                                entry["phase"] = "commentary"
+                            output.append(entry)
                 links = [{**ref, "owner": source.mcp_owner or source.owner} if isinstance(ref, dict) else ref for ref in links]
                 if not self.session_since or output or links:
                     self.store.import_chat(source.owner, source.name, sid, session["title"], output, links,

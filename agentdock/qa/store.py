@@ -164,8 +164,16 @@ class QuestionStore:
                          "read": old.get("read", False) if old else entry["created_at"] < live_since}
                 if entry.get("images"):
                     event["images"] = self._import_images(entry["images"])
+                    # Source cache eviction must not discard a saved attachment.
+                    previous = (old or {}).get("images", [])
+                    for i, image in enumerate(event["images"]):
+                        if (image.get("unavailable") and i < len(previous)
+                                and previous[i].get("id") and previous[i].get("name") == image["name"]):
+                            event["images"][i] = previous[i]
                 if "phase" in entry:
                     event["phase"] = entry["phase"]
+                if entry.get("finished_at"):
+                    event["finished_at"] = entry["finished_at"]
                 if old and all(old.get(k) == v for k, v in event.items()):
                     continue
                 terminal = event["kind"] in ("completed", "failed", "cancelled")
@@ -312,12 +320,14 @@ class QuestionStore:
             terminal = [e for e in entries if e["kind"] in ("completed", "failed", "cancelled")]
             activity = max((e.get("resolved_at", e["created_at"]) for e in entries
                             if e["kind"] in ("question", "started", "user_message")), default="")
-            unread = terminal and not terminal[-1]["read"] and terminal[-1]["created_at"] >= activity
+            latest_terminal = max(terminal, key=lambda e: e.get("finished_at", e["created_at"]), default=None)
+            unread = (latest_terminal is not None and not latest_terminal["read"]
+                      and latest_terminal.get("finished_at", latest_terminal["created_at"]) >= activity)
             state = "waiting" if pending else "running" if key in running else "unread" if unread else ""
             meta = chat.get("sync_titles", {}).get(json_key(*key), {})
             summary = {"owner": key[0], "work_id": key[1], "work_title": meta.get("title", last["work_title"]),
                        "source": meta.get("source", last["source"]), "state": state,
-                       "updated_at": max(e.get("resolved_at", e["created_at"]) for e in entries)}
+                       "updated_at": max(e.get("resolved_at", e.get("finished_at", e["created_at"])) for e in entries)}
             visible = sorted((e for e in entries if not (e["kind"] == "progress" and e.get("phase") == "commentary")
                               and (e["kind"] == "question" or e.get("text") or e.get("images")
                               or e["kind"] in ("completed", "failed", "cancelled"))),
