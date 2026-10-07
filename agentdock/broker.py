@@ -22,7 +22,7 @@ from agentdock.files import atomic_json
 from agentdock.qa.schema import AskInput
 from agentdock.qa.store import QuestionStore
 
-PROTOCOL = 2
+PROTOCOL = 3
 MAX_BODY = 30 * 1024 * 1024
 _UUID = r"[a-f0-9-]{36}"
 _ROUTE = re.compile(rf"^/questions/({_UUID})(?:/(detach|attachments/({_UUID})))?$")
@@ -58,6 +58,10 @@ class Broker:
             if method == "POST" and path == "/show":
                 self.on_show(None)
                 return 200, {"ok": True}
+            if method == "POST" and path == "/chat/events":
+                raw = _Create.model_validate_json(body)
+                event = self.store.receive(owner, raw.source, raw.input)
+                return 200, {"id": event["id"], "status": "received"}
             if method == "POST" and path == "/questions":
                 raw = _Create.model_validate_json(body)
                 parsed = AskInput.model_validate(raw.input).model_dump()

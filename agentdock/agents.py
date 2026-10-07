@@ -22,7 +22,7 @@ from agentdock.files import atomic_json, atomic_write, backup_path, load_json, p
 
 Kind = Literal["codex", "opencode", "claude-code", "claude-desktop"]
 KINDS: dict[str, str] = {"codex": "Codex", "opencode": "OpenCode", "claude-code": "Claude Code", "claude-desktop": "Claude Desktop / Cowork"}
-QAI_NAMES = ("agentdock-qa", "agentdock_qa", "agent_interaction")  # current name first, then legacy
+QAI_NAMES = ("agentchat", "agentdock-qa", "agentdock_qa", "agent_interaction")  # current name first, then legacy
 QAI_TIMEOUT_SECONDS = 1860
 
 

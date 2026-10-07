@@ -35,6 +35,24 @@ class OptionInput(BaseModel):
 
 Mode = Literal["text", "single", "multiple"]
 
+ChatEventKind = Literal["started", "user_message", "progress", "completed", "failed", "cancelled"]
+
+
+class ChatEventInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_key: str = Field(min_length=1, max_length=150)
+    work_id: str = Field(min_length=1, max_length=160)
+    work_title: str = Field(min_length=1, max_length=160)
+    kind: ChatEventKind
+    text: str = Field(min_length=1, max_length=32000)
+
+    @field_validator("request_key", "work_id", "work_title", "text")
+    @classmethod
+    def _nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Value must not be blank")
+        return value
+
 
 def _choice_rules(mode: str, options: list) -> None:
     if mode == "text" and options:

@@ -19,18 +19,18 @@ def test_codex_add_qai_preserves_comments_toggle_remove(tmp_path):
     cfg.write_text('# mine\nmodel = "x"\n\n[mcp_servers.keep]\ncommand = "keep" # inline\n', encoding="utf-8")
     m, L = AgentManager(tmp_path / "data"), lib(tmp_path)
     p = m.add("Codex", "codex", str(cfg))
-    qai = L.get("agentdock-qa")
-    res = m.apply(m.prepare([{"profile": p.id, "server": "agentdock-qa", "op": "add", "entry": L.render(qai, "codex", p)}]))
+    qai = L.get("agentchat")
+    res = m.apply(m.prepare([{"profile": p.id, "server": "agentchat", "op": "add", "entry": L.render(qai, "codex", p)}]))
     assert res[0]["backup"]
     text = cfg.read_text(encoding="utf-8")
     assert "# mine" in text and "# inline" in text
     doc = tomlkit.parse(text).unwrap()
-    assert doc["mcp_servers"]["agentdock-qa"]["args"] == ["-m", "agentdock.mcp_server"]
-    assert doc["mcp_servers"]["agentdock-qa"]["tool_timeout_sec"] == 1860
+    assert doc["mcp_servers"]["agentchat"]["args"] == ["-m", "agentdock.mcp_server"]
+    assert doc["mcp_servers"]["agentchat"]["tool_timeout_sec"] == 1860
     rows = {r["name"]: r for r in m.inspect()[0]["servers"]}
-    assert rows["agentdock-qa"]["qai"] and L.in_sync(qai, "codex", p, rows["agentdock-qa"]["config"])
+    assert rows["agentchat"]["qai"] and L.in_sync(qai, "codex", p, rows["agentchat"]["config"])
     with pytest.raises(ValueError):
-        m.prepare([{"profile": p.id, "server": "agentdock-qa", "op": "add", "entry": {}}])
+        m.prepare([{"profile": p.id, "server": "agentchat", "op": "add", "entry": {}}])
     m.apply(m.prepare([{"profile": p.id, "server": "keep", "op": "disable"}]))
     assert {r["name"]: r for r in m.inspect()[0]["servers"]}["keep"]["enabled"] is False
     m.apply(m.prepare([{"profile": p.id, "server": "keep", "op": "remove"}]))

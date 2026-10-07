@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import base64
+from bisect import bisect_left
 import copy
+import hashlib
+import json
+import logging
 import re
 import threading
 import time
@@ -12,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agentdock.files import atomic_json, atomic_write, load_json
-from agentdock.qa.schema import Draft, empty_draft
+from agentdock.qa.schema import ChatEventInput, Draft, empty_draft
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_TOTAL_BYTES = 20 * 1024 * 1024
@@ -59,6 +63,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def json_key(*parts: str) -> str:
+    return json.dumps(parts, ensure_ascii=False)
+
+
 class QuestionStore:
     """Thread-safe: the broker thread writes, the UI thread reads."""
 
@@ -73,6 +81,349 @@ class QuestionStore:
             raise RuntimeError("questions.json 格式錯誤，請先保留並修復該檔案。")
         self.last_seen: dict[str, float] = {}
         self._listeners: list[Callable[[str, dict | None], None]] = []
+        self.chat_file = directory / "chat.json"
+        self._chat = load_json(self.chat_file, {"events": [], "hidden_questions": []})
+        if not isinstance(self._chat, dict) or not isinstance(self._chat.get("events"), list) or not isinstance(self._chat.get("hidden_questions"), list):
+            raise RuntimeError("chat.json 格式錯誤，請先保留並修復該檔案。")
+        # Running is an event-driven, process-local hint, never inferred after a restart.
+        self._running: set[tuple[str, str]] = set()
+        self.session_started_at = None
+        self._active_chats = frozenset()
+        self._view_sources = None
+        self._view_index = {}
+        self._view_summaries = []
+        self._read_lock = threading.Lock()
+        self._read_requests = {}
+        self._read_thread = None
+
+    def begin_chat_session(self):
+        """Called once at application startup; history stays on disk."""
+        self.session_started_at = _now()
+        self._active_chats = frozenset()
+        self._view_sources = None
+
+    def _activate(self, owner, work_id):
+        self._active_chats = self._active_chats | {(owner, work_id)}
+
+    def import_chat(self, owner: str, source: str, session: str, title: str,
+                    entries: list[dict], linked_ids: list[str | dict] = (), live_since: str = "",
+                    notify_since: str | None = None) -> None:
+        """Trusted local transcript reader, never an MCP endpoint. Preserve native IDs/times.
+
+        Checkpoints may be replayed after a crash; IDs and removal tombstones make that safe.
+        Links use actual MCP result IDs from the transcript, never guessed task titles.
+        """
+        notifications = []
+        key = (owner, session)
+        if not entries and not linked_ids and self._chat.get("sync_titles", {}).get(json_key(*key)) == {"title": title, "source": source}:
+            return
+        with self._lock:
+            data = {**self._chat, "events": list(self._chat["events"]),
+                    "sync_aliases": dict(self._chat.get("sync_aliases", {})),
+                    "sync_refs": dict(self._chat.get("sync_refs", {})),
+                    "sync_titles": dict(self._chat.get("sync_titles", {}))}
+            aliases = data["sync_aliases"]
+            refs = data["sync_refs"]
+            for ref in linked_ids:
+                if isinstance(ref, dict) and ref.get("work_id") and ref.get("request_key"):
+                    ref_key = json_key(ref.get("owner") or owner, ref["work_id"], ref["request_key"])
+                    refs.setdefault(ref_key, [owner, session])
+            for old in [*self._questions, *data["events"]]:
+                if old.get("external"):
+                    continue
+                request_key = old["request_key"].rsplit("#", 1)[0] if old.get("group") else old["request_key"]
+                matched = refs.get(json_key(old["owner"], old["work_id"], request_key)) == [owner, session]
+                if (old["id"] in linked_ids or matched) and not old.get("external"):
+                    alias = json_key(old["owner"], old["work_id"])
+                    target = [owner, session]
+                    if alias not in aliases or aliases[alias] == target:
+                        aliases[alias] = target
+                        self._running.discard((old["owner"], old["work_id"]))
+            titles = data.setdefault("sync_titles", {})
+            titles[json_key(*key)] = {"title": title, "source": source}
+            removed = set(data.get("sync_removed", []))
+            removed_pending = set(data.get("sync_removed_pending", []))
+            by_id = {e["id"]: e for e in data["events"]}
+            positions = {e["id"]: i for i, e in enumerate(data["events"])}
+            # A replay may contain both an early stream fragment and its final form.
+            # Apply the last version once, never downgrade an already completed message.
+            for entry in {e["key"]: e for e in entries}.values():
+                eid = str(uuid.uuid5(uuid.NAMESPACE_URL, json_key(owner, session, entry["key"])))
+                if eid in removed:
+                    if eid in removed_pending and entry["kind"] in ("completed", "failed", "cancelled"):
+                        removed.remove(eid)
+                        removed_pending.remove(eid)
+                    else:
+                        continue
+                old = by_id.get(eid)
+                if old and old["kind"] in ("completed", "failed", "cancelled") and entry["kind"] == "progress":
+                    continue
+                event = {"id": eid, "owner": owner, "source": source, "work_id": session,
+                         "work_title": title, "request_key": entry["key"], "external": True,
+                         "kind": entry["kind"], "text": entry["text"], "created_at": entry["created_at"],
+                         "read": old.get("read", False) if old else entry["created_at"] < live_since}
+                if entry.get("images"):
+                    event["images"] = self._import_images(entry["images"])
+                if "phase" in entry:
+                    event["phase"] = entry["phase"]
+                if old and all(old.get(k) == v for k, v in event.items()):
+                    continue
+                terminal = event["kind"] in ("completed", "failed", "cancelled")
+                newly_done = terminal and (not old or old["kind"] != event["kind"])
+                if newly_done and entry.get("finished_at", entry["created_at"]) >= live_since:
+                    event["read"] = False
+                    if entry.get("finished_at", entry["created_at"]) >= (notify_since or live_since):
+                        notifications.append(event)
+                if old:
+                    data["events"][positions[eid]] = event
+                else:
+                    positions[eid] = len(data["events"])
+                    data["events"].append(event)
+                by_id[eid] = event
+                if not entry.get("history_repair"):
+                    self._activate(owner, session)
+                if terminal:
+                    self._running.discard(key)
+                elif event["kind"] in ("started", "user_message") and event["created_at"] >= live_since:
+                    self._running.add(key)
+            if "sync_removed" in data:
+                data["sync_removed"] = sorted(removed)
+                data["sync_removed_pending"] = sorted(removed_pending)
+            changed = data != self._chat
+            if changed:
+                self._save_chat(data)
+            if any(q["status"] == "pending" and q["id"] not in data["hidden_questions"]
+                   and self._chat_key(q["owner"], q["work_id"]) == key for q in self._questions):
+                notifications.clear()
+        for event in notifications:
+            self._emit("new-message", copy.deepcopy(event))
+        if changed:
+            self._emit("change")
+
+    def _chat_key(self, owner: str, work_id: str) -> tuple[str, str]:
+        return tuple(self._chat.get("sync_aliases", {}).get(json_key(owner, work_id), [owner, work_id]))
+
+    def _import_images(self, images):
+        result, total = [], 0
+        for image in images[:8]:
+            name = image.get("name") or "圖片"
+            try:
+                url = image.get("data_url", "")
+                if len(url) > MAX_FILE_BYTES * 4 // 3 + 256:
+                    raise ValueError("oversize")
+                data, _ = decode_data_url(url)
+                mime = image_mime(data)
+                total += len(data)
+                if not mime or total > MAX_TOTAL_BYTES:
+                    raise ValueError("unsupported")
+                aid = hashlib.sha256(data).hexdigest()
+                if not (self.assets / aid).exists():
+                    atomic_write(self.assets / aid, data)
+                result.append(dict(id=aid, name=name, mime=mime, size=len(data)))
+            except (ValueError, TypeError):
+                result.append(dict(name=name, unavailable=True))
+        return result
+
+    def set_source_sessions(self, owner: str, session_ids: set[str]) -> None:
+        """Reconcile a successfully read source inventory, without deleting history or answers.
+
+        Unavailable sources must not call this. Question protocol records are never cancelled.
+        """
+        allowed = sorted(session_ids)
+        if self._chat.get("sync_visible", {}).get(owner) == allowed:
+            return
+        with self._lock:
+            visibility = {**self._chat.get("sync_visible", {}), owner: allowed}
+            self._save_chat({**self._chat, "sync_visible": visibility})
+        self._emit("change")
+
+    def _save_chat(self, data: dict) -> None:
+        atomic_json(self.chat_file, data)
+        self._chat = data
+
+    def receive(self, owner: str, source: str, raw: dict) -> dict:
+        payload = ChatEventInput.model_validate(raw).model_dump()
+        with self._lock:
+            for old in self._chat["events"]:
+                if (old["owner"], old["work_id"], old["request_key"]) == (owner, payload["work_id"], payload["request_key"]):
+                    if any(old[k] != v for k, v in payload.items()):
+                        raise ValueError("這個 request_key 已用於不同回報，請使用新的 request_key。")
+                    return copy.deepcopy(old)
+            key = (owner, payload["work_id"])
+            if payload["kind"] in ("completed", "failed", "cancelled") and any(
+                q["owner"] == owner and q["work_id"] == payload["work_id"] and q["status"] == "pending"
+                and q["id"] not in self._chat["hidden_questions"]
+                for q in self._questions
+            ):
+                raise ValueError("任務仍有待回答問題，不能回報結束；請先取得回答或取消結果。")
+            event = {**payload, "id": str(uuid.uuid4()), "owner": owner, "source": source,
+                     "created_at": _now(), "read": False}
+            data = {**self._chat, "events": [*self._chat["events"], event]}
+            self._save_chat(data)
+            if payload["kind"] in ("started", "user_message"):
+                self._running.add(key)
+            elif payload["kind"] in ("completed", "failed", "cancelled"):
+                self._running.discard(key)
+            self._activate(*key)
+        if self._chat_key(owner, payload["work_id"]) == (owner, payload["work_id"]):
+            self._emit("new-message", copy.deepcopy(event))
+        self._emit("change")
+        return copy.deepcopy(event)
+
+    def _conversation_view(self):
+        """Immutable committed snapshots: readers never wait for the sync writer's disk I/O.
+
+        Writers replace _chat/_questions rather than mutating published records. Cache the
+        grouping once per snapshot; list reads copy metadata, detail reads copy one page.
+        """
+        chat, questions, running = self._chat, self._questions, frozenset(self._running)
+        previous = self._view_sources
+        active = self._active_chats
+        if previous and previous[0] is chat and previous[1] is questions and previous[2] == running and previous[3] == active:
+            return self._view_index, self._view_summaries
+        aliases, keys = chat.get("sync_aliases", {}), {}
+        def canonical(entry):
+            original = (entry["owner"], entry["work_id"])
+            if original not in keys:
+                keys[original] = tuple(aliases.get(json_key(*original), original))
+            return keys[original]
+        grouped = {}
+        hidden = set(chat["hidden_questions"])
+        for q in questions:
+            if q["id"] not in hidden:
+                grouped.setdefault(canonical(q), []).append({**q, "kind": "question"})
+        for e in chat["events"]:
+            key = canonical(e)
+            if key != (e["owner"], e["work_id"]) and not e.get("external"):
+                continue
+            grouped.setdefault(key, []).append(e)
+        index, summaries = {}, []
+        visible_sessions = {owner: set(ids) for owner, ids in chat.get("sync_visible", {}).items()}
+        active_keys = {tuple(aliases.get(json_key(*key), key)) for key in active}
+        for key, entries in grouped.items():
+            entries = sorted(entries, key=lambda e: e["created_at"])
+            last = entries[-1]
+            pending = any(e["kind"] == "question" and e["status"] == "pending" for e in entries)
+            keep_pending = pending and self.session_started_at is not None
+            if self.session_started_at and key not in active_keys and not pending:
+                continue
+            if not keep_pending and key[0] in visible_sessions and key[1] not in visible_sessions[key[0]]:
+                continue
+            terminal = [e for e in entries if e["kind"] in ("completed", "failed", "cancelled")]
+            activity = max((e.get("resolved_at", e["created_at"]) for e in entries
+                            if e["kind"] in ("question", "started", "user_message")), default="")
+            unread = terminal and not terminal[-1]["read"] and terminal[-1]["created_at"] >= activity
+            state = "waiting" if pending else "running" if key in running else "unread" if unread else ""
+            meta = chat.get("sync_titles", {}).get(json_key(*key), {})
+            summary = {"owner": key[0], "work_id": key[1], "work_title": meta.get("title", last["work_title"]),
+                       "source": meta.get("source", last["source"]), "state": state,
+                       "updated_at": max(e.get("resolved_at", e["created_at"]) for e in entries)}
+            visible = sorted((e for e in entries if not (e["kind"] == "progress" and e.get("phase") == "commentary")
+                              and (e["kind"] == "question" or e.get("text") or e.get("images")
+                              or e["kind"] in ("completed", "failed", "cancelled"))),
+                             key=lambda e: (e.get("resolved_at", e["created_at"]), e["id"]))
+            index[key] = {"summary": summary, "entries": entries, "visible": visible,
+                          "keys": [(e.get("resolved_at", e["created_at"]), e["id"]) for e in visible]}
+            summaries.append(summary)
+        summaries.sort(key=lambda c: c["updated_at"], reverse=True)
+        self._view_index, self._view_summaries = index, summaries
+        self._view_sources = (chat, questions, running, active)
+        return index, summaries
+
+    def conversation_summaries(self) -> list[dict]:
+        return [dict(s) for s in self._conversation_view()[1]]
+
+    def conversation_page(self, owner: str, work_id: str, limit: int = 30, before=None) -> dict | None:
+        item = self._conversation_view()[0].get((owner, work_id))
+        if item is None:
+            return None
+        entries, keys = item["visible"], item["keys"]
+        end = bisect_left(keys, before) if before is not None else len(entries)
+        start = max(0, end - max(1, limit))
+        return {**item["summary"], "entries": copy.deepcopy(entries[start:end]), "has_older": start > 0,
+                "first_key": keys[start] if start < end else None, "total": len(entries)}
+
+    def conversations(self) -> list[dict]:
+        """Full export for integrations; the UI uses summaries and bounded pages instead."""
+        index, summaries = self._conversation_view()
+        return [{**s, "entries": copy.deepcopy(index[(s["owner"], s["work_id"])]["entries"])} for s in summaries]
+
+    def mark_read(self, owner: str, work_id: str, event_ids: list[str]) -> bool:
+        ids = set(event_ids)
+        def unread(e):
+            return e["id"] in ids and e["owner"] == owner and e["work_id"] == work_id and not e["read"]
+        if not ids or not any(unread(e) for e in self._chat["events"]):
+            return False
+        with self._lock:
+            if not any(unread(e) for e in self._chat["events"]):
+                return False
+            data = {**self._chat, "events": [{**e, "read": True} if unread(e) else e for e in self._chat["events"]]}
+            self._save_chat(data)
+        self._emit("change")
+        return True
+
+    def queue_mark_read(self, owner: str, work_id: str, event_ids: list[str], done=None) -> None:
+        """Scrolling must not wait for a sync commit or serialize chat.json on the UI thread."""
+        if not event_ids:
+            return
+        with self._read_lock:
+            ids, callbacks = self._read_requests.setdefault((owner, work_id), (set(), set()))
+            ids.update(event_ids)
+            if done:
+                callbacks.add(done)
+            if self._read_thread is None:
+                self._read_thread = threading.Thread(target=self._write_reads, name="AgentChat read receipts", daemon=True)
+                self._read_thread.start()
+
+    def _write_reads(self):
+        while True:
+            with self._read_lock:
+                if not self._read_requests:
+                    self._read_thread = None
+                    return
+                key, (ids, callbacks) = self._read_requests.popitem()
+            try:
+                self.mark_read(*key, list(ids))
+            except Exception:
+                logging.exception("AgentChat could not save read receipt")
+            for callback in callbacks:
+                try:
+                    callback()
+                except RuntimeError:  # the view may already have been destroyed
+                    pass
+
+    def flush_reads(self):
+        with self._read_lock:
+            worker = self._read_thread
+        if worker:
+            worker.join()
+
+    def remove_conversation(self, owner: str, work_id: str) -> None:
+        """Remove visible history, retaining question protocol records for in-flight callers/retries."""
+        with self._lock:
+            data = copy.deepcopy(self._chat)
+            removed = [e for e in data["events"] if self._chat_key(e["owner"], e["work_id"]) == (owner, work_id)]
+            data["sync_removed"] = sorted(set(data.get("sync_removed", [])) | {e["id"] for e in removed if e.get("external")})
+            data["sync_removed_pending"] = sorted(set(data.get("sync_removed_pending", [])) |
+                                                  {e["id"] for e in removed if e.get("external") and e["kind"] == "progress"})
+            data["events"] = [e for e in data["events"] if e not in removed]
+            hidden = set(data["hidden_questions"])
+            hidden.update(q["id"] for q in self._questions if self._chat_key(q["owner"], q["work_id"]) == (owner, work_id))
+            data["hidden_questions"] = sorted(hidden)
+            self._save_chat(data)
+            self._running.discard((owner, work_id))
+        self._emit("change")
+
+    def visible_questions(self) -> list[dict]:
+        hidden = set(self._chat["hidden_questions"])
+        visible = {owner: set(ids) for owner, ids in self._chat.get("sync_visible", {}).items()}
+        def shown(q):
+            owner, session = self._chat_key(q["owner"], q["work_id"])
+            if self.session_started_at:
+                return q["id"] not in hidden and (q["status"] == "pending" or
+                    (owner, session) in self._conversation_view()[0])
+            return q["id"] not in hidden and (owner not in visible or session in visible[owner])
+        return copy.deepcopy([q for q in self._questions if shown(q)])
 
     # -- events -------------------------------------------------------------
     def subscribe(self, listener: Callable[[str, dict | None], None]) -> None:
@@ -117,6 +468,7 @@ class QuestionStore:
         self._questions = questions
 
     def _replace(self, q: dict[str, Any]) -> None:
+        self._activate(q["owner"], q["work_id"])
         self._persist([q if old["id"] == q["id"] else old for old in self._questions])
         self._emit("change")
 
@@ -136,6 +488,14 @@ class QuestionStore:
                     labels = lambda opts: [(o["id"], o["label"], o.get("description", "")) for o in opts]
                     if existing["question"] != ask["question"] or existing["mode"] != ask["mode"] or labels(existing["options"]) != labels(ask["options"]):
                         raise ValueError("這個 request_key 已用於不同內容。新問題請使用新的 request_key。")
+                    if existing["id"] in self._chat["hidden_questions"]:
+                        data = copy.deepcopy(self._chat)
+                        members = {q["id"] for q in self.group_members(existing["id"], owner)}
+                        data["hidden_questions"] = [qid for qid in data["hidden_questions"] if qid not in members]
+                        self._save_chat(data)
+                        if existing["status"] == "pending":
+                            self._emit("new-question", copy.deepcopy(existing))
+                        self._emit("change")
                     return copy.deepcopy(existing)
             every = list(ask["images"]) + [i for o in ask["options"] for i in o["images"]]
             decoded = []
@@ -161,6 +521,13 @@ class QuestionStore:
             if ask.get("group"):
                 q["group"] = ask["group"]
             self._persist(self._questions + [q])
+            self._activate(owner, ask["work_id"])
+            ref_key = json_key(owner, ask["work_id"], ask["request_key"].rsplit("#", 1)[0] if ask.get("group") else ask["request_key"])
+            target = self._chat.get("sync_refs", {}).get(ref_key)
+            if target:
+                data = copy.deepcopy(self._chat)
+                data.setdefault("sync_aliases", {}).setdefault(json_key(owner, ask["work_id"]), target)
+                self._save_chat(data)
         self._emit("new-question", copy.deepcopy(q))
         self._emit("change")
         return copy.deepcopy(q)
@@ -205,6 +572,7 @@ class QuestionStore:
             updated = []
             for old in self._questions:
                 if old["id"] in checked:
+                    self._activate(old["owner"], old["work_id"])
                     old = copy.deepcopy(old)
                     old["answer"] = checked[old["id"]]
                     old["draft"] = copy.deepcopy(old["answer"])
@@ -212,6 +580,7 @@ class QuestionStore:
                     old["resolved_at"] = now
                 updated.append(old)
             self._persist(updated)
+            self._running.update(self._chat_key(q["owner"], q["work_id"]) for q in updated if q["id"] in checked)
         self._emit("change")
 
     def cancel_group(self, ids: list[str]) -> None:
@@ -220,9 +589,11 @@ class QuestionStore:
             updated = []
             for old in self._questions:
                 if old["id"] in ids and old["status"] == "pending":
+                    self._activate(old["owner"], old["work_id"])
                     old = {**copy.deepcopy(old), "status": "cancelled", "resolved_at": now}
                 updated.append(old)
             self._persist(updated)
+            self._running.difference_update(self._chat_key(q["owner"], q["work_id"]) for q in updated if q["id"] in ids)
         self._emit("change")
 
     def _validated(self, q: dict[str, Any], raw: Any, submit: bool) -> dict[str, Any]:
@@ -263,6 +634,7 @@ class QuestionStore:
             q["draft"] = copy.deepcopy(q["answer"])
             q["status"] = "answered"
             q["resolved_at"] = _now()
+            self._running.add(self._chat_key(q["owner"], q["work_id"]))
             self._replace(q)
             return q
 
@@ -273,6 +645,7 @@ class QuestionStore:
                 raise ValueError("這題已處理。")
             q["status"] = "cancelled"
             q["resolved_at"] = _now()
+            self._running.discard(self._chat_key(q["owner"], q["work_id"]))
             self._replace(q)
             return q
 

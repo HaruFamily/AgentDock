@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 from agentdock import clients
 from agentdock.agents import KINDS, QAI_NAMES, AgentManager, default_path
 from agentdock.extensions import PRESETS, UNSUPPORTED, ExtensionManager, merge_summary
-from agentdock.library import DEFAULT_ASSET, QAI_KEY, TYPES, Library
+from agentdock.library import DEFAULT_ASSET, LOCAL_PATH, QAI_KEY, TYPES, Library
 from agentdock.ui.qa_view import button, chip, label
 from agentdock.ui.widgets import DRAG_MIME, ElidedLabel, RibbonBar, Row, icon_button, muted
 
@@ -173,6 +173,12 @@ class McpDialog(QDialog):
         self.form.addRow("類型", self.type)
         for key, widget in self.w.items():
             self.form.addRow(labels[key], widget)
+        self.secret_status = label("留空值會保留已儲存的值；本機路徑直接顯示，祕密內容不顯示。", muted=True)
+        self.secret_status.setWordWrap(True)
+        outer.addWidget(self.secret_status)
+        pick_path = button("選擇本機檔案…", flat=True)
+        pick_path.clicked.connect(self._pick_secret_path)
+        outer.addWidget(pick_path)
         self.type.currentIndexChanged.connect(self._sync)
         if entry:
             self._load(entry)
@@ -209,8 +215,25 @@ class McpDialog(QDialog):
         self.w["local"].setPlainText("\n".join(e.get("local", [])))
         self.w["options"].setPlainText("\n".join(e.get("options", [])))
         self.w["env"].setPlainText("\n".join(f"{k}={v}" for k, v in e.get("env", {}).items()))
-        self.w["secrets"].setPlainText("\n".join(f"{k}=" for k in e.get("secrets", [])))
+        values = self.library.secrets()
+        self.w["secrets"].setPlainText("\n".join(
+            f"{k}={values[k] if LOCAL_PATH.match(values.get(k, '')) else ''}" for k in e.get("secrets", [])))
+        self.secret_status.setText("；".join(
+            f"{k}：{'已設定，留空保留' if values.get(k) else '尚未設定'}" for k in e.get("secrets", []))
+            or "尚未設定祕密或本機路徑。")
         self.w["timeout_sec"].setValue(int(e.get("timeout_sec", 0)))
+
+    def _pick_secret_path(self) -> None:
+        pairs = _pairs(self.w["secrets"].toPlainText())
+        key, ok = QInputDialog.getItem(self, "選擇本機路徑欄位", "欄位名稱", list(pairs), 0, True)
+        if not ok or not key.strip():
+            return
+        key = key.strip()
+        path, _ = QFileDialog.getSaveFileName(self, "選擇檔案位置", pairs.get(key, "")) if key == "TOKEN_PATH" else \
+            QFileDialog.getOpenFileName(self, "選擇本機檔案", pairs.get(key, ""))
+        if path:
+            pairs[key] = path
+            self.w["secrets"].setPlainText("\n".join(f"{k}={v}" for k, v in pairs.items()))
 
     def _save(self) -> None:
         try:
@@ -1150,7 +1173,7 @@ class AgentsView(QWidget):
         entry = self.library.get(name)
         alert, note = "", ""
         if server["qai"] and name != QAI_KEY:
-            alert = f"舊名稱的 QAI，會在「全部更新」時換成 {QAI_KEY}"
+            alert = f"AgentChat 舊名稱，會在「全部更新」時換成 {QAI_KEY}"
             self.needs.append({"profile": pid, "server": name, "op": "remove"})
             if not any(s["name"] == QAI_KEY for s in row["servers"]):
                 self.needs.append({"profile": pid, "server": QAI_KEY, "op": "add",
@@ -1161,7 +1184,8 @@ class AgentsView(QWidget):
             self.needs.append({"profile": pid, "server": name, "op": "update",
                                "entry": self.library.render(entry, row["kind"], profile)})
         if op and op["op"] == "update":
-            note = "將更新"
+            note = "待同步"
+            alert = "MCP 庫已修改，請預覽並套用；套用後重新連線 MCP。"
         elif op and op["op"] == "enable":
             note = "將啟用"
         elif not server["enabled"]:
@@ -1203,7 +1227,12 @@ class AgentsView(QWidget):
             note = "" if getattr(self, "_lib_by_type", False) else TYPES[kind]
         if latest:
             note += f" → {latest}"
-        alert = "、".join(problems + ([f"有新版 {latest}"] if latest else []))
+        pending_profiles = {o["profile"] for o in self.ops + self.needs
+                            if o["server"] == key and o["op"] in ("add", "update")}
+        if pending_profiles:
+            note = f"{len(pending_profiles)} 個代理待同步" + (f" · {note}" if note else "")
+        alert = "、".join(problems + ([f"有新版 {latest}"] if latest else [])
+                         + ([f"{len(pending_profiles)} 個代理待同步"] if pending_profiles else []))
         self._lib_alerts += int(bool(alert))
         line = Row(entry.get("name") or key, note=note, alert=alert)
         line.note.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -1298,7 +1327,12 @@ class AgentsView(QWidget):
         n = 0
         for row in self.manager.inspect():
             server = next((s for s in row["servers"] if s["name"] == key), None)
-            if not server or self._op_for(row["id"], key):
+            pending = self._op_for(row["id"], key)
+            if pending and pending["op"] in ("add", "update"):
+                pending["entry"] = self.library.render(entry, row["kind"], self.manager.get(row["id"]))
+                n += 1
+                continue
+            if not server or server["system"] or pending:
                 continue
             profile = self.manager.get(row["id"])
             if self.library.in_sync(entry, row["kind"], profile, server["config"]) is False:
@@ -1320,6 +1354,19 @@ class AgentsView(QWidget):
             n = self.queue_updates(dialog.saved["key"])
             self.info(f"已更新，{n} 個 Agent 的設定待套用。" if n else "已更新。")
             self.refresh()
+            if n:
+                profiles = {p.id: p.name for p in self.manager.list()}
+                names = list(dict.fromkeys(profiles[o["profile"]] for o in self.ops
+                             if o["server"] == dialog.saved["key"] and o["op"] in ("add", "update")))
+                prompt = QMessageBox(self)
+                prompt.setWindowTitle("MCP 已儲存，代理待同步")
+                prompt.setText(f"{dialog.saved['key']} 已儲存。\n{'、'.join(names)} 的設定待同步。\n"
+                               "預覽會包含目前所有待套用變更；確認後才會備份並寫入。")
+                apply_button = prompt.addButton("預覽並套用", QMessageBox.ButtonRole.AcceptRole)
+                prompt.addButton("稍後", QMessageBox.ButtonRole.RejectRole)
+                prompt.exec()
+                if prompt.clickedButton() is apply_button:
+                    self.guard(self._apply)
 
     def _new_agent(self) -> None:
         dialog = AgentDialog(self)

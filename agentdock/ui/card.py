@@ -27,7 +27,7 @@ PILL = "pill"   # old saved state; treated as card
 MARGIN = 12          # room for glow / shadow around the window
 CARD_W = 400
 CARD_H = 560
-MIN_W, MIN_H = 340, 300
+MIN_W, MIN_H = 340, 180
 HEART_SIZE = 44
 SNAP = 18
 
@@ -378,6 +378,7 @@ class FloatingCard(QWidget):
         hv.addLayout(self.tabs_row)
         self.root.addWidget(self.header)
         self.stack = QStackedWidget()
+        self.stack.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.pages: dict[str, QWidget] = {}
         self._add_page("quota", self._quota_page())
         self.root.addWidget(self.stack, 1)
@@ -405,7 +406,10 @@ class FloatingCard(QWidget):
         b.clicked.connect(lambda _=False, k=key: self.set_page(k, by_user=True))
         self.tabs_row.addWidget(b, 1)
         self.tab_buttons[key] = b
-        self._add_page(key, widget)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(widget)
+        self._add_page(key, scroll)
 
     def set_qa(self, view: QWidget) -> None:
         self.qa_view = view
@@ -622,9 +626,9 @@ class FloatingCard(QWidget):
             else:
                 self.root.setContentsMargins(MARGIN + 16, MARGIN + 20, MARGIN + 14, MARGIN + 18)
             screen = (QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()).availableGeometry()
-            w = max(MIN_W, min(self.card_size[0], screen.width() - 20))
-            h = max(MIN_H, min(self.card_size[1], screen.height() - 20))
-            self.setMinimumSize(MIN_W + MARGIN * 2, MIN_H + MARGIN * 2)
+            w = min(max(MIN_W, self.card_size[0]), max(1, screen.width() - 16 - MARGIN * 2))
+            h = min(max(MIN_H, self.card_size[1]), max(1, screen.height() - 16 - MARGIN * 2))
+            self.setMinimumSize(min(MIN_W + MARGIN * 2, screen.width() - 16), min(MIN_H + MARGIN * 2, screen.height() - 16))
             self.setMaximumSize(16777215, 16777215)
             self.resize(w + MARGIN * 2, h + MARGIN * 2)
         else:
@@ -929,7 +933,7 @@ class FloatingCard(QWidget):
             act.setChecked(abs(self.bg_opacity - value) < 0.01)
         if self.toast_state is not None:
             toast = self.toast_state()
-            act = menu.addAction("新問題通知（縮成小圖示時）", lambda: self.toast_requested.emit(not toast))
+            act = menu.addAction("問題與任務回報通知", lambda: self.toast_requested.emit(not toast))
             act.setCheckable(True)
             act.setChecked(toast)
         if self.autostart_state is not None:

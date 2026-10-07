@@ -2,6 +2,21 @@
  "schema": 1,
  "servers": [
   {
+   "type": "uvx",
+   "key": "google-sheets",
+   "description": "Google Sheets（xing5/mcp-google-sheets），使用 OAuth。先啟用 Google Sheets／Drive API 並建立桌面應用程式 OAuth 憑證；在本機祕密填 CREDENTIALS_PATH（憑證 JSON 完整路徑）與 TOKEN_PATH（登入 token 儲存完整路徑，父目錄須存在且可寫）。首次啟動需瀏覽器登入，每台電腦各自授權。",
+   "package": "mcp-google-sheets@latest",
+   "options": [
+    "--with",
+    "mcp<2"
+   ],
+   "secrets": [
+    "CREDENTIALS_PATH",
+    "TOKEN_PATH"
+   ],
+   "timeout_sec": 120
+  },
+  {
    "key": "codebase-memory-mcp",
    "type": "github",
    "description": "程式碼知識圖譜（DeusData/codebase-memory-mcp）",
@@ -11,17 +26,15 @@
   },
   {
    "key": "google-clasp",
-   "type": "command",
-   "command": "{AGENTDOCK}/.venv/Scripts/python.exe",
+   "type": "npx",
+   "description": "Google Apps Script（google/clasp），使用 npm 套件 @google/clasp@latest 啟動 MCP。需 Node.js／npm；先執行 npx -y @google/clasp@latest login 完成 OAuth 登入。重新啟動 MCP 時由 npm 解析 latest 版本。",
+   "package": "@google/clasp@latest",
+   "options": [
+    "--prefer-online"
+   ],
    "args": [
-    "-m",
-    "agentdock.clasp_cli",
     "mcp"
    ],
-   "env": {
-    "PYTHONPATH": "{AGENTDOCK}",
-    "AGENTDOCK_DATA_DIR": "{AGENTDOCK}\\data"
-   },
    "timeout_sec": 120
   }
  ],

@@ -33,7 +33,7 @@ def test_definitions_secrets_and_render(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         L.render(L.get("web"), "claude-desktop", P)
     with pytest.raises(ValueError):
-        L.remove("agentdock-qa")
+        L.remove("agentchat")
 
 
 @pytest.mark.parametrize("portable", [False, True])
@@ -133,7 +133,7 @@ def test_upgrade_old_command_entries(tmp_path):
 
 def test_qai_wait_slice_for_claude_desktop(tmp_path):
     L = Library(tmp_path / "repo", tmp_path / "data")
-    qai = L.get("agentdock-qa")
+    qai = L.get("agentchat")
     assert L.render(qai, "claude-desktop", P)["env"]["AGENTDOCK_MAX_WAIT"] == "50"
     assert "AGENTDOCK_MAX_WAIT" not in L.render(qai, "codex", P)["env"]
 

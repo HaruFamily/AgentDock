@@ -1,12 +1,73 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
-from PySide6.QtWidgets import QApplication, QRadioButton, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QRadioButton, QLineEdit, QPushButton, QLabel
 from agentdock.qa.store import QuestionStore
 from agentdock.ui import theme
 from agentdock.ui.qa_view import QaView
 
 app = QApplication.instance() or QApplication([])
+
+
+def test_mcp_edit_refreshes_pending_and_offers_apply(tmp_path, monkeypatch):
+    import json
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView, McpDialog, PreviewDialog
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({"mcp": {"sheets": {"type": "local", "command": ["old"], "enabled": True}}}))
+    original = cfg.read_text()
+    manager = AgentManager(tmp_path / "data")
+    library = Library(tmp_path / "repo", tmp_path / "data")
+    manager.add("OpenCode", "opencode", str(cfg))
+    view = AgentsView(manager, library)
+    commands = iter(["first", "second"])
+    def edit(dialog):
+        dialog.w["command"].setText(next(commands))
+        dialog._save()
+        return QDialog.DialogCode.Accepted
+    notices = []
+    monkeypatch.setattr(McpDialog, "exec", edit)
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: notices.append(box.text()))
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda box: None)
+    view._edit_mcp(library.get("sheets"))
+    view._edit_mcp(library.get("sheets"))
+    assert len(view.ops) == 1
+    assert view.ops[0]["entry"]["command"] == ["second"]
+    assert cfg.read_text() == original  # choosing later never writes client settings
+    assert all("OpenCode" in notice for notice in notices)
+    assert any("1 個代理待同步" in w.text() for w in view.findChildren(QLabel))
+    view.ops.clear()
+    view.refresh()  # the mismatch remains discoverable after abandoning the queue
+    assert len(view.needs) == 1
+    view.queue_updates("sheets")
+    monkeypatch.setattr(PreviewDialog, "exec", lambda dialog: QDialog.DialogCode.Rejected)
+    view._apply()
+    assert cfg.read_text() == original
+    monkeypatch.setattr(PreviewDialog, "exec", lambda dialog: QDialog.DialogCode.Accepted)
+    view._apply()
+    assert json.loads(cfg.read_text())["mcp"]["sheets"]["command"] == ["second"]
+    assert list(tmp_path.glob("*.bak"))
+    assert not view.ops
+    view.close()
+
+
+def test_mcp_edit_shows_paths_but_preserves_hidden_secrets(tmp_path):
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import McpDialog
+    library = Library(tmp_path / "repo", tmp_path / "data")
+    path = str(tmp_path / "credentials.json")
+    entry = library.save({"key": "sheets", "type": "command", "command": "run",
+                          "secrets": ["CREDENTIALS_PATH", "API_KEY"]},
+                         {"CREDENTIALS_PATH": path, "API_KEY": "private-value"})
+    dialog = McpDialog(None, library, entry)
+    assert path in dialog.w["secrets"].toPlainText()
+    assert "private-value" not in dialog.w["secrets"].toPlainText()
+    assert "已設定" in dialog.secret_status.text()
+    dialog._save()
+    assert library.secrets()["API_KEY"] == "private-value"
+    dialog.close()
 
 
 @pytest.mark.parametrize("mode", ["single", "multiple"])
@@ -237,14 +298,15 @@ def test_deleting_from_library_removes_from_agents(tmp_path, monkeypatch):
     assert not L.get("godot-mcp-pro")
 
 
-def test_old_qai_name_migrates_and_sorting(tmp_path):
+@pytest.mark.parametrize("old_name", ["agentdock_qa", "agentdock-qa"])
+def test_old_qai_name_migrates_and_sorting(tmp_path, old_name):
     from agentdock.agents import AgentManager
     from agentdock.library import Library, QAI_KEY
     from agentdock.ui.agents_view import AgentsView
     import tomlkit
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[mcp_servers.zeta]\ncommand = "z"\n[mcp_servers.agentdock_qa]\ncommand = "old.exe"\n'
-                   '[mcp_servers.agentdock_qa.env]\nAIL_DATA_DIR = "x"\n[mcp_servers.alpha]\ncommand = "a"\n', encoding="utf-8")
+    cfg.write_text(('[mcp_servers.zeta]\ncommand = "z"\n[mcp_servers.agentdock_qa]\ncommand = "old.exe"\n'
+                   '[mcp_servers.agentdock_qa.env]\nAIL_DATA_DIR = "x"\n[mcp_servers.alpha]\ncommand = "a"\n').replace("agentdock_qa", old_name), encoding="utf-8")
     m, L = AgentManager(tmp_path / "data"), Library(tmp_path / "repo", tmp_path / "data")
     p = m.add("Codex", "codex", str(cfg))
     b = m.add("Another", "codex", str(tmp_path / "other.toml"))
@@ -252,7 +314,7 @@ def test_old_qai_name_migrates_and_sorting(tmp_path):
     view._update_all()
     m.apply(m.prepare(view.ops))
     servers = tomlkit.parse(cfg.read_text(encoding="utf-8")).unwrap()["mcp_servers"]
-    assert QAI_KEY in servers and "agentdock_qa" not in servers
+    assert QAI_KEY == "agentchat" and QAI_KEY in servers and old_name not in servers
     view.ops.clear()
     view._reorder([b.id, p.id])
     assert [x.name for x in m.list()] == ["Another", "Codex"]

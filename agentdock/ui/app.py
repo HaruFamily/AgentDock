@@ -7,8 +7,8 @@ import logging
 import sys
 from typing import Any
 
-from PySide6.QtCore import QLockFile, QObject, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QFont, QIcon
+from PySide6.QtCore import QLockFile, QObject, QPoint, QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QFont, QIcon, QPainter, QColor
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from agentdock.agents import AgentManager
@@ -17,6 +17,7 @@ from agentdock.broker import Broker
 from agentdock.files import atomic_json, load_json
 from agentdock.paths import ROOT, data_dir, venv_dir
 from agentdock.qa.store import QuestionStore
+from agentdock.chat_sync import ChatSync, sources
 from agentdock.tools import ToolContext, discover
 from agentdock.ui import theme
 from agentdock.ui.agents_view import AgentsView
@@ -30,11 +31,29 @@ from agentdock.ui import fonts
 class Bus(QObject):
     changed = Signal()
     new_question = Signal(dict)
+    new_message = Signal(dict)
+    sync_status = Signal(str)
     show_requested = Signal()
 
 
 class LauncherIcon(FloatingCard):
     """Reuse the icon drawing and dragging without ever resizing into a card."""
+
+    attention = False
+
+    def set_attention(self, active: bool) -> None:
+        if self.attention != active:
+            self.attention = active
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self.attention:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#F04452"))
+            painter.drawEllipse(QPointF(self.width() / 2 + 14, self.height() / 2 - 12), 5, 5)
 
     def set_mode(self, mode: str, auto: bool = False) -> None:
         if mode in ("card", "pill"):
@@ -52,6 +71,7 @@ class Dock(QObject):
         self.ui: dict[str, Any] = load_json(self.ui_file, {})
         self.bus = Bus()
         self.store = QuestionStore(self.data)
+        self.store.begin_chat_session()
         self.store.subscribe(self._store_event)
         self.manager = AgentManager(self.data)
         self.library = Library(ROOT, self.data)
@@ -71,8 +91,6 @@ class Dock(QObject):
         self.icon.moved.connect(lambda _p: self._save_ui())
         self.icon.quit_requested.connect(self.quit)
         self.icon.theme_requested.connect(self.apply_theme)
-        self.icon.toast_requested.connect(self.set_question_toast)
-        self.icon.toast_state = lambda: bool(self.ui.get("question_toast", True))
         self.qa = QaView(self.store)
         self.agents = AgentsView(self.manager, self.library, ui_state=self.ui, save_state=self._save_ui)
         self.ball.set_qa(self.qa)
@@ -91,8 +109,6 @@ class Dock(QObject):
         self.ball.theme_requested.connect(self.apply_theme)
         self.ball.bg_opacity_changed.connect(self._bg_opacity)
         self.ball.autostart_requested.connect(self.set_autostart)
-        self.ball.toast_requested.connect(self.set_question_toast)
-        self.ball.toast_state = lambda: bool(self.ui.get("question_toast", True))
         if winutil.IS_WINDOWS:
             self.ball.autostart_state = lambda: winutil.autostart_get() is not None
         self.ball.open_question.connect(self._open_question)
@@ -101,8 +117,12 @@ class Dock(QObject):
         self.qa.pending_changed.connect(self._pending)
         self.qa.answered.connect(self.ball.celebrate)
         self.agents.summary_changed.connect(self.ball.set_agent_summary)
-        self.bus.changed.connect(self.qa.refresh)
+        self._chat_refresh = QTimer(self, singleShot=True, interval=100)
+        self._chat_refresh.timeout.connect(self.qa.refresh)
+        self.bus.changed.connect(lambda: self._chat_refresh.start() if not self._chat_refresh.isActive() else None)
+        self.bus.sync_status.connect(self.qa.set_sync_status)
         self.bus.new_question.connect(self._on_new_question)
+        self.bus.new_message.connect(self._on_new_message)
         self.bus.show_requested.connect(self.summon)
 
         try:
@@ -123,6 +143,8 @@ class Dock(QObject):
         self.icon.show()
         self._sync_icon()
         self.broker.start()
+        self.chat_sync = ChatSync(self.store, self.data, lambda: sources(self.manager.list()), self.bus.sync_status.emit)
+        self.chat_sync.start()
         self._keep_visible()
         self._tick = QTimer(self, interval=3000)   # "Agent waiting / reconnecting" label of the open question
         self._tick.timeout.connect(self._tick_waiting)
@@ -158,6 +180,7 @@ class Dock(QObject):
             self.ball.restyle()
             self.icon.restyle()
             self.qa._rendered_key = ""
+            self.qa._list_key = None
             self.qa.refresh()
             if self.qa.active and self.qa.stack.currentIndex() == 1:
                 self.qa.open_question(self.qa.active)
@@ -187,27 +210,29 @@ class Dock(QObject):
         # Called from the broker thread: hop to the UI thread via queued signals.
         if event == "new-question" and question:
             self.bus.new_question.emit(question)
+        elif event == "new-message" and question:
+            self.bus.new_message.emit(question)
         else:
             self.bus.changed.emit()
 
+    def _on_new_message(self, message: dict) -> None:
+        self.qa.refresh()
+
     def _on_new_question(self, q: dict) -> None:
         self.qa.refresh()
-        if self.ui.get("auto_expand", True):
-            self.ball.show()
-            self.ball.question_arrived(q)   # never steals focus
-        self._toast_question(q)
 
     def _toast_question(self, q: dict) -> None:
-        """A Windows notification while the card is the small icon (also when resting for a full-screen app),
-        because then only the heart moves. Clicking it opens that question. Right-click menu turns it off."""
-        if not self.tray or self.ball.mode != "heart" or not self.ui.get("question_toast", True):
-            return
-        text = " ".join(str(q.get("question") or "").split())
-        self._toast_qid = q.get("id")
-        self.tray.showMessage(f"{q.get('source') or 'Agent'} 有新問題", text[:120] + ("…" if len(text) > 120 else ""),
-                              QSystemTrayIcon.MessageIcon.Information, 8000)
+        """Compatibility hook: chat attention is shown on the launcher only."""
+        return
 
     def _toast_clicked(self) -> None:
+        work = getattr(self, "_toast_work", None)
+        self._toast_work = None
+        if work:
+            self.summon()
+            self.ball.set_page("qa")
+            self.qa.open_conversation(*work)
+            return
         qid, self._toast_qid = getattr(self, "_toast_qid", None), None
         if not qid:
             return
@@ -232,9 +257,10 @@ class Dock(QObject):
 
     def _pending(self, count: int) -> None:
         self.ball.set_pending(count)
-        self.icon.set_pending(count)
+        unread = sum(w["state"] == "unread" for w in self.store.conversation_summaries())
+        self.icon.set_attention(bool(count or unread))
         if self.tray:
-            self.tray.setToolTip(f"AgentDock：{count} 題待回答" if count else "AgentDock")
+            self.tray.setToolTip(f"AgentDock：{count} 題待回答，{unread} 個未讀對話" if count or unread else "AgentDock")
 
     def _page_changed(self, page: str) -> None:
         self.ui["card_page"] = page
@@ -468,6 +494,10 @@ class Dock(QObject):
             logging.exception("save ui")
 
     def quit(self) -> None:
+        self.qa._flush()
+        if getattr(self, "chat_sync", None):
+            self.chat_sync.close()
+        self.store.flush_reads()
         if getattr(self, "hotkey", None):
             self.hotkey.unregister()
         if getattr(self, "appearance_hotkey", None):

@@ -46,7 +46,7 @@ WORDS = {
     "cancel_q": ("取消問題", "取消問題"),
     "draft": ("草稿會自動保存", "草稿會自動保存"),
     "tab_quota": ("額度", "額度"),
-    "tab_qa": ("問答", "問答"),
+    "tab_qa": ("AgentChat", "AgentChat"),
     "tab_settings": ("設定", "設定"),
     "qa_waiting": ("{source} 的問題", "{source} 的問題"),
     "qa_none": ("沒有待回答的問題", "沒有待回答的問題"),

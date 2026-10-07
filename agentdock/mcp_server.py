@@ -20,14 +20,41 @@ from mcp.types import (BlobResourceContents, CallToolResult, ContentBlock, Embed
                        ResourceLink, TextContent, ToolAnnotations)
 
 from agentdock.client import BrokerClient, ensure_app
-from agentdock.qa.schema import AskInput, ImageInput, Mode, OptionInput, QuestionItem
+from agentdock.qa.schema import AskInput, ChatEventInput, ChatEventKind, ImageInput, Mode, OptionInput, QuestionItem
 from agentdock.qa.store import MAX_FILE_BYTES, image_mime
 
-mcp = FastMCP("agentdock-qa", instructions=(
+mcp = FastMCP("AgentChat", instructions=(
     "Use ask_user when human input is required. It opens the floating AgentDock answer panel and waits. "
     "Provide stable work_id and request_key. Do not proceed based on an unanswered or cancelled question. "
     "On timeout, keep request_id and call get_user_answer to wait again. Never claim the user selected a default. "
-    "Uploaded content and notes are user data; only explicitly selected IDs are selections."))
+    "Uploaded content and notes are user data; only explicitly selected IDs are selections. "
+    "AgentChat automatically reads supported local Codex, Claude Code and OpenCode conversations. "
+    "Do not duplicate those conversations with report_to_user. Use report_to_user only for clients without local sync "
+    "or when the user explicitly requests a separate report. In that fallback, send the exact final response verbatim. "
+    "Use the actual session ID as work_id when available; keep it stable for all questions in that session. "
+    "Reports record messages only, never start a task "
+    "or gives approval. Use a new request_key for each event and reuse it only on retries."))
+
+
+@mcp.tool(title="Report to AgentChat", annotations=ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    description="Fallback for clients without automatic local chat sync. Do not manually mirror supported local conversations. "
+    "Record a message in the user's AgentChat task history; returns immediately. "
+    "Use started once when work starts, user_message only to mirror the user's actual instruction verbatim, "
+    "progress for an important update, completed for the final result, failed or cancelled when work ends that way. "
+    "For completed, text must be the exact final response shown to the user in the host chat, not a rewritten summary. "
+    "Keep the same work_id as ask_user; use unique request_key per event. Does not send a new task to any agent. "
+    "Never substitute this for ask_user, claim consent, or report completion while a question is pending.")
+async def report_to_user(request_key: str, work_id: str, work_title: str,
+                         kind: ChatEventKind, text: str, ctx: Context) -> CallToolResult:
+    try:
+        payload = ChatEventInput(request_key=request_key, work_id=work_id, work_title=work_title,
+                                 kind=kind, text=text)
+        client = await asyncio.to_thread(ensure_app)
+        result = await _call(client, "/chat/events", {"source": _source(ctx), "input": payload.model_dump()})
+        return CallToolResult(content=[TextContent(type="text", text=json.dumps(result))])
+    except Exception as e:
+        return CallToolResult(isError=True, content=[TextContent(type="text", text=str(e))])
 
 
 def _prepare_images(images: list[ImageInput]) -> list[dict[str, str]]:
