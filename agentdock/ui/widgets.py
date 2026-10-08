@@ -92,7 +92,7 @@ class Row(QWidget):
         self.lay = QHBoxLayout(self)
         self.lay.setContentsMargins(4, 3, 0, 3)
         self.lay.setSpacing(6)
-        self.name = QLabel(name)
+        self.name = ElidedLabel(name)
         self.name.setObjectName("RowNameDim" if dim else "RowName")
         if strike:
             font = self.name.font()

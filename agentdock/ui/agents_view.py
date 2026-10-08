@@ -453,7 +453,7 @@ class DropList(QWidget):
         self.setAcceptDrops(True)
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(0, 0, 0, 0)
-        self.lay.setSpacing(0)
+        self.lay.setSpacing(10)
         self.marker = QFrame(self)
         self.marker.setObjectName("DropMarker")
         self.marker.setFixedHeight(2)
@@ -509,15 +509,21 @@ class Fold(QWidget):
     def __init__(self, title: str, *, section: bool = False, collapsed: bool = False) -> None:
         super().__init__()
         self.section = section
+        self.setObjectName("SettingsSection" if section else "AgentCard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        if section:
+            outer.setContentsMargins(0, 0, 0, 0)
+        else:
+            outer.setContentsMargins(8, 6, 8, 6)
         outer.setSpacing(2)
         self.drag_id: str | None = None  # set for Agent groups: the header can be dragged to reorder
         head = _Head(self)
         head.setObjectName("SectionHead" if section else "GroupHead")
+        head.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         head.setCursor(Qt.CursorShape.PointingHandCursor)
         self.head = QHBoxLayout(head)
-        self.head.setContentsMargins(0, 4, 0, 4)
+        self.head.setContentsMargins(8, 6, 6, 6)
         self.head.setSpacing(6)
         self.arrow = QLabel()
         self.arrow.setObjectName("Arrow")
@@ -542,8 +548,8 @@ class Fold(QWidget):
             outer.addWidget(line)
         self.body = QWidget()
         self.body_lay = QVBoxLayout(self.body)
-        self.body_lay.setContentsMargins(0 if section else 18, 2, 0, 6)
-        self.body_lay.setSpacing(0)
+        self.body_lay.setContentsMargins(0 if section else 12, 6, 0 if section else 4, 6)
+        self.body_lay.setSpacing(3)
         outer.addWidget(self.body)
         self.fixed_meta, self.folded_meta = "", ""
         self.badge_text, self.badge_alert = "", False
@@ -599,6 +605,7 @@ class AgentsView(QWidget):
     def __init__(self, manager: AgentManager, library: Library, on_changed: Callable[[], None] = lambda: None,
                  ui_state: dict[str, Any] | None = None, save_state: Callable[[], None] = lambda: None) -> None:
         super().__init__()
+        self.setObjectName("SettingsPage")
         self.manager = manager
         self.library = library
         self.on_changed = on_changed
@@ -622,8 +629,10 @@ class AgentsView(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        settings_actions = QHBoxLayout()
-        settings_actions.setContentsMargins(16, 4, 14, 4)
+        settings_footer = QFrame()
+        settings_footer.setObjectName("SettingsFooter")
+        settings_actions = QHBoxLayout(settings_footer)
+        settings_actions.setContentsMargins(16, 6, 14, 6)
         settings_actions.addStretch()
         self.settings_menu_button = button("設定選單", flat=True)
         settings_menu = QMenu(self.settings_menu_button)
@@ -652,8 +661,8 @@ class AgentsView(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.body = QWidget()
         self.lay = QVBoxLayout(self.body)
-        self.lay.setContentsMargins(16, 10, 14, 14)
-        self.lay.setSpacing(14)
+        self.lay.setContentsMargins(10, 10, 10, 14)
+        self.lay.setSpacing(20)
         scroll.setWidget(self.body)
         root.addWidget(scroll, 1)
         self.bar = RibbonBar()
@@ -673,7 +682,7 @@ class AgentsView(QWidget):
         bl.addWidget(self.update_btn)
         bl.addWidget(self.apply_btn)
         root.addWidget(self.bar)
-        root.addLayout(settings_actions)
+        root.addWidget(settings_footer)
         self.refresh()
 
     # ------------------------------------------------------------------ helpers
@@ -1510,7 +1519,9 @@ class AgentsView(QWidget):
         entries = sorted(self.library.extensions(), key=lambda e: (_type_rank(e["type"]) if by_type else 0, e["key"].lower()))
         alerts = 0
         if not entries:
-            sec.body_lay.addWidget(muted("還沒有擴充。按右邊 ＋ 可加入 rtk 等範本。"))
+            hint = muted("還沒有擴充。按右邊 ＋ 可加入 rtk 等範本。")
+            hint.setWordWrap(True)
+            sec.body_lay.addWidget(hint)
         group = None
         for entry in entries:
             if by_type and entry["type"] != group:

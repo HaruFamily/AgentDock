@@ -219,6 +219,15 @@ QLabel#Arrow {{ color: {MUTED}; font-size: 13px; }}
 QLabel#SectionTitle {{ font-size: 13px; font-weight: 700; color: {ACCENT_DEEP}; letter-spacing: 1px; }}
 QLabel#GroupTitle {{ font-size: 14px; font-weight: 600; }}
 QFrame#Rule {{ background: {LINE}; border: none; }}
+QWidget#AgentCard {{ background: {CARD}; border: 1px solid {LINE}; border-radius: 16px; }}
+QWidget#GroupHead {{ background: {ACCENT_SOFT if c['CUTE'] else CARD}; border-radius: 10px; }}
+QWidget#SectionHead {{ background: {ACCENT_SOFT if c['CUTE'] else 'transparent'}; border-radius: 12px; }}
+QWidget#SettingsPage QLabel#GroupTitle {{ color: {ACCENT_DEEP}; font-size: 14px; font-weight: 600; }}
+QWidget#SettingsPage QLabel#SectionTitle {{ font-size: 13px; letter-spacing: 1px; }}
+QWidget#SettingsPage QFrame#Rule {{ background: transparent; }}
+QWidget#SettingsPage QWidget#Row {{ min-height: 28px; }}
+QWidget#SettingsPage QPushButton[glyph="true"] {{ min-width: 26px; min-height: 26px; }}
+QFrame#SettingsFooter {{ background: {CARD}; border-top: 1px solid {LINE}; border-radius: 10px; }}
 QWidget#Row {{ border-radius: 10px; }}
 QWidget#Row:hover {{ background: {HOVER}; }}
 QLabel#RowName {{ font-size: 13px; }}
