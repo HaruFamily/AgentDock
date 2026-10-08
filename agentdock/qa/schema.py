@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from agentdock.qa.formatting import QUESTION_FORMAT
 
 
 class ImageInput(BaseModel):
@@ -21,7 +22,7 @@ class ImageInput(BaseModel):
 class OptionInput(BaseModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     label: str = Field(min_length=1, max_length=200)
-    description: str = Field("", max_length=2000)
+    description: str = Field("", max_length=2000, description=QUESTION_FORMAT)
     images: list[ImageInput] = Field(default_factory=list, max_length=3)
 
     @field_validator("label")
@@ -65,7 +66,7 @@ def _choice_rules(mode: str, options: list) -> None:
 
 class QuestionItem(BaseModel):
     """One question of a multi-question ask."""
-    question: str = Field(min_length=1, max_length=16000)
+    question: str = Field(min_length=1, max_length=16000, description=QUESTION_FORMAT)
     images: list[ImageInput] = Field(default_factory=list, max_length=6)
     mode: Mode = "text"
     options: list[OptionInput] = Field(default_factory=list, max_length=12)
@@ -91,7 +92,7 @@ class AskInput(BaseModel):
     request_key: str = Field(min_length=1, max_length=150)
     work_id: str = Field(min_length=1, max_length=160)
     work_title: str = Field(min_length=1, max_length=160)
-    question: str = Field("", max_length=16000)
+    question: str = Field("", max_length=16000, description=QUESTION_FORMAT)
     images: list[ImageInput] = Field(default_factory=list, max_length=6)
     mode: Mode = "text"
     options: list[OptionInput] = Field(default_factory=list, max_length=12)

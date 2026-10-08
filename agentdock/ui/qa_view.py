@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QDialog, Q
 
 from agentdock.qa.store import QuestionStore
 from agentdock.ui import theme
+from agentdock.ui.question_text import QuestionText
 from agentdock.ui.widgets import ElidedLabel, RibbonBar, Row, dot, icon_button, muted
 
 HINTS = {"text": "用文字回答，也可以加入檔案或貼上圖片。",
@@ -869,7 +870,7 @@ class QaView(QWidget):
         lay.addWidget(muted(f"{head['source']}  ·  {_when(head['created_at'])}" + (f"  ·  共 {len(members)} 題" if many else "")))
         intro = head.get("group", {}).get("intro") if many else ""
         if intro:
-            lay.addWidget(label(intro, name="Question"))
+            lay.addWidget(QuestionText(intro))
         if status == "cancelled":
             lay.addWidget(muted("這題已取消，沒有傳送任何預設答案。"))
         for n, q in enumerate(members, 1):
@@ -915,7 +916,7 @@ class QaView(QWidget):
         lay.setSpacing(10)
         if number:
             lay.addWidget(self._section_label(number))
-        lay.addWidget(label(q["question"], name="Question"))
+        lay.addWidget(QuestionText(q["question"]))
         if q["images"]:
             lay.addWidget(self._images(q, q["images"]))
         state: dict[str, Any] = {"option_rows": {}}
@@ -946,8 +947,7 @@ class QaView(QWidget):
                 line.addWidget(add_note)
                 rl.addLayout(line)
                 if option.get("description"):
-                    desc = muted(option["description"])
-                    desc.setWordWrap(True)
+                    desc = QuestionText(option["description"])
                     desc.setContentsMargins(26, 0, 0, 0)
                     desc.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                     rl.addWidget(desc)

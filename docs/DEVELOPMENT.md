@@ -28,6 +28,26 @@ TOOL = ToolSpec(title="我的工具", create=create, order=50)
 
 ## 測試邊界
 
+### 提問格式
+
+`ask_user.question`、多題的 `questions[].question`、多題前言與選項 `description` 支援自由文字 Markdown：空行分段、`**粗體**`、`*斜體*`、標題、清單、引用、反引號行內程式碼與三反引號程式碼區塊。選項標題維持純文字。
+
+可選擴充區塊（標記須獨立成行、不可巢狀）：
+
+```text
+要用程式重建設定嗎？
+
+:::warning
+重建會覆蓋**手動調整**。
+:::
+
+:::note
+這是較小、較淡的補充說明。
+:::
+```
+
+警示配色使用主題 WARN_BG／WARN_INK，補充使用 MUTED，內文使用 INK，程式碼底色使用 ACCENT_SOFT。不解析輸入 HTML／CSS、不載入行內圖片或外部資源；圖片沿用 images 參數。未關閉的擴充標記保留原文，程式碼內的標記不解讀。無固定段落結構、無新增必要欄位，原文仍原樣儲存。MCP 工具與參數 schema 會公開相同語法指引，客戶端需重新連線以載入更新。
+
 ### Inbox 原生活動接入
 
 設定 → 擴充庫 → ＋ → inbox-activity 範本，再於各 Codex／Claude Code／OpenCode 的 ＋ 加入、預覽並套用。使用資料夾內 Python，不需下載擴充或加入 PATH。重新啟動 AgentDock 及客戶端；Codex 還須在客戶端檢視並信任 hooks。接入不會變更原本的授權政策。

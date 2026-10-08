@@ -37,7 +37,7 @@
   設定檔中的名稱是 `inbox`，服務名稱為 Inbox；舊名稱 agentchat／agentdock-qa／agentdock_qa（含 Electron 版）會在「全部更新」預覽確認後換新。
 - `ui/card.py`：浮動視窗共用基底，支援 heart / card（舊的 pill 視為 card）。app.py 的 LauncherIcon 固定為小圖示；self.ball 使用 ContentWindow，與橫向 Tab 列一起由 DockLayout 管理顯示／隱藏。內容可用 EdgeGrip（同檔）縮放，有「額度、問答、設定」三頁（QStackedWidget），
   問答頁內嵌 `inbox_view.InboxView`，設定頁內嵌 `agents_view.AgentsView`（外觀只在右鍵選單切換），外部工具成為額外的頁。
-  新通知由 app.py 更新小圖示提醒；點擊開啟時才依新問題、舊待答、待授權、結果的順序導覽，不自動切頁。
+  新通知由 app.py 交給 ui/notifications.py 彙整分級數量、主題色符號角標及可選提示音（無文字彈窗）；點擊時依待授權、新問題、舊待答、失敗、完成與其他結果導覽，不自動切頁。提示控制器以穩定請求識別去重，持續保留待處理標記，原生活動失效後移除授權提醒。
   裝飾繪圖由本機主題的 draw_frame、draw_icon、draw_bar 提供，共用程式只包含預設極簡外觀；Ctrl+Alt+H 切回極簡時也關閉舊外觀的選擇題泡泡。全螢幕偵測在 winutil.foreground_is_fullscreen()。
 - `ui/theme.py`：內建黑綠極簡外觀，load_private() 從 data/private_theme.py 載入 CONFIG 與三個繪圖函式。檔案缺少、無效或 DEVICE 不符合本機名稱時退回極簡；私人檔案不納入 Git 或設定匯出。
   本機主題可使用額外字型，字型快取放在 data/fonts。新問題通知仍由 app.py 負責。

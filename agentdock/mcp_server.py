@@ -22,6 +22,7 @@ from mcp.types import (BlobResourceContents, CallToolResult, ContentBlock, Embed
 from agentdock.client import BrokerClient, ensure_app
 from agentdock.qa.schema import AskInput, ChatEventInput, ChatEventKind, ImageInput, Mode, OptionInput, QuestionItem
 from agentdock.qa.store import MAX_FILE_BYTES, image_mime
+from agentdock.qa.formatting import QUESTION_FORMAT
 
 mcp = FastMCP("Inbox", instructions=(
     "Use ask_user when human input is required. Provide stable work_id and request_key. "
@@ -217,13 +218,13 @@ def _source(ctx: Context) -> str:
                       "Supports text, images, single/multiple choices, per-option notes, free text and attachments. "
                       "To ask several related questions together (up to 5), pass `questions` instead of one `question`. "
                       "Reuse request_key/work_id when retrying. Host timeout must exceed wait_seconds. "
-                      "Images are absolute local paths or base64 data URLs. Never use for automatic approvals.")
+                      "Images are absolute local paths or base64 data URLs. Never use for automatic approvals. " + QUESTION_FORMAT)
 async def ask_user(
     request_key: Annotated[str, Field(description="Unique stable key for this question. Reuse on retry to avoid duplicates.")],
     work_id: Annotated[str, Field(description="Stable ID for the originating conversation/task.")],
     work_title: Annotated[str, Field(description="Human-readable project or task name.")],
     ctx: Context,
-    question: Annotated[str, Field(description="The question. With `questions`, an optional intro line instead.")] = "",
+    question: Annotated[str, Field(description="The question. With `questions`, an optional intro instead. " + QUESTION_FORMAT)] = "",
     images: list[ImageInput] = [],
     mode: Mode = "text",
     options: list[OptionInput] = [],

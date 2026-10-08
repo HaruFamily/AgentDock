@@ -347,7 +347,7 @@ class FloatingCard(QWidget):
     geometry_changed = Signal()          # resized by the user (EdgeGrip)
     bg_opacity_changed = Signal(float)   # background opacity picked in the menu
     autostart_requested = Signal(bool)   # 開機自動啟動 on/off
-    toast_requested = Signal(bool)       # 新問題通知 on/off
+    sound_requested = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
@@ -365,7 +365,12 @@ class FloatingCard(QWidget):
         self.bubble: Bubble | None = None
         self.bg_opacity = 1.0                    # card background only; text and bars stay solid
         self.autostart_state: Callable[[], bool] | None = None   # set by app.py on Windows
-        self.toast_state: Callable[[], bool] | None = None       # set by app.py
+        self.sound_state: Callable[[], bool] | None = None
+        self.notification_color = None
+        self.notification_count = 0
+        self.notification_symbol = '!'
+        self._notification_burst = QTimer(self, singleShot=True, interval=4800)
+        self._notification_burst.timeout.connect(self.stop_notification_animation)
         self._glow = 0.0
         self._phase = 0
         self._twinkle = 0
@@ -464,11 +469,8 @@ class FloatingCard(QWidget):
         head.setContentsMargins(6, 0, 2, 0)
         texts = QVBoxLayout()
         texts.setSpacing(0)
-        self.mood = QLabel("")
-        self.mood.setObjectName("CardMood")
         self.updated = QLabel("")
         self.updated.setObjectName("CardMeta")
-        texts.addWidget(self.mood)
         texts.addWidget(self.updated)
         head.addLayout(texts, 1)
         refresh = QPushButton("⟳")
@@ -523,7 +525,6 @@ class FloatingCard(QWidget):
             self._glow = 0.0
         self.pending = count
         self._sync_ripple()
-        self.setToolTip(f"AgentDock：{count} 題待回答" if count else "")
         self._paint_tabs()
         self.update()
 
@@ -720,10 +721,6 @@ class FloatingCard(QWidget):
         if q is None:
             return
         from agentdock.tools.tokengauge import gauge
-        worst = max((u for _n, _l, u in self._tightest()), default=0.0)
-        mood_key = "quota_bad" if worst >= 90 else "quota_warn" if worst >= 70 else "quota_ok"
-        self.mood.setText(theme.t(mood_key))
-        self.mood.setVisible(bool(self.mood.text()))
         when = time.strftime("%H:%M", time.localtime(q.last)) if q.last else ""
         self.updated.setText(theme.t("updating") if q.busy else (theme.t("updated", t=when) if when else theme.t("no_quota")))
         for r in q.visible_results():
@@ -807,6 +804,23 @@ class FloatingCard(QWidget):
 
     attention = False
 
+    def set_notification(self, color: str, count: int, animate: bool = False, symbol: str = '!') -> None:
+        self.notification_color = color
+        self.notification_count = count
+        self.notification_symbol = symbol
+        if animate and count and self.isVisible():
+            self._ripple_started = time.monotonic()
+            self._notification_burst.start()
+        elif not count:
+            self._notification_burst.stop()
+        self._sync_ripple()
+        self.update()
+
+    def stop_notification_animation(self) -> None:
+        self._notification_burst.stop()
+        self._sync_ripple()
+        self.update()
+
     def set_attention(self, active: bool) -> None:
         if active == self.attention:
             return
@@ -816,6 +830,8 @@ class FloatingCard(QWidget):
 
     def _sync_ripple(self) -> None:
         active = self.isVisible() and self.mode == HEART and bool(self.attention or self.pending)
+        if self.notification_color is not None:
+            active = self.isVisible() and self.mode == HEART and self._notification_burst.isActive()
         if active and not self._ripple_timer.isActive():
             self._ripple_started = time.monotonic()
             self._ripple_timer.start()
@@ -828,6 +844,7 @@ class FloatingCard(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         self._ripple_timer.stop()
+        self._notification_burst.stop()
         super().hideEvent(event)
 
     def _paint_ripples(self, p: QPainter) -> None:
@@ -840,7 +857,7 @@ class FloatingCard(QWidget):
         for offset in (0.0, 0.5):
             progress = (phase + offset) % 1
             radius = inner + (outer - inner) * progress
-            color = QColor(theme.ACCENT)
+            color = QColor(self.notification_color or theme.ACCENT)
             color.setAlphaF(0.9 * (1 - progress))
             p.setPen(QPen(color, 2.5 * (1 - progress) + 0.5))
             p.drawEllipse(center, radius, radius)
@@ -850,10 +867,10 @@ class FloatingCard(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.mode == HEART:
-            if self.attention or self.pending:
+            if self._ripple_timer.isActive():
                 self._paint_ripples(p)
             self._paint_heart(p)
-            if self.attention and not self.pending:
+            if self.attention and not self.pending and self.notification_color is None:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor("#F04452"))
                 p.drawEllipse(QPointF(self.width() / 2 + 14, self.height() / 2 - 12), 5, 5)
@@ -914,17 +931,44 @@ class FloatingCard(QWidget):
                 p.drawRoundedRect(QRectF(c.x() + dx, c.y() + dy, 5, 5), 1.2, 1.2)
         else:
             draw_round_icon(p, c, size * beat)
-        if self.pending:
+        if self.notification_color and self.notification_count:
+            color = QColor(self.notification_color)
+            p.setPen(QPen(color, 3 if self.notification_symbol == '!' else 2 if self.notification_symbol == '?' else 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(c, 23, 23)
+            # A separate persistent status badge preserves the theme's launcher artwork.
+            status = QRectF(MARGIN - 3, self.height() - MARGIN - 20, 20, 20)
+            p.setBrush(QColor(theme.CARD))
+            p.setPen(QPen(color, 1.5))
+            p.drawEllipse(status)
+            f = QFont(p.font())
+            f.setBold(True)
+            f.setPixelSize(15)
+            p.setFont(f)
+            p.setPen(color)
+            center = status.center()
+            if self.notification_symbol == '✓':
+                p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawLine(center + QPointF(-5, 0), center + QPointF(-1, 4))
+                p.drawLine(center + QPointF(-1, 4), center + QPointF(5, -4))
+            elif self.notification_symbol == '×':
+                p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawLine(center + QPointF(-4, -4), center + QPointF(4, 4))
+                p.drawLine(center + QPointF(-4, 4), center + QPointF(4, -4))
+            else:
+                p.drawText(status, Qt.AlignmentFlag.AlignCenter, self.notification_symbol)
+        badge_count = self.notification_count if self.notification_color else self.pending
+        if badge_count:
             badge = QRectF(self.width() - MARGIN - 20, MARGIN - 4, 24, 20)
-            p.setBrush(QColor(theme.DANGER))
-            p.setPen(QPen(QColor("white"), 1.5))
+            p.setBrush(QColor(theme.CARD if self.notification_color else theme.DANGER))
+            p.setPen(QPen(QColor(self.notification_color or "white"), 1.5))
             p.drawRoundedRect(badge, 10, 10)
             f = QFont(p.font())
             f.setBold(True)
             f.setPixelSize(12)
             p.setFont(f)
-            p.setPen(QColor("white"))
-            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(self.pending) if self.pending < 100 else "99+")
+            p.setPen(QColor(self.notification_color or "white"))
+            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(badge_count) if badge_count < 100 else "99+")
 
     # ------------------------------------------------------------------ position
     def center(self) -> QPoint:
@@ -1027,11 +1071,11 @@ class FloatingCard(QWidget):
                                                                               self.bg_opacity_changed.emit(v)))
             act.setCheckable(True)
             act.setChecked(abs(self.bg_opacity - value) < 0.01)
-        if self.toast_state is not None:
-            toast = self.toast_state()
-            act = menu.addAction("問題與任務回報通知", lambda: self.toast_requested.emit(not toast))
+        if self.sound_state is not None:
+            sound = self.sound_state()
+            act = menu.addAction("待授權／回答提示音", lambda: self.sound_requested.emit(not sound))
             act.setCheckable(True)
-            act.setChecked(toast)
+            act.setChecked(sound)
         if self.autostart_state is not None:
             on = self.autostart_state()
             act = menu.addAction("開機自動啟動", lambda: self.autostart_requested.emit(not on))

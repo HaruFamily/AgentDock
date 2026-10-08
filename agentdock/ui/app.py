@@ -26,6 +26,7 @@ from agentdock.ui.winutil import GlobalHotkey
 from agentdock.ui.inbox_view import InboxView
 from agentdock.ui import fonts
 from agentdock.ui.dock_layout import ContentWindow, DockLayout
+from agentdock.ui.notifications import NotificationController, notice_for
 
 
 class Bus(QObject):
@@ -85,6 +86,10 @@ class Dock(QObject):
                 logging.exception("tool %s failed", tool.title)
 
         self.layout_controller = DockLayout(self.icon, self.ball, self.ui, self._save_ui)
+        self.notifications = NotificationController(self.icon, self.ui, self)
+        for window in (self.icon, self.ball):
+            window.sound_state = lambda: self.ui.get('notification_sound', False)
+            window.sound_requested.connect(self.set_notification_sound)
 
         self.ball.moved.connect(lambda _p: self._save_ui())
         self.ball.quit_requested.connect(self.quit)
@@ -165,6 +170,8 @@ class Dock(QObject):
             if hasattr(self, 'layout_controller'):
                 self.layout_controller.restyle()
             self.qa.refresh()
+            if hasattr(self, 'notifications'):
+                self.notifications.render()
         if save:
             self.ui["theme"] = theme.NAME
             self._save_ui()
@@ -200,9 +207,6 @@ class Dock(QObject):
 
     def _on_new_message(self, message: dict) -> None:
         self.qa.refresh()
-        if message.get('_native_approval'):
-            from agentdock.activity import SOURCES
-            self.notify(f"{SOURCES[message['client']]} · {message['title']}\n待授權，請回原客戶端確認。")
 
     def _on_new_question(self, q: dict) -> None:
         self.qa.refresh()
@@ -226,8 +230,8 @@ class Dock(QObject):
         self.ball.set_page("qa")
         self.qa.open_question(qid)
 
-    def set_question_toast(self, on: bool) -> None:
-        self.ui["question_toast"] = on
+    def set_notification_sound(self, on: bool) -> None:
+        self.ui['notification_sound'] = on
         self._save_ui()
 
     def _bubble_answer(self, qid: str, oid: str) -> None:
@@ -250,8 +254,13 @@ class Dock(QObject):
         unread += self.store.activity.attention()
         self.icon.set_attention(bool(count or unread))
         self.ball.set_attention(bool(count or unread))
+        notice = notice_for(self.store.inbox_tasks())
+        if hasattr(self, 'notifications'):
+            if winutil.IS_WINDOWS:
+                self.notifications.set_suspended(self.ui.get('rest_in_fullscreen', True) and winutil.foreground_is_fullscreen())
+            self.notifications.update_notice(notice)
         if self.tray:
-            self.tray.setToolTip(f"AgentDock：{count} 題待回答，{unread} 個未讀對話" if count or unread else "AgentDock")
+            self.tray.setToolTip('AgentDock：' + notice.text if notice.total else 'AgentDock')
 
     def _page_changed(self, page: str) -> None:
         self.ui["card_page"] = page
@@ -297,7 +306,6 @@ class Dock(QObject):
         elif self.ball.geometry().intersects(self.icon.geometry()):
             self.ball.move(self.icon.x() - self.ball.width(), self.icon.y() - self.ball.height() + self.icon.height())
             self.ball.keep_on_screen()
-        self.icon.setToolTip("點一下隱藏浮動視窗")
 
     def _open_question(self, qid: str) -> None:
         if qid:
@@ -306,9 +314,11 @@ class Dock(QObject):
             self.qa.show_first_pending()
 
     def _check_fullscreen(self) -> None:
+        resting = self.ui.get('rest_in_fullscreen', True) and winutil.foreground_is_fullscreen()
+        self.notifications.set_suspended(resting)
         if self.ui.get("rest_in_fullscreen", True):
             if hasattr(self, 'layout_controller'):
-                self.layout_controller.fullscreen(winutil.foreground_is_fullscreen())
+                self.layout_controller.fullscreen(resting)
                 return
             self.ball.rest(winutil.foreground_is_fullscreen())
 
@@ -535,6 +545,7 @@ class Dock(QObject):
             logging.exception("save ui")
 
     def quit(self) -> None:
+        self.notifications.close()
         self.ball._quitting = True
         if hasattr(self, 'layout_controller'):
             self.layout_controller.remember()

@@ -234,6 +234,9 @@ class InboxView(QWidget):
 
     def notification_target(self, new_only=False):
         tasks = self.store.inbox_tasks()
+        for task in tasks:
+            if task['state'] == 'approval' and (not new_only or not task['latest']['read']):
+                return ('task', task['owner'], task['work_id'])
         pending = [q for t in tasks for q in t['pending']]
         opened = self.store.opened_questions()
         new = [q for q in pending if q['id'] not in opened]
@@ -241,11 +244,8 @@ class InboxView(QWidget):
             return ('question', max(new, key=lambda q: (q['created_at'], q['id']))['id'])
         if pending and not new_only:
             return ('question', min(pending, key=lambda q: (q['created_at'], q['id']))['id'])
-        # Native approval requests also need action before a finished result.
-        for task in tasks:
-            if task['state'] == 'approval' and (not new_only or not task['latest']['read']):
-                return ('task', task['owner'], task['work_id'])
-        for task in tasks:
+        priority = {'failed': 0, 'completed': 1, 'cancelled': 2, 'native': 3}
+        for task in sorted(tasks, key=lambda t: priority.get(t['latest']['kind'], 4)):
             latest = task['latest']
             if latest['kind'] != 'question' and not latest['read'] and task['state'] not in ('unknown', 'running'):
                 return ('task', task['owner'], task['work_id'])
