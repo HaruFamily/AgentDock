@@ -50,6 +50,16 @@ EXT_TYPES = ("github", "download", "command")
 EXT_HOOK_KINDS = ("claude-code", "codex", "opencode")
 
 
+def bundled_rtk_plugin(entry: dict[str, Any], spec: dict[str, Any]) -> bool:
+    """Keep the tested host adapter separate from RTK binary release updates.
+
+    Match the source, not the entry name: renamed presets work, custom plugins
+    retain their own update policy. This also covers saved older presets.
+    """
+    return (entry.get("repo") == "rtk-ai/rtk" and
+            spec.get("source") == "{AGENTDOCK}/agentdock/assets/opencode/rtk.ts")
+
+
 def _https(url: str) -> None:
     parts = urlsplit(url)
     if parts.scheme != "https" or parts.username or parts.password or not parts.hostname:
@@ -529,6 +539,8 @@ class Library:
         else:
             (temp / name).write_bytes(data)
         for spec in (entry.get("hooks") or {}).values():  # e.g. rtk's OpenCode plugin, matching this release
+            if bundled_rtk_plugin(entry, spec):
+                continue
             if spec.get("source_url") and spec.get("plugin") and tag:
                 try:
                     (temp / spec["plugin"]).write_bytes(_get(spec["source_url"].replace("{TAG}", tag)))

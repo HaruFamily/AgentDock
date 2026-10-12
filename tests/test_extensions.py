@@ -232,11 +232,18 @@ def test_extension_dialog_form_roundtrip(env):
     assert {k: v for k, v in L.get_extension("rtk2").items() if k != "key"} == {k: v for k, v in PRESETS[0].items() if k != "key"}
 
 
-def test_update_replaces_system_copy_and_refreshes_plugin(env, tmp_path, monkeypatch, fake_tool_runner):
+@pytest.mark.parametrize("custom_plugin", [False, True])
+def test_update_replaces_system_copy_and_refreshes_plugin(env, tmp_path, monkeypatch, fake_tool_runner, custom_plugin):
     import io, zipfile
     import agentdock.library as libmod
     L, m, p, home = env
     rtk_def = L.get_extension("rtk")
+    spec = rtk_def["hooks"]["opencode"]
+    # Older saved presets still have source_url. It must not undo the adapter.
+    spec["source_url"] = "https://raw.githubusercontent.com/rtk-ai/rtk/{TAG}/hooks/opencode/rtk.ts"
+    if custom_plugin:
+        spec["source"] = "{AGENTDOCK}/custom.ts"
+        (L.root / "custom.ts").write_text("// custom plugin\n", "utf-8")
     L.save_extension({**rtk_def, "exe": fake_tool_runner}, replace="rtk")
     rtk = L.get_extension("rtk")
     sysbin = tmp_path / "sysbin"
@@ -252,24 +259,71 @@ def test_update_replaces_system_copy_and_refreshes_plugin(env, tmp_path, monkeyp
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr(fake_tool_runner, "rtk 0.52.0 updated\n")
     release = {"tag_name": "v0.52.0", "assets": [{"name": "rtk-x86_64-pc-windows-msvc.zip", "browser_download_url": "https://x/z"}]}
+    requested = []
     def fake_get(url, progress=None):
+        requested.append(url)
         if "api.github.com" in url:
             return json.dumps(release).encode()
         if url.endswith("/v0.52.0/hooks/opencode/rtk.ts"):
+            assert custom_plugin, "A binary update must not download the old bundled RTK adapter"
             return b"// plugin for v0.52.0\n"
         return buf.getvalue()
     monkeypatch.setattr(libmod, "_get", fake_get)
     monkeypatch.setattr(libmod, "_download", lambda url, progress: fake_get(url))
     L.install(rtk)
+    assert any(url.endswith("/hooks/opencode/rtk.ts") for url in requested) is custom_plugin
     assert L.deploy_target(rtk) == tool
     assert L.deploy(rtk) == tool
     assert L.current_version(rtk) == "0.52.0" and L.managed_by_agentdock(rtk)
-    assert not X.in_sync(rtk, p["oc"])                       # new release ships a new plugin
+    assert X.in_sync(rtk, p["oc"]) is not custom_plugin
     ops = X.refresh_ops(rtk, m.list())
-    assert ops == [{"profile": p["oc"].id, "ext": "rtk", "op": "install"}]
+    assert ops == ([{"profile": p["oc"].id, "ext": "rtk", "op": "install"}] if custom_plugin else [])
     X.apply(X.prepare(ops, m.list()))
-    assert (home / ".config" / "opencode" / "plugins" / "rtk.ts").read_text() == "// plugin for v0.52.0\n"
+    expected = "// plugin for v0.52.0\n" if custom_plugin else (ROOT / "agentdock/assets/opencode/rtk.ts").read_text("utf-8-sig")
+    assert (home / ".config" / "opencode" / "plugins" / "rtk.ts").read_text("utf-8") == expected
     assert X.refresh_ops(rtk, m.list()) == []
+
+
+def test_old_rtk_plugin_migration_backup_conflict_and_rollback(env, monkeypatch):
+    import agentdock.extensions as extmod
+    L, m, p, home = env
+    X = ExtensionManager(L)
+    entry = L.get_extension("rtk")
+    # A stale downloaded plugin must not win over the maintained adapter.
+    version = L.bin_dir("rtk") / "v0.51.0"
+    version.mkdir(parents=True)
+    (version / "rtk.ts").write_text("// obsolete downloaded plugin", "utf-8")
+    monkeypatch.setattr(L, "version_dir", lambda e: version)
+    monkeypatch.setattr(L, "managed_by_agentdock", lambda e: True)
+    for k in ("cc", "codex"):
+        X.apply(X.prepare([{"profile": p[k].id, "ext": "rtk", "op": "install"}], m.list()))
+    plugin = home / ".config/opencode/plugins/rtk.ts"
+    plugin.parent.mkdir()
+    plugin.write_text("// installed old plugin", "utf-8")
+    ops = X.refresh_ops(entry, m.list())
+    assert ops == [{"profile": p["oc"].id, "ext": "rtk", "op": "install"}]
+    plan = X.prepare(ops, m.list())
+    assert len(plan.files) == 1 and "async setup(ctx)" in plan.files[0].next
+    assert plugin.read_text() == "// installed old plugin"
+    plugin.write_text("// changed externally", "utf-8")
+    with pytest.raises(ValueError, match="預覽"):
+        X.apply(plan)
+    plan = X.prepare(ops, m.list())
+    # Force a later file failure to exercise rollback of the plugin replacement.
+    fail = home / "fail.txt"
+    plan.files.append(extmod.FileChange(fail, "", False, "new"))
+    real_write = extmod.atomic_write
+    def write(path, content):
+        if path == fail:
+            raise OSError("simulated failure")
+        real_write(path, content)
+    monkeypatch.setattr(extmod, "atomic_write", write)
+    with pytest.raises(RuntimeError, match="已復原"):
+        X.apply(plan)
+    assert plugin.read_text() == "// changed externally"
+    results = X.apply(X.prepare(ops, m.list()))
+    assert Path(results[0]["backup"]).read_text() == "// changed externally"
+    assert X.refresh_ops(entry, m.list()) == []
 
 
 def test_extension_library_sorting(env):

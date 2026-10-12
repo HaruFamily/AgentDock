@@ -1,42 +1,53 @@
-// Source: https://github.com/rtk-ai/rtk/blob/master/hooks/opencode/rtk.ts
-// Copyright rtk-ai contributors, Apache License 2.0. Copied unchanged below by AgentDock.
+// AgentDock adapter for rtk-ai/rtk (Apache-2.0).
+// Command rules remain in `rtk rewrite`; this file only bridges OpenCode APIs.
+// No npm runtime dependency or Unix-only `which` command is required.
+// Supports OpenCode V2 and V1 >= 1.18.29 (object entrypoints).
+import { execFile } from "node:child_process"
 
-import type { Plugin } from "@opencode-ai/plugin"
+function rewrite(command, directory) {
+  return new Promise((resolve) => {
+    execFile("rtk", ["rewrite", command], {
+      cwd: directory,
+      encoding: "utf8",
+      timeout: 2000,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout) => {
+      // RTK uses exit 3 for a successful rewrite. Never use partial output from
+      // a timeout, signal, buffer overflow, or another process failure.
+      if (error && (error.code !== 3 || error.killed || error.signal)) return resolve(undefined)
+      const result = stdout.trim()
+      resolve(result && result !== command ? result : undefined)
+    })
+  }).catch(() => undefined)
+}
 
-// RTK OpenCode plugin — rewrites commands to use rtk for token savings.
-// Requires: rtk >= 0.23.0 in PATH.
-//
-// This is a thin delegating plugin: all rewrite logic lives in `rtk rewrite`,
-// which is the single source of truth (src/discover/registry.rs).
-// To add or change rewrite rules, edit the Rust registry — not this file.
+function commandOf(tool, args) {
+  if (!["bash", "shell"].includes(String(tool ?? "").toLowerCase())) return
+  if (!args || typeof args !== "object") return
+  if (typeof args.command === "string" && args.command.trim()) return args.command
+}
 
-export const RtkOpenCodePlugin: Plugin = async ({ $ }) => {
-  try {
-    await $`which rtk`.quiet()
-  } catch {
-    console.warn("[rtk] rtk binary not found in PATH — plugin disabled")
-    return {}
-  }
+// V1's server hook contract.
+const RtkOpenCodePlugin = async ({ directory }) => ({
+  "tool.execute.before": async (input, output) => {
+    const command = commandOf(input?.tool, output?.args)
+    if (!command) return
+    const result = await rewrite(command, directory)
+    if (result) output.args.command = result
+  },
+})
 
-  return {
-    "tool.execute.before": async (input, output) => {
-      const tool = String(input?.tool ?? "").toLowerCase()
-      if (tool !== "bash" && tool !== "shell") return
-      const args = output?.args
-      if (!args || typeof args !== "object") return
-
-      const command = (args as Record<string, unknown>).command
-      if (typeof command !== "string" || !command) return
-
-      try {
-        const result = await $`rtk rewrite ${command}`.quiet().nothrow()
-        const rewritten = String(result.stdout).trim()
-        if (rewritten && rewritten !== command) {
-          ;(args as Record<string, unknown>).command = rewritten
-        }
-      } catch {
-        // rtk rewrite failed — pass through unchanged
-      }
-    },
-  }
+// V2 requires a default definition and replacement of event.input.
+export default {
+  id: "rtk",
+  server: RtkOpenCodePlugin,
+  async setup(ctx) {
+    await ctx.tool.hook("execute.before", async (event) => {
+      const command = commandOf(event?.tool, event?.input)
+      if (!command) return
+      const result = await rewrite(command, ctx.location?.directory)
+      if (result) event.input = { ...event.input, command: result }
+    })
+  },
 }

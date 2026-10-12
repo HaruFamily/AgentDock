@@ -6,7 +6,8 @@ const endpointPath = __INBOX_ENDPOINT__
 const identity = __INBOX_IDENTITY__
 const owner = createHash("sha256").update(identity).digest("hex")
 
-export const InboxActivity = async ({ directory }) => ({
+// OpenCode V1 >= 1.18.29 and V2 share forwarding, not initialization APIs.
+const InboxActivity = async ({ directory = "" }) => ({
   event: async ({ event }) => {
     const p = event.properties ?? {}
     const session = p.sessionID ?? p.info?.id
@@ -39,3 +40,24 @@ export const InboxActivity = async ({ directory }) => ({
     } catch { /* Notification failures never change permissions or stop the client. */ }
   }
 })
+
+export default {
+  id: "agentdock.inbox-activity",
+  server: InboxActivity,
+  async setup(ctx) {
+    const hooks = await InboxActivity({ directory: ctx.location?.directory })
+    const controller = new AbortController()
+    const task = (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          if (controller.signal.aborted) break
+          await hooks.event({ event })
+        }
+      } catch { /* A disconnected notification stream must not stop OpenCode. */ }
+    })()
+    return async () => {
+      controller.abort()
+      await task
+    }
+  },
+}

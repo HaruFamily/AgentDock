@@ -27,7 +27,7 @@ from typing import Any
 
 from agentdock.agents import Profile, strip_jsonc
 from agentdock.files import atomic_write, backup_path, prune_backups, read_text
-from agentdock.library import Library
+from agentdock.library import Library, bundled_rtk_plugin
 from agentdock.paths import console_python
 
 # One-click library entries ("＋ → rtk（範本）"). Same shape as mcp-library.json "extensions".
@@ -38,8 +38,7 @@ PRESETS: list[dict[str, Any]] = [{
     "hooks": {
         "claude-code": {"event": "PreToolUse", "matcher": "Bash", "command": "rtk hook claude"},
         "codex": {"event": "PreToolUse", "matcher": "Bash", "command": "rtk hook codex"},
-        "opencode": {"plugin": "rtk.ts", "source": "{AGENTDOCK}/agentdock/assets/opencode/rtk.ts",
-                     "source_url": "https://raw.githubusercontent.com/rtk-ai/rtk/{TAG}/hooks/opencode/rtk.ts"},
+        "opencode": {"plugin": "rtk.ts", "source": "{AGENTDOCK}/agentdock/assets/opencode/rtk.ts"},
     },
 }]
 
@@ -237,9 +236,10 @@ class ExtensionManager:
         return [e for e in self.library.extensions() if self.status(e, profile)]
 
     def _plugin_text(self, entry: dict[str, Any], spec: dict[str, Any]) -> str:
-        """The plugin that matches the downloaded release if we have it, else the bundled template."""
+        """Use the maintained RTK adapter; other plugins prefer their downloaded release."""
         version = self.library.version_dir(entry)
-        if version and (version / spec["plugin"]).is_file() and self.library.managed_by_agentdock(entry):
+        if (not bundled_rtk_plugin(entry, spec) and version and
+                (version / spec["plugin"]).is_file() and self.library.managed_by_agentdock(entry)):
             text = read_text(version / spec["plugin"])
             if text:
                 return text

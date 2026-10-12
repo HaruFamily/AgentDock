@@ -29,6 +29,7 @@
   `{event, matcher, command}`，分別寫入 `<claude 目錄>/settings.json`（CLAUDE_CONFIG_DIR 或 ~/.claude）與 `<codex 目錄>/hooks.json`；
   opencode 是 plugin `{plugin, source}`，把範本複製到 `<opencode 目錄>/plugins/`。目錄由登錄的設定檔位置推得。
   `prepare()`/`apply()` 與 agents.py 相同：預覽、確認原檔未變、備份、寫入、失敗復原。安裝與否由檔案內容判斷（含 `rtk init` 寫的）。
+  標準 RTK OpenCode 範本使用 AgentDock 維護的 V2 setup／V1 1.18.29+ server 接入檔；library 的 binary 更新不下載覆蓋此接入檔，舊 source_url 與版本快取也不優先於它。以 repo 與 source 判別，改名範本仍有效，自訂來源維持下載優先。status 只代表存在，in_sync 用內容差異提示需更新，不代表已通過客戶端執行驗證。
 - `userpath.py`：hook 以名稱呼叫工具（`rtk hook claude`），改寫後的指令也是 `rtk ...`，所以工具必須在 PATH 上。
   `data/bin/` 放目前版本的複本，經使用者確認後加入 HKCU PATH；偵測時讀登錄檔的 PATH（本行程的可能過期）。
 - `agents.py`：以操作清單（enable/disable/remove/add/update）規劃變更。Codex／OpenCode 用 `enabled` 停用；Claude 系列沒有此旗標，停用時移出設定存到 `data/disabled-<id>.json`，啟用時還原。

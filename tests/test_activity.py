@@ -102,7 +102,8 @@ def test_installed_hook_command_reaches_broker_without_deciding(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which('node'), reason='Node is not available')
-def test_opencode_plugin_forwards_permission_ids(tmp_path):
+@pytest.mark.parametrize('api', ['v1', 'v2'])
+def test_opencode_plugin_forwards_permission_ids(tmp_path, api):
     store = QuestionStore(tmp_path)
     broker = Broker(tmp_path, store)
     broker.start()
@@ -113,13 +114,39 @@ def test_opencode_plugin_forwards_permission_ids(tmp_path):
         source = source.replace('__INBOX_IDENTITY__', json.dumps('isolated-opencode'))
         plugin = tmp_path / 'plugin.mjs'
         plugin.write_text(source, 'utf-8')
-        program = 'import { InboxActivity } from ' + json.dumps(plugin.as_uri()) + ''';
-const plugin = await InboxActivity({ directory: "D:/test" });
-for (const [type, properties] of [
+        program = 'import definition from ' + json.dumps(plugin.as_uri()) + ';\nconst api = ' + json.dumps(api) + ''';
+const events = [
   ["permission.asked", {sessionID: "s1", id: "p1"}],
   ["permission.asked", {sessionID: "s1", id: "p2"}],
   ["permission.replied", {sessionID: "s1", permissionID: "p1", reply: "once"}],
-]) await plugin.event({event: {type, properties}});
+  ["message.updated", {sessionID: "s1", text: "private content"}],
+].map(([type, properties]) => ({type, properties}));
+if (api === "v1") {
+  const plugin = await definition.server({ directory: "D:/test" });
+  for (const event of events) await plugin.event({event});
+} else {
+  let resolveDrained;
+  const drained = new Promise(resolve => { resolveDrained = resolve });
+  let signal;
+  const cleanup = await definition.setup({ location: { directory: "D:/test" }, event: {
+    async *subscribe(options) {
+      signal = options.signal;
+      for (const event of events) yield event;
+      resolveDrained();
+      await new Promise(resolve => signal.addEventListener("abort", resolve, {once: true}));
+      // No forwarding even if a buffered event arrives during unload.
+      yield {type: "permission.replied", properties: {sessionID: "s1", permissionID: "p2"}};
+    }
+  }});
+  await drained;
+  await cleanup();
+  if (!signal.aborted) throw new Error("subscription not cancelled");
+  // Stream errors are contained rather than becoming unhandled rejections.
+  const close = await definition.setup({ event: {
+    async *subscribe() { throw new Error("disconnected") }
+  }});
+  await close();
+}
 '''
         result = subprocess.run([shutil.which('node'), '--input-type=module', '-e', program],
                                 capture_output=True, text=True, timeout=10)
