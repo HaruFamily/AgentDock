@@ -110,6 +110,34 @@ class FullRowCheckBox(QCheckBox):
 
 
 class FullRowRadioButton(QRadioButton):
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if (event.button() == Qt.MouseButton.LeftButton and self.isDown()
+                and self.isChecked() and self.hitButton(event.position().toPoint())):
+            self.setDown(False)
+            self.click()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Space and self.isDown() and self.isChecked() and not event.isAutoRepeat():
+            self.setDown(False)
+            self.click()
+            event.accept()
+        else:
+            super().keyReleaseEvent(event)
+
+    def nextCheckState(self) -> None:  # noqa: N802
+        group = self.group()
+        if self.isChecked() and group is not None and group.exclusive():
+            group.setExclusive(False)
+            try:
+                self.setChecked(False)
+            finally:
+                group.setExclusive(True)
+        else:
+            super().nextCheckState()
+
     def hitButton(self, pos) -> bool:  # noqa: N802
         return self.rect().contains(pos)
 
@@ -922,7 +950,7 @@ class QaView(QWidget):
         state: dict[str, Any] = {"option_rows": {}}
         self.blocks[q["id"]] = state
         if q["options"]:
-            lay.addWidget(self._section_label({"single": "選一項", "multiple": "可選多項"}.get(q["mode"], "選項")))
+            lay.addWidget(self._section_label({"single": "選一項（再點一次可取消）", "multiple": "可選多項"}.get(q["mode"], "選項")))
             group = QButtonGroup(box)
             group.setExclusive(q["mode"] == "single")
             opts = QVBoxLayout()

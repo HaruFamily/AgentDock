@@ -90,12 +90,17 @@ def test_option_entire_row_clicks_without_toggling_notes(tmp_path, mode):
     choice = next(b for b in row.findChildren(QAbstractButton) if b.text() == "X")
     QTest.mouseClick(choice, Qt.MouseButton.LeftButton, pos=QPoint(choice.width() - 4, choice.height() // 2))
     assert view.drafts[q["id"]]["selected"] == ["x"]
-    if mode == "multiple":
-        QTest.mouseClick(row, Qt.MouseButton.LeftButton, pos=QPoint(row.width() - 2, row.height() - 2))
-        assert view.drafts[q["id"]]["selected"] == []
-    else:
+    QTest.mouseClick(row, Qt.MouseButton.LeftButton, pos=QPoint(row.width() - 2, row.height() - 2))
+    assert view.drafts[q["id"]]["selected"] == []
+    QTest.mouseClick(choice, Qt.MouseButton.LeftButton, pos=QPoint(4, choice.height() // 2))
+    assert choice.isChecked()
+    QTest.mouseClick(choice, Qt.MouseButton.LeftButton, pos=QPoint(4, choice.height() // 2))
+    assert not choice.isChecked()
+    if mode == "single":
+        choice.click()
         QTest.mouseClick(rows["y"]["row"], Qt.MouseButton.LeftButton, pos=QPoint(2, 2))
         assert view.drafts[q["id"]]["selected"] == ["y"]
+        assert not choice.isChecked()
     before = list(view.drafts[q["id"]]["selected"])
     rows["x"]["add"].click()
     QTest.mouseClick(rows["x"]["note"].viewport(), Qt.MouseButton.LeftButton)
@@ -105,6 +110,40 @@ def test_option_entire_row_clicks_without_toggling_notes(tmp_path, mode):
     QTest.mouseClick(row, Qt.MouseButton.LeftButton, pos=QPoint(2, 2))
     assert view.drafts[q["id"]]["selected"] == before
     view.close()
+
+
+def test_single_choice_can_clear_and_submit_only_text(tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    store = QuestionStore(tmp_path)
+    q = store.create("a" * 64, "C", {"request_key": "clear", "work_id": "w", "work_title": "W",
+        "question": "Pick", "images": [], "mode": "single", "wait_seconds": 60,
+        "options": [{"id": "x", "label": "X", "description": "", "images": []}]})
+    view = QaView(store)
+    view.open_question(q["id"])
+    choice = view.detail.findChild(QRadioButton)
+    view.blocks[q["id"]]["text"].setPlainText("都不是，我想要別的做法")
+    choice.click()
+    choice.click()
+    assert not choice.isChecked()
+    assert not view.blocks[q["id"]]["option_rows"]["x"]["row"].property("selected")
+    # Keyboard activation uses the same optional single-choice behavior.
+    QTest.keyClick(choice, Qt.Key.Key_Space)
+    assert choice.isChecked()
+    QTest.keyClick(choice, Qt.Key.Key_Space)
+    assert not choice.isChecked()
+    view._flush()
+    view.close()
+    restored = QaView(store)
+    restored.open_question(q["id"])
+    assert not restored.detail.findChild(QRadioButton).isChecked()
+    assert restored.blocks[q["id"]]["text"].toPlainText() == "都不是，我想要別的做法"
+    submit = next(b for b in restored.detail.findChildren(QPushButton) if b.text() == theme.t("submit"))
+    submit.click()
+    done = store.get(q["id"])
+    assert done["status"] == "answered"
+    assert done["answer"] == {"selected": [], "text": "都不是，我想要別的做法", "notes": {}, "attachment_ids": []}
+    restored.close()
 
 
 def test_persistent_icon_toggles_card(tmp_path):
