@@ -55,6 +55,50 @@ def test_activity_terminal_read_and_owner(tmp_path):
     assert not store.tasks()
 
 
+def test_session_end_only_updates_existing_conversation(tmp_path):
+    emitted = []
+    store = ActivityStore(tmp_path, lambda *args: emitted.append(args))
+    assert store.receive(OWNER, observation('ended')) is None
+    assert not store.tasks() and not emitted and not store.file.exists()
+    store.receive(OWNER, observation())
+    work_id = store.tasks()[0]['work_id']
+    for state in ('idle', 'running', 'idle'):
+        store.receive(OWNER, observation(state))
+        assert len(store.tasks()) == 1
+        assert store.tasks()[0]['work_id'] == work_id
+    task = store.tasks()[0]
+    store.mark_read(OWNER, work_id, [task['latest']['id']])
+    store.receive(OWNER, observation('ended'))
+    assert not store.tasks()
+    assert store.attention() == 0
+    store = ActivityStore(tmp_path, lambda *args: None)
+    assert not store.tasks()
+    store.receive(OWNER, observation())
+    assert store.tasks()[0]['work_id'] == work_id
+    store.receive(OWNER, {**observation(), 'session_id': 's2'})
+    assert len(store.tasks()) == 2
+    store.remove(OWNER, work_id)
+    store.receive(OWNER, observation('ended'))
+    assert len(store.tasks()) == 1  # teardown cannot restore a dismissed card
+
+
+def test_legacy_ended_rows_hidden_without_deleting_history(tmp_path):
+    store = ActivityStore(tmp_path, lambda *args: None)
+    store.receive(OWNER, observation())
+    store.receive(OWNER, observation('ended'))
+    saved = json.loads(store.file.read_text('utf-8'))
+    for row in saved.values():
+        row.pop('observed_activity')
+    store.file.write_text(json.dumps(saved), 'utf-8')
+    store = ActivityStore(tmp_path, lambda *args: None)
+    assert not store.tasks() and store.attention() == 0
+    assert json.loads(store.file.read_text('utf-8')) == saved
+    store.receive(OWNER, observation('ended'))
+    assert not store.tasks()
+    store.receive(OWNER, observation())
+    assert len(store.tasks()) == 1
+
+
 def test_hook_normalization_no_permission_decisions():
     base = dict(session_id='session', cwd='D:/project', hook_event_name='PermissionRequest')
     assert normalize('codex', base)['state'] == 'approval'
@@ -63,6 +107,42 @@ def test_hook_normalization_no_permission_decisions():
     assert normalize('claude-code', {**base, 'hook_event_name': 'Notification', 'notification_type': 'permission_prompt'})['state'] == 'approval'
     assert normalize('codex', {**base, 'agent_id': 'child'}) is None
     assert normalize('codex', {**base, 'hook_event_name': 'Stop'})['state'] == 'idle'
+
+
+def test_codex_composer_sessions_never_create_visible_cards(tmp_path):
+    store = ActivityStore(tmp_path, lambda *args: None)
+    base = dict(cwd='D:/WNReport', hook_event_name='UserPromptSubmit')
+    prefix = ('This is an app-generated request for a suggested next user message. '
+              'The user did not write this message.')
+    for n in range(3):
+        store.receive(OWNER, normalize('codex', {**base, 'session_id': 'real-chat', 'prompt': 'continue'}))
+        raw = {**base, 'session_id': f'prediction-{n}', 'prompt': prefix + '\nprivate context'}
+        payload = normalize('codex', raw)
+        assert payload['background'] is True and 'prompt' not in payload
+        store.receive(OWNER, payload)
+        assert len(store.tasks()) == 1
+        # Marker survives later lifecycle events, which have no prompt field.
+        store.receive(OWNER, normalize('codex', {**raw, 'hook_event_name': 'Stop', 'prompt': None}))
+        assert len(store.tasks()) == 1
+        store = ActivityStore(tmp_path, lambda *args: None)
+        store.receive(OWNER, normalize('codex', {**raw, 'hook_event_name': 'SessionEnd', 'prompt': None}))
+        assert len(store.tasks()) == 1
+    assert 'private context' not in store.file.read_text('utf-8')
+    # Mentioning the phrase inside a user's message is not a background marker.
+    assert not normalize('codex', {**base, 'session_id': 'real', 'prompt': 'Explain: ' + prefix}).get('background')
+    assert not normalize('claude-code', {**base, 'session_id': 'real', 'prompt': prefix}).get('background')
+
+
+def test_background_marker_keeps_real_permission_requests_visible(tmp_path):
+    store = ActivityStore(tmp_path, lambda *args: None)
+    store.receive(OWNER, observation(background=True))
+    assert not store.tasks()
+    store.receive(OWNER, observation('approval', request_id='ask'))
+    assert store.tasks()[0]['state'] == 'approval'
+    store.receive(OWNER, observation('approval_done', request_id='ask'))
+    assert not store.tasks()
+    store.receive('b' * 64, observation())
+    assert len(store.tasks()) == 1  # background markers are owner-scoped
 
 
 def test_activity_broker_auth_and_schema(tmp_path):
@@ -123,12 +203,23 @@ const events = [
 ].map(([type, properties]) => ({type, properties}));
 if (api === "v1") {
   const plugin = await definition.server({ directory: "D:/test" });
+  for (const work_id of ["first", "second"]) {
+    await plugin["tool.execute.before"]({tool: "inbox_report_to_user", sessionID: "s1"}, {args: {work_id}});
+  }
+  await plugin["tool.execute.before"]({tool: "other_report_to_user", sessionID: "s1"}, {args: {work_id: "unrelated"}});
   for (const event of events) await plugin.event({event});
 } else {
   let resolveDrained;
   const drained = new Promise(resolve => { resolveDrained = resolve });
   let signal;
-  const cleanup = await definition.setup({ location: { directory: "D:/test" }, event: {
+  let toolHook, disposed = false;
+  const cleanup = await definition.setup({ location: { directory: "D:/test" }, tool: {
+    async hook(name, callback) {
+      if (name !== "execute.before") throw new Error("wrong tool hook");
+      toolHook = callback;
+      return {dispose: async () => { disposed = true }};
+    }
+  }, event: {
     async *subscribe(options) {
       signal = options.signal;
       for (const event of events) yield event;
@@ -138,8 +229,13 @@ if (api === "v1") {
       yield {type: "permission.replied", properties: {sessionID: "s1", permissionID: "p2"}};
     }
   }});
+  for (const work_id of ["first", "second"]) {
+    await toolHook({tool: "inbox_report_to_user", sessionID: "s1", input: {work_id}});
+  }
   await drained;
   await cleanup();
+  if (!disposed) throw new Error("tool hook not disposed");
+  await toolHook({tool: "inbox_report_to_user", sessionID: "s1", input: {work_id: "unrelated"}});
   if (!signal.aborted) throw new Error("subscription not cancelled");
   // Stream errors are contained rather than becoming unhandled rejections.
   const close = await definition.setup({ event: {
@@ -154,5 +250,9 @@ if (api === "v1") {
         task = store.activity.tasks()[0]
         assert task['state'] == 'approval'
         assert set(task['latest']['approvals']) == {'p2'}
+        owner = task['owner']
+        assert store._chat_key(owner, 'first') == (owner, 'session:opencode:s1')
+        assert store._chat_key(owner, 'second') == (owner, 'session:opencode:s1')
+        assert store._chat_key(owner, 'unrelated') == (owner, 'unrelated')
     finally:
         broker.close()

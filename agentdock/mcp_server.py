@@ -28,7 +28,9 @@ mcp = FastMCP("Inbox", instructions=(
     "Use ask_user when human input is required. Provide stable work_id and request_key. "
     "Pending, cancelled and timeout never mean consent. On timeout call get_user_answer again. "
     "Use report_to_user when a task completes, fails or is cancelled, with a concise useful result summary. "
-    "Use the same work_id for questions and the result. Use a new request_key for each result, reused only on retries. "
+    "Use the same work_id for questions and the result. Keep work_id stable across follow-ups in one conversation; "
+    "do not create a new card for each subtask. If known, pass conversation_id (the full native session ID) on every call. "
+    "Use a new request_key for each result, reused only on retries. "
     "Inbox does not read native chat logs or automatically detect task completion. "
     "Do not mirror user messages, progress, or the full conversation. Reports never start tasks or grant approval."))
 
@@ -39,11 +41,13 @@ mcp = FastMCP("Inbox", instructions=(
     "Provide a concise result summary and any necessary next step. Keep the same work_id as ask_user. "
     "Do not claim completion while a question is pending; never substitute a report for ask_user or consent.")
 async def report_to_user(request_key: str, work_id: str, work_title: str,
-                         kind: ChatEventKind, text: str, ctx: Context) -> CallToolResult:
+                         kind: ChatEventKind, text: str, ctx: Context,
+                         conversation_id: Annotated[str, Field(max_length=200, description="Full native session ID shared by all tasks in this conversation. Never invent it.")] = '') -> CallToolResult:
     try:
         payload = ChatEventInput(request_key=request_key, work_id=work_id, work_title=work_title,
                                  kind=kind, text=text)
         client = await asyncio.to_thread(ensure_app)
+        await _link_conversation(client, ctx, work_id, conversation_id)
         result = await _call(client, "/chat/events", {"source": _source(ctx), "input": payload.model_dump()})
         return CallToolResult(content=[TextContent(type="text", text=json.dumps(result))])
     except Exception as e:
@@ -78,6 +82,13 @@ def _error(error: Any, request_id: str | None = None) -> CallToolResult:
 
 async def _call(client: BrokerClient, path: str, data: Any = None) -> Any:
     return await asyncio.to_thread(client.request, path, data)
+
+
+async def _link_conversation(client, ctx, work_id, conversation_id):
+    if conversation_id:
+        source = _source(ctx).lower().replace(' ', '-')
+        await _call(client, '/conversation-links', {
+            'work_id': work_id, 'conversation_id': f'session:{source}:{conversation_id}'})
 
 
 TEXT_MIMES = {"application/json", "application/xml", "application/x-yaml", "application/yaml", "application/toml",
@@ -232,12 +243,14 @@ async def ask_user(
         description="Ask up to 5 related questions at once; the user answers them on one page and submits together. "
                     "Each item has its own question/mode/options/images. The result lists answers per question.")] = [],
     wait_seconds: Annotated[int, Field(description="Maximum wait for this call. Timeout never approves or answers.")] = 1800,
+    conversation_id: Annotated[str, Field(max_length=200, description="Full native session ID, stable across all tasks in this conversation. Never invent it.")] = '',
 ) -> CallToolResult:
     qid = None
     try:
         ask = AskInput(request_key=request_key, work_id=work_id, work_title=work_title, question=question,
                        images=images, mode=mode, options=options, questions=questions, wait_seconds=wait_seconds)
         client = await asyncio.to_thread(ensure_app)
+        await _link_conversation(client, ctx, work_id, conversation_id)
         payload = ask.model_dump()
         payload["images"] = _prepare_images(ask.images)
         for raw, option in zip(payload["options"], ask.options):

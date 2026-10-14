@@ -33,6 +33,11 @@ class _Create(BaseModel):
     input: dict[str, Any]
 
 
+class _ConversationLink(BaseModel):
+    work_id: str = Field(min_length=1, max_length=160)
+    conversation_id: str = Field(min_length=1, max_length=240, pattern=r'^session:')
+
+
 class Broker:
     def __init__(self, directory: Path, store: QuestionStore, on_show: Callable[[str | None], None] = lambda _id: None):
         self.directory = directory
@@ -58,6 +63,10 @@ class Broker:
             if method == "POST" and path == "/show":
                 self.on_show(None)
                 return 200, {"ok": True}
+            if method == 'POST' and path == '/conversation-links':
+                link = _ConversationLink.model_validate_json(body)
+                self.store.bind_conversation(owner, link.work_id, link.conversation_id)
+                return 200, {'status': 'linked'}
             if method == 'POST' and path == '/activity':
                 event_id = self.store.activity.receive(owner, json.loads(body))
                 return 200, {'id': event_id, 'status': 'received'}

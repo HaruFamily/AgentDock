@@ -1,5 +1,11 @@
 # 架構
 
+## 討論歸屬（2026-10-14）
+
+`POST /conversation-links` 使用 broker 的 owner 驗證，保存 `chat.json.conversation_links`，將原始 work_id 連到 `session:<client>:<完整 session ID>`。hook/plugin 僅針對 Inbox ask_user/report_to_user 提取識別欄位；MCP 可選 conversation_id 走同一路徑。這是明確關聯，與已停用的舊 sync_aliases 無關。顯示、已讀、移除及待答檢查使用討論分組；儲存事件與問答的原 work_id/request_key 保持不變。同一 work_id 不能重綁其他 session；不同 owner 保持隔離。沒有關聯證據的舊卡片不猜測合併。
+
+以下原生活動「不猜測合併」仍成立；取得上述明確關聯時，同 session 的原生活動與任務共用一張卡片，待授權優先顯示，解除後恢復問答／結果。晚到關聯會重用已展開的問答元件。
+
 啟動：`AgentDock.exe`（launcher/launcher.c，GUI 程式）檢查 `runtime\venv` 是否已依目前的 uv.lock 準備好：
 是 → 用 venv 的原始直譯器 `pythonw.exe` 執行 `AgentDock.pyw`（自行加入 venv 套件，避開部分 uv 版本的主控台 pythonw）；
 否 → 開 `scripts\setup.ps1` 顯示進度，把 uv／Python／套件準備到 `runtime\` 後再啟動。`paths.gui_command()` 是唯一的啟動入口（Agent 自動喚起也用它）。

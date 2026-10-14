@@ -102,8 +102,20 @@ class QuestionStore:
         self._active_chats = self._active_chats | {(owner, work_id)}
 
     def _chat_key(self, owner, work_id):
-        # Legacy native-session aliases are deliberately ignored in Inbox.
-        return owner, work_id
+        # Only explicit tool-call/session evidence; never titles or time proximity.
+        link = self._chat.get('conversation_links', {}).get(json_key(owner, work_id))
+        return owner, link or work_id
+
+    def bind_conversation(self, owner, work_id, conversation_id):
+        with self._lock:
+            links = self._chat.get('conversation_links', {})
+            key = json_key(owner, work_id)
+            if key in links:
+                if links[key] != conversation_id:
+                    raise ValueError('work_id 已屬於另一個討論，請使用唯一的 work_id。')
+                return
+            self._save_chat({**self._chat, 'conversation_links': {**links, key: conversation_id}})
+        self._emit('change')
 
     def _save_chat(self, data: dict) -> None:
         atomic_json(self.chat_file, data)
@@ -119,7 +131,7 @@ class QuestionStore:
                     return copy.deepcopy(old)
             key = (owner, payload["work_id"])
             if payload["kind"] in ("completed", "failed", "cancelled") and any(
-                q["owner"] == owner and q["work_id"] == payload["work_id"] and q["status"] == "pending"
+                self._chat_key(q['owner'], q['work_id']) == self._chat_key(*key) and q["status"] == "pending"
                 and q["id"] not in self._chat["hidden_questions"]
                 for q in self._questions
             ):
@@ -131,10 +143,9 @@ class QuestionStore:
             if payload["kind"] in ("started", "user_message"):
                 self._running.add(key)
             elif payload["kind"] in ("completed", "failed", "cancelled"):
-                self._running.discard(key)
+                self._running = {k for k in self._running if self._chat_key(*k) != self._chat_key(*key)}
             self._activate(*key)
-        if self._chat_key(owner, payload["work_id"]) == (owner, payload["work_id"]):
-            self._emit("new-message", copy.deepcopy(event))
+        self._emit("new-message", copy.deepcopy(event))
         self._emit("change")
         return copy.deepcopy(event)
 
@@ -144,13 +155,15 @@ class QuestionStore:
         Writers replace _chat/_questions rather than mutating published records. Cache the
         grouping once per snapshot; list reads copy metadata, detail reads copy one page.
         """
-        chat, questions, running = self._chat, self._questions, frozenset(self._running)
+        chat, questions = self._chat, self._questions
+        running = frozenset(self._chat_key(*key) for key in self._running)
         previous = self._view_sources
         active = self._active_chats
         if previous and previous[0] is chat and previous[1] is questions and previous[2] == running and previous[3] == active:
             return self._view_index, self._view_summaries
         def canonical(entry):
-            return entry["owner"], entry["work_id"]
+            link = chat.get('conversation_links', {}).get(json_key(entry['owner'], entry['work_id']))
+            return entry['owner'], link or entry['work_id']
         grouped = {}
         hidden = set(chat["hidden_questions"])
         for q in questions:
@@ -160,8 +173,6 @@ class QuestionStore:
             if e.get("external") or e["kind"] not in ("completed", "failed", "cancelled"):
                 continue
             key = canonical(e)
-            if key != (e["owner"], e["work_id"]) and not e.get("external"):
-                continue
             grouped.setdefault(key, []).append(e)
         index, summaries = {}, []
         for key, entries in grouped.items():
@@ -209,7 +220,16 @@ class QuestionStore:
                 continue
             tasks.append({**summary, "latest": copy.deepcopy(latest),
                           "pending": copy.deepcopy(pending)})
-        return sorted(tasks + self.activity.tasks(), key=lambda t: t['updated_at'], reverse=True)
+        represented = {(t['owner'], t['work_id']): t for t in tasks}
+        native = []
+        for t in self.activity.tasks():
+            key = t['owner'], f"session:{t['latest']['client']}:{t['latest']['session_id']}"
+            if key not in represented:
+                native.append(t)
+            elif t['state'] == 'approval':
+                # Keep the permission reminder on the same card until resolved.
+                represented[key].update(state='approval', latest=t['latest'])
+        return sorted(tasks + native, key=lambda t: t['updated_at'], reverse=True)
 
     def conversation_page(self, owner: str, work_id: str, limit: int = 30, before=None) -> dict | None:
         item = self._conversation_view()[0].get((owner, work_id))
@@ -238,12 +258,19 @@ class QuestionStore:
             self._save_chat({**self._chat, 'opened_questions': sorted(opened | ids)})
 
     def mark_read(self, owner: str, work_id: str, event_ids: list[str]) -> bool:
+        if work_id.startswith('session:'):
+            for task in self.activity.tasks():
+                row = task['latest']
+                if task['owner'] == owner and work_id == f"session:{row['client']}:{row['session_id']}":
+                    if self.activity.mark_read(owner, task['work_id'], event_ids):
+                        self._emit('change')
+                        return True
         if work_id.startswith('native:') and self.activity.mark_read(owner, work_id, event_ids):
             self._emit('change')
             return True
         ids = set(event_ids)
         def unread(e):
-            return e["id"] in ids and e["owner"] == owner and e["work_id"] == work_id and not e["read"]
+            return e["id"] in ids and self._chat_key(e['owner'], e['work_id']) == (owner, work_id) and not e["read"]
         if not ids or not any(unread(e) for e in self._chat["events"]):
             return False
         with self._lock:
@@ -294,6 +321,11 @@ class QuestionStore:
         """Remove visible history, retaining question protocol records for in-flight callers/retries."""
         if work_id.startswith('native:'):
             self.activity.remove(owner, work_id)
+        if work_id.startswith('session:'):
+            for task in self.activity.tasks():
+                row = task['latest']
+                if task['owner'] == owner and work_id == f"session:{row['client']}:{row['session_id']}":
+                    self.activity.remove(owner, task['work_id'])
         with self._lock:
             data = copy.deepcopy(self._chat)
             removed = [e for e in data["events"] if self._chat_key(e["owner"], e["work_id"]) == (owner, work_id)]
@@ -305,7 +337,7 @@ class QuestionStore:
             hidden.update(q["id"] for q in self._questions if self._chat_key(q["owner"], q["work_id"]) == (owner, work_id))
             data["hidden_questions"] = sorted(hidden)
             self._save_chat(data)
-            self._running.discard((owner, work_id))
+            self._running = {key for key in self._running if self._chat_key(*key) != (owner, work_id)}
         self._emit("change")
 
     def visible_questions(self) -> list[dict]:
@@ -461,7 +493,7 @@ class QuestionStore:
                     old["resolved_at"] = now
                 updated.append(old)
             self._persist(updated)
-            self._running.update(self._chat_key(q["owner"], q["work_id"]) for q in updated if q["id"] in checked)
+            self._running.update((q["owner"], q["work_id"]) for q in updated if q["id"] in checked)
         self._emit("change")
 
     def cancel_group(self, ids: list[str]) -> None:
@@ -474,7 +506,7 @@ class QuestionStore:
                     old = {**copy.deepcopy(old), "status": "cancelled", "resolved_at": now}
                 updated.append(old)
             self._persist(updated)
-            self._running.difference_update(self._chat_key(q["owner"], q["work_id"]) for q in updated if q["id"] in ids)
+            self._running.difference_update((q["owner"], q["work_id"]) for q in updated if q["id"] in ids)
         self._emit("change")
 
     def _validated(self, q: dict[str, Any], raw: Any, submit: bool) -> dict[str, Any]:
@@ -515,7 +547,7 @@ class QuestionStore:
             q["draft"] = copy.deepcopy(q["answer"])
             q["status"] = "answered"
             q["resolved_at"] = _now()
-            self._running.add(self._chat_key(q["owner"], q["work_id"]))
+            self._running.add((q["owner"], q["work_id"]))
             self._replace(q)
             return q
 
@@ -526,7 +558,7 @@ class QuestionStore:
                 raise ValueError("這題已處理。")
             q["status"] = "cancelled"
             q["resolved_at"] = _now()
-            self._running.discard(self._chat_key(q["owner"], q["work_id"]))
+            self._running.discard((q["owner"], q["work_id"]))
             self._replace(q)
             return q
 

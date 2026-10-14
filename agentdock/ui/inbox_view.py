@@ -183,6 +183,31 @@ class InboxView(QWidget):
         self.pending_items.emit([{'id': u[0]['id'], 'source': u[0]['source'], 'question': u[0]['question']} for u in units])
         shown = [t for i, t in enumerate(tasks) if i < self._limit or t['pending'] or t['state'] == 'approval']
         wanted = {(t['owner'], t['work_id']) for t in shown}
+        # A late session link must preserve the editor that the user is typing in.
+        focused = QApplication.focusWidget()
+        rows = sorted(list(self.rows.items()),
+                      key=lambda item: not (focused and item[1].isAncestorOf(focused)))
+        for old_key, row in rows:
+            key = self.store._chat_key(*old_key)
+            if key == old_key or key not in wanted:
+                continue
+            target = self.rows.get(key)
+            self.rows.pop(old_key)
+            if target is not None and focused and row.isAncestorOf(focused):
+                row.key = key
+                self.rows[key] = row
+                target, row = row, target
+            if target is None:
+                row.key = key
+                self.rows[key] = row
+            else:
+                for qid, fold in row.foldouts.items():
+                    target.foldouts[qid] = fold
+                    target.body.addWidget(fold)
+                row.foldouts = {}
+                row.group.items.removeWidget(row)
+                row.hide()
+                row.deleteLater()
         for key in set(self.rows) - wanted:
             row = self.rows.pop(key)
             for fold in row.foldouts.values(): fold.flush()

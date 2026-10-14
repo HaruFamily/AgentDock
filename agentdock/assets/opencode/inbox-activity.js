@@ -6,8 +6,27 @@ const endpointPath = __INBOX_ENDPOINT__
 const identity = __INBOX_IDENTITY__
 const owner = createHash("sha256").update(identity).digest("hex")
 
+async function linkConversation(tool, session, args) {
+  if (!/^(?:mcp__)?(?:inbox|agentchat)(?:__|_)(?:ask_user|report_to_user)$/.test(tool ?? "") ||
+      typeof session !== "string" || !session || typeof args?.work_id !== "string") return
+  try {
+    const endpoint = JSON.parse(await readFile(endpointPath, "utf8"))
+    if (!Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 ||
+        !/^[a-f0-9]{64}$/.test(endpoint.token)) return
+    await fetch(`http://127.0.0.1:${endpoint.port}/conversation-links`, {
+      method: "POST", signal: AbortSignal.timeout(700),
+      headers: { Authorization: `Bearer ${endpoint.token}`, "X-AgentDock-Owner": owner,
+                 "Content-Type": "application/json" },
+      body: JSON.stringify({ work_id: args.work_id, conversation_id: `session:opencode:${session}` })
+    })
+  } catch { /* Linking never blocks the client or grants approval. */ }
+}
+
 // OpenCode V1 >= 1.18.29 and V2 share forwarding, not initialization APIs.
 const InboxActivity = async ({ directory = "" }) => ({
+  "tool.execute.before": async (input, output) => {
+    await linkConversation(input.tool, input.sessionID, output.args)
+  },
   event: async ({ event }) => {
     const p = event.properties ?? {}
     const session = p.sessionID ?? p.info?.id
@@ -46,6 +65,11 @@ export default {
   server: InboxActivity,
   async setup(ctx) {
     const hooks = await InboxActivity({ directory: ctx.location?.directory })
+    let closed = false
+    const registration = ctx.tool?.hook && await ctx.tool.hook("execute.before", async (event) => {
+      if (closed) return
+      await linkConversation(event.tool, event.sessionID, event.input)
+    })
     const controller = new AbortController()
     const task = (async () => {
       try {
@@ -56,7 +80,9 @@ export default {
       } catch { /* A disconnected notification stream must not stop OpenCode. */ }
     })()
     return async () => {
+      closed = true
       controller.abort()
+      await registration?.dispose?.()
       await task
     }
   },

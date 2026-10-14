@@ -26,6 +26,7 @@ class ActivityInput(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     detail: str = Field('', max_length=300)
     request_id: str = Field('', max_length=200)
+    background: bool = False
 
 
 class ActivityStore:
@@ -42,6 +43,10 @@ class ActivityStore:
         key = hashlib.sha256(f"{owner}:{payload['client']}:{payload['session_id']}".encode()).hexdigest()
         with self.lock:
             old = self.rows.get(key, {})
+            # Teardown hooks can arrive for background sessions that never sent
+            # user-facing activity. They must not create new Inbox cards.
+            if payload['state'] == 'ended' and not old:
+                return None
             approvals = dict(old.get('approvals', {}))
             state = payload['state']
             if state == 'approval':
@@ -56,8 +61,12 @@ class ActivityStore:
                 state = 'approval'
             notify = payload['state'] == 'approval' and (old.get('state') != 'approval' or approvals != old.get('approvals'))
             row = {**payload, 'state': state, 'approvals': approvals, 'owner': owner,
+                   'background': old.get('background', False) or payload['background'],
+                   'observed_activity': old.get('observed_activity', old.get('state') not in (None, 'ended'))
+                                        or payload['state'] != 'ended',
                    'id': str(uuid.uuid4()), 'at': time.time(),
-                   'read': False if notify or state in ('idle', 'ended', 'interrupted', 'error') else True}
+                   'read': old.get('read', True) if state == 'ended' else
+                           False if notify or state in ('idle', 'interrupted', 'error') else True}
             rows = {**self.rows, key: row}
             atomic_json(self.file, rows)
             self.rows = rows
@@ -69,6 +78,11 @@ class ActivityStore:
         tasks = []
         for key, row in self.rows.items():
             state = row['state']
+            # Closed native sessions are not task results. Keep their records,
+            # but remove stale lifecycle cards, including old composer sessions.
+            # Unexpected approval requests must remain visible even in background work.
+            if state == 'ended' or (row.get('background', False) and state != 'approval'):
+                continue
             seen = self.live.get(key)
             fresh = seen is not None and time.monotonic() - seen <= FRESH_SECONDS
             if state in ('running', 'approval') and not fresh:

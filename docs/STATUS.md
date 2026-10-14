@@ -1,5 +1,15 @@
 # 現況：0.7.1（Python 版）
 
+最新驗證：Codex 背景建議過濾修正後完整 148 項測試通過（45.75 秒）。測試使用暫存資料，未改真實客戶端設定；尚需重啟 AgentDock 後確認實際下一輪對話。
+
+2026-10-14 Codex／WNReport 洗頻追查：實際新增的 session 診斷標記為 composer_predictions（產生下一句建議輸入），不是新的使用者討論。先前只排除純 SessionEnd 不足，因背景工作亦有活動事件。hook 現在辨識 UserPromptSubmit 的明確 app-generated suggested-next-message 前綴，只傳 background 布林，不存 prompt、不讀 transcript；標記在同 owner/client/session 的後續事件與重啟後保留，背景一般活動不列卡，意外的待授權仍可見。所有 ended 原生活動退出列表，舊背景結束卡片一併隱藏，原始紀錄保留；正常任務結果不受影響。需退出並重開 AgentDock，Codex hook 指向原始檔不需更新設定。OpenCode 使用者尚未實測，不宣稱已完成實機驗收。
+
+本次討論歸屬修正驗證：完整 146 項測試通過（44.92 秒），包含 V1/V2 外掛對隔離 broker 的 session 關聯、MCP 回報、重啟、caller 隔離、重試、授權同卡及問答元件保留。
+
+2026-10-14 Inbox 討論歸屬修正：新增持久化的 owner／work_id → 完整 session 關聯，同一討論的不同子任務只顯示一張卡片，保留原始工作與重試 ID；待答問題全部保留，晚到的關聯重用輸入元件。相同 session 的原生活動不重複列卡，待授權合併在同卡，解除後恢復結果。OpenCode V1／V2 工具執行 hook 與 Codex／Claude Code hook 只傳 Inbox 工具的 work_id/session_id；MCP 另接受可選 conversation_id，指引要求跨後續任務保持 work_id。不依名稱、時間或短碼猜測關係；舊紀錄收到明確關聯後可合併，缺少證據的歷史卡片維持分開。需重啟 App／重新連線 MCP，OpenCode 接入檔須經設定預覽、備份、確認更新後重啟客戶端；本次未寫入真實客戶端設定。真實客戶端自動關聯尚待實機驗收。
+
+2026-10-14 Inbox 原生工作階段結束事件只更新既有卡片，不再單憑結束事件建立任務；同一 owner／client／完整 session ID 持續更新原卡，結束不重新標成未讀。舊版只有 ended 狀態、沒有活動證據標記的卡片退出列表（包含無法判別的舊已結束聊天），儲存紀錄保留；再次收到活動時恢復同一卡片。不同聊天仍分開，不依專案名稱或 ID 前 8 碼合併。完整 141 項測試通過（53.19 秒）；重啟 AgentDock 後生效。
+
 2026-10-13 Inbox 單選可再次點擊已選選項取消，支援圓鈕、整列及鍵盤空白鍵；仍維持最多選一項。取消後保留補充說明與草稿，可只送出文字答案。
 
 2026-10-13 Google Sheets MCP 斷線診斷：整張表的格式回傳經 FastMCP 文字／結構化雙重表示後，實測單次 15,799,712 與 12,609,477 bytes，超過 OpenCode 接收端 10 MiB。新增可選啟動器與範圍／8 MiB 回應防護，保持資料完整與連線可用；完整 138 項測試通過（44.17 秒）。設定尚未套用，須預覽確認與備份。詳見 [診斷與設定預覽](GOOGLE_SHEETS_MCP.md)。

@@ -1,5 +1,9 @@
 # 開發
 
+Codex 背景建議過濾：`UserPromptSubmit.prompt` 有明確 app-generated suggested-next-message 前綴時標記 background，後續只靠 session 識別沿用。此前綴來自本機 composer_predictions 診斷證據，並非保證穩定的公開協定；若 Codex 改版更動文字需重新核對。hook 的 prompt 欄位依據 [官方 hooks 文件](https://learn.chatgpt.com/docs/hooks)，不讀 transcript，也不把 prompt 傳入 broker。ended 原生工作階段退出列表；測試需涵蓋背景 Stop／重啟／SessionEnd、不同 owner、正常討論與待授權。
+
+討論分組接入：Inbox 的 ask_user/report_to_user 可傳完整 `conversation_id`，同一討論固定使用此 ID；未知時不要捏造，也不要按每個小任務更換 work_id。OpenCode inbox-activity 外掛的 V1 tool.execute.before／V2 ctx.tool.hook("execute.before") 自動傳送 sessionID 與 work_id 的關聯，依據 [官方外掛 API](https://dev.opencode.ai/v2/docs/build/plugins/)。更新外掛仍需設定頁預覽、確認與備份；本次程式修正不會自行改寫已安裝外掛。Codex／Claude Code 的 PreToolUse/PostToolUse 亦可提供關聯，只識別 inbox／agentchat 的問答與結果工具。舊資料只有在取得明確關聯後才合併。
+
 需求：Windows。不需要另外安裝 Python 或 uv：`AgentDock.exe` 第一次執行時，`scripts\setup.ps1` 會把 uv、
 Python（版本見 `.python-version`）、套件與快取都放進 `runtime\`（環境變數設定在 `scripts\env.ps1`）。
 

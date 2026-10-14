@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sys
 
@@ -28,10 +29,31 @@ def normalize(client, raw):
         state, detail = 'approval', '請回 Claude Code 批准'
     if not state:
         return None
+    # Desktop composer suggestions run their own ephemeral sessions and fire
+    # ordinary lifecycle hooks. Inspect only the explicit app-generated prefix;
+    # never forward/store the prompt or read a transcript to classify them.
+    prompt = raw.get('prompt')
+    background = (client == 'codex' and event == 'UserPromptSubmit'
+                  and isinstance(prompt, str) and prompt.startswith(
+                      'This is an app-generated request for a suggested next user message. '
+                      'The user did not write this message.'))
     cwd = str(raw.get('cwd', '')).replace('\\', '/').rstrip('/').split('/')[-1]
     return {'client': client, 'session_id': session[:200], 'state': state,
             'title': f"{cwd or '原生工作階段'} · {session[:8]}"[:160], 'detail': detail,
-            'request_id': str(raw.get('tool_use_id') or '')[:200]}
+            'request_id': str(raw.get('tool_use_id') or '')[:200],
+            **({'background': True} if background else {})}
+
+
+def conversation_link(client, raw):
+    session = raw.get('session_id')
+    name = raw.get('tool_name', '')
+    args = raw.get('tool_input')
+    if (raw.get('agent_id') or raw.get('hook_event_name') not in ('PreToolUse', 'PostToolUse')
+            or not isinstance(session, str) or not session
+            or not re.fullmatch(r'(?:mcp__)?(?:inbox|agentchat)(?:__|_)(?:ask_user|report_to_user)', name)
+            or not isinstance(args, dict) or not isinstance(args.get('work_id'), str)):
+        return None
+    return {'work_id': args['work_id'], 'conversation_id': f'session:{client}:{session}'}
 
 
 def main(argv=None):
@@ -43,13 +65,17 @@ def main(argv=None):
     try:
         raw = json.loads(sys.stdin.read(1_000_001))
         payload = normalize(args.client, raw)
-        if payload:
+        link = conversation_link(args.client, raw)
+        if payload or link:
             os.environ['AGENTDOCK_DATA_DIR'] = args.data
             from agentdock.client import _find
             client = _find()
             if client:
                 client.owner = hashlib.sha256(args.identity.encode()).hexdigest()
-                client.request('/activity', payload, timeout=0.7)
+                if link:
+                    client.request('/conversation-links', link, timeout=0.7)
+                if payload:
+                    client.request('/activity', payload, timeout=0.7)
     except Exception:
         # Observability cannot block tools or change the client's permission flow.
         pass
