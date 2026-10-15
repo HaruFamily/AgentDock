@@ -282,6 +282,14 @@ class Library:
                 raise ValueError('events 必須是非空事件名稱的陣列。')
         if "path" in e:
             e["path"] = bool(e["path"])
+        from agentdock import codebase_integration as cbm
+        if cbm.managed(e):
+            if not re.fullmatch(r'[a-zA-Z0-9_.-]{1,100}', str(e.get('mcp', ''))):
+                raise ValueError('請指定 MCP 庫中的 Codebase Memory 名稱。')
+            if e.get('type') != 'command' or e.get('command') != '{MCP}' or e.get('path'):
+                raise ValueError('Codebase Memory 整合沿用 MCP 執行檔，不另行下載或加入 PATH。')
+            if any(spec != cbm.PRESET['hooks'].get(kind) for kind, spec in hooks.items()):
+                raise ValueError('Codebase Memory 接入格式由 AgentDock 維護，請使用整合範本。')
         return e
 
     def ext_command(self, entry: dict[str, Any]) -> str:
@@ -293,10 +301,23 @@ class Library:
 
     def ext_found(self, entry: dict[str, Any]) -> str | None:
         """Where agents would find the tool on PATH right now (None when they would not)."""
+        from agentdock import codebase_integration as cbm
+        if cbm.managed(entry):
+            try:
+                return cbm.launch(self, entry)['command']
+            except ValueError:
+                return None
         from agentdock import userpath
         return userpath.which(self.ext_command(entry))
 
     def ext_problems(self, entry: dict[str, Any]) -> list[str]:
+        from agentdock import codebase_integration as cbm
+        if cbm.managed(entry):
+            try:
+                cbm.launch(self, entry)
+                return []
+            except ValueError as e:
+                return [str(e)]
         if not entry.get("path", True) or self.ext_found(entry):
             return []
         if entry["type"] == "command":
@@ -440,6 +461,9 @@ class Library:
 
     def current_version(self, entry: dict[str, Any]) -> str | None:
         """Version actually in use: for an extension the copy agents find on PATH, otherwise AgentDock's download."""
+        if entry.get('integration') == 'codebase-memory':
+            source = self.get(entry.get('mcp', ''))
+            return self.current_version(source) if source else None
         if "hooks" in entry:
             found = self.ext_found(entry)
             if found:
@@ -451,6 +475,9 @@ class Library:
 
     def managed_by_agentdock(self, entry: dict[str, Any]) -> bool:
         """False when agents use a copy installed some other way (e.g. rtk's own installer in ~/.local/bin)."""
+        if entry.get('integration') == 'codebase-memory':
+            source = self.get(entry.get('mcp', ''))
+            return bool(source and self.managed_by_agentdock(source))
         found = self.ext_found(entry) if "hooks" in entry else None
         mine = self.installed_exe(entry)
         if not found:

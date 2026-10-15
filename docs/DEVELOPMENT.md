@@ -1,5 +1,9 @@
 # 開發
 
+Codebase Memory 整合：擴充庫已有 `codebase-memory-integration`，其他空白庫可由「＋」加入範本。MCP 庫需先設定本機原生 Codebase Memory 執行檔；可將 MCP 與擴充同時加入待套用清單。既有外掛／hooks 會被辨識並標示需更新，按「全部更新」後預覽、備份、套用。更新後重啟客戶端，Codex 還須在 /hooks 信任。只在使用者確認時接管客戶端檔案；不自動修改技能與 AGENTS.md，不呼叫上游 install/update 來重寫全部客戶端。
+
+驗證包含 `tests/test_codebase_integration.py` 的暫存三客戶端設定、既有接入去重、共用 TOML 合併、MCP 與 hook 執行檔同步、預覽衝突、整批復原，以及 `tests/cbm_plugin_contract.mjs` 的 V1/V2 事件合約、原結果保留與失敗隔離。接入狀態代表設定已存在／與範本一致，不代表客戶端已載入、信任或回傳圖譜結果。
+
 Codex 背景建議過濾：`UserPromptSubmit.prompt` 有明確 app-generated suggested-next-message 前綴時標記 background，後續只靠 session 識別沿用。此前綴來自本機 composer_predictions 診斷證據，並非保證穩定的公開協定；若 Codex 改版更動文字需重新核對。hook 的 prompt 欄位依據 [官方 hooks 文件](https://learn.chatgpt.com/docs/hooks)，不讀 transcript，也不把 prompt 傳入 broker。ended 原生工作階段退出列表；測試需涵蓋背景 Stop／重啟／SessionEnd、不同 owner、正常討論與待授權。
 
 討論分組接入：Inbox 的 ask_user/report_to_user 可傳完整 `conversation_id`，同一討論固定使用此 ID；未知時不要捏造，也不要按每個小任務更換 work_id。OpenCode inbox-activity 外掛的 V1 tool.execute.before／V2 ctx.tool.hook("execute.before") 自動傳送 sessionID 與 work_id 的關聯，依據 [官方外掛 API](https://dev.opencode.ai/v2/docs/build/plugins/)。更新外掛仍需設定頁預覽、確認與備份；本次程式修正不會自行改寫已安裝外掛。Codex／Claude Code 的 PreToolUse/PostToolUse 亦可提供關聯，只識別 inbox／agentchat 的問答與結果工具。舊資料只有在取得明確關聯後才合併。

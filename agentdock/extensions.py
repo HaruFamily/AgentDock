@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from agentdock.agents import Profile, strip_jsonc
+from agentdock.agents import Profile, strip_jsonc, _parse, _dump, _servers, _section
+from agentdock import codebase_integration as cbm
 from agentdock.files import atomic_write, backup_path, prune_backups, read_text
 from agentdock.library import Library, bundled_rtk_plugin
 from agentdock.paths import console_python
@@ -55,6 +56,7 @@ PRESETS.append({
 })
 
 UNSUPPORTED = {"claude-desktop": "Claude Desktop 一般聊天／Cowork 尚無已驗證的擴充接入"}
+PRESETS.append(cbm.PRESET)
 
 
 def agent_dir(profile: Profile) -> Path | None:
@@ -197,6 +199,8 @@ class ExtPlan:
     files: list[FileChange] = field(default_factory=list)
     summary: list[dict[str, Any]] = field(default_factory=list)
     profiles: list[str] = field(default_factory=list)
+    guards: list[FileChange] = field(default_factory=list)
+    dependencies: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class ExtensionManager:
@@ -210,6 +214,11 @@ class ExtensionManager:
             return None
         if t.kind == "plugin":
             return t.path.is_file()
+        if cbm.managed(entry):
+            try:
+                return any(cbm.owned_groups(self._cbm_doc(path, profile)) for path in self._cbm_paths(profile))
+            except ValueError:
+                return False
         try:
             return hook_present(_load_hooks(read_text(t.path)), t.spec)
         except ValueError:
@@ -220,6 +229,17 @@ class ExtensionManager:
         t = target(self.library, entry, profile)
         if t is None or not self.status(entry, profile):
             return False
+        if cbm.managed(entry):
+            try:
+                if not cbm.mcp_matches(self.library, entry, profile, read_text(Path(profile.path))):
+                    return False
+                if t.kind == 'plugin':
+                    return read_text(t.path) == self._plugin_text(entry, t.spec)
+                paths = self._cbm_paths(profile)
+                return (cbm.owned_groups(self._cbm_doc(paths[0], profile)) == cbm.desired_groups(self.library, entry, profile.kind)
+                        and all(not cbm.owned_groups(self._cbm_doc(p, profile)) for p in paths[1:]))
+            except ValueError:
+                return False
         if t.kind == "plugin":
             try:
                 return read_text(t.path) == self._plugin_text(entry, t.spec)
@@ -237,6 +257,12 @@ class ExtensionManager:
 
     def _plugin_text(self, entry: dict[str, Any], spec: dict[str, Any]) -> str:
         """Use the maintained RTK adapter; other plugins prefer their downloaded release."""
+        if cbm.managed(entry):
+            source = self.library.root / 'agentdock/assets/opencode/cbm-augment.ts'
+            text = read_text(source)
+            if not text:
+                raise ValueError(f'找不到 Codebase Memory 外掛範本：{source}')
+            return text.replace('__CBM_LAUNCH__', json.dumps(cbm.launch(self.library, entry), ensure_ascii=False))
         version = self.library.version_dir(entry)
         if (not bundled_rtk_plugin(entry, spec) and version and
                 (version / spec["plugin"]).is_file() and self.library.managed_by_agentdock(entry)):
@@ -252,14 +278,39 @@ class ExtensionManager:
             text = text.replace('__INBOX_IDENTITY__', json.dumps(spec['_identity']))
         return text
 
-    def prepare(self, ops: list[dict[str, Any]], profiles: list[Profile]) -> ExtPlan:
+    @staticmethod
+    def _cbm_paths(profile):
+        if profile.kind == 'codex':
+            return [Path(profile.path), hook_file(profile)]
+        return [hook_file(profile)]
+
+    @staticmethod
+    def _cbm_doc(path, profile):
+        return _parse('codex', read_text(path)) if profile.kind == 'codex' and path == Path(profile.path) else _load_hooks(read_text(path))
+
+    def prepare(self, ops: list[dict[str, Any]], profiles: list[Profile], *, base=None) -> ExtPlan:
         """ops: [{profile, ext, op}] with op in install / uninstall."""
         by_id = {p.id: p for p in profiles}
         plan = ExtPlan(id=str(uuid.uuid4()))
         docs: dict[Path, dict[str, Any]] = {}          # hook files edited by several ops
         originals: dict[Path, str] = {}
         plugin_next: dict[Path, str | None] = {}
+        formats: dict[Path, str] = {}
         notes: dict[str, list[str]] = {}
+        if base:
+            plan = copy.deepcopy(base)
+            originals.update({f.path: f.original for f in base.files})
+            plugin_next.update({f.path: f.next for f in base.files})
+            plan.files = []
+
+        def document(path, kind):
+            originals.setdefault(path, read_text(path))
+            if path not in docs:
+                text = plugin_next.pop(path, originals[path])
+                docs[path] = _parse(kind, text or '')
+                formats[path] = kind
+            return docs[path]
+
         for o in ops:
             p = by_id.get(o["profile"])
             if p is None:
@@ -274,13 +325,48 @@ class ExtensionManager:
                 raise ValueError(f"{p.name} 不支援 {entry['key']}。")
             install = o["op"] == "install"
             originals.setdefault(t.path, read_text(t.path))
+            if cbm.managed(entry):
+                paths = []
+                if install:
+                    plan.dependencies[entry['key']] = cbm.launch(self.library, entry)
+                    config_path = Path(p.path)
+                    config = document(config_path, p.kind)
+                    current = _servers(p.kind, config).get(entry['mcp'])
+                    if not current:
+                        raise ValueError(f'{p.name} 尚未加入 {entry["mcp"]}，請先將 MCP 加入待套用清單。')
+                    source = self.library.get(entry['mcp'])
+                    if self.library.in_sync(source, p.kind, p, current) is not True:
+                        rendered = self.library.render(source, p.kind, p)
+                        if 'enabled' in current:
+                            rendered['enabled'] = current['enabled']
+                        config[_section(p.kind)][entry['mcp']] = rendered
+                        notes.setdefault(p.id, []).append(f'{entry["mcp"]} → 同步 MCP 與擴充使用的執行檔及環境')
+                    paths.append(config_path)
+                if t.kind == 'plugin':
+                    plugin_next[t.path] = self._plugin_text(entry, t.spec) if install else None
+                    paths.append(t.path)
+                else:
+                    for index, path in enumerate(self._cbm_paths(p)):
+                        kind = 'codex' if p.kind == 'codex' and path == Path(p.path) else 'claude-code'
+                        data = document(path, kind)
+                        desired = cbm.desired_groups(self.library, entry, p.kind) if install and index == 0 else {}
+                        if cbm.owned_groups(data) != desired:
+                            cbm.reconcile(data, desired)
+                        paths.append(path)
+                notes.setdefault(p.id, []).append(f'{entry["key"]} → {"由 AgentDock 接管／更新" if install else "移除"}接入（保留其他 hooks、技能與 AGENTS.md）')
+                if install and p.kind == 'codex':
+                    notes[p.id].append('Codex 重啟後須在 /hooks 檢視並信任更新的 hooks。')
+                notes.setdefault(f'path:{p.id}', []).extend(str(path) for path in paths)
+                if p.id not in plan.profiles:
+                    plan.profiles.append(p.id)
+                continue
             if t.kind == "plugin":
                 plugin_next[t.path] = self._plugin_text(entry, t.spec) if install else None
                 change = f"{entry['key']} → {'加入' if install else '移除'} plugin {t.path.name}"
             else:
                 if t.path not in docs:
                     try:
-                        docs[t.path] = _load_hooks(originals[t.path])
+                        document(t.path, 'claude-code')
                     except ValueError as e:
                         raise ValueError(f"{t.path} 語法錯誤，請先修正：{e}") from None
                 data = docs[t.path]
@@ -295,19 +381,48 @@ class ExtensionManager:
                 plan.profiles.append(p.id)
             notes.setdefault(f"path:{p.id}", []).append(str(t.path))
         for path, data in docs.items():
-            if data != _load_hooks(originals[path]):
-                plan.files.append(FileChange(path, originals[path], path.exists(), json.dumps(data, ensure_ascii=False, indent=2) + "\n"))
+            kind = formats[path]
+            if data != _parse(kind, originals[path]):
+                text, _ = _dump(kind, originals[path], data)
+                plan.files.append(FileChange(path, originals[path], path.exists(), text))
+            else:
+                plan.guards.append(FileChange(path, originals[path], path.exists(), originals[path]))
         for path, text in plugin_next.items():
             if text != (originals[path] if path.exists() else None):
                 plan.files.append(FileChange(path, originals[path], path.exists(), text))
         for pid in plan.profiles:
+            if pid not in notes:
+                continue
             paths = sorted(set(notes[f"path:{pid}"]))
-            reformats = any(Path(x) in docs and strip_jsonc(originals[Path(x)] or "{}")[1] for x in paths)
+            reformats = any(Path(x) in docs and formats[Path(x)] != 'codex' and strip_jsonc(originals[Path(x)] or "{}")[1] for x in paths)
             plan.summary.append({"agent": by_id[pid].name, "path": "、".join(paths), "changes": notes[pid], "reformats": reformats})
         return plan
 
+    def prepare_all(self, manager, mcp_ops, ext_ops):
+        """One transaction for MCP and extensions, including shared Codex config.toml."""
+        mcp_plan = manager.prepare(mcp_ops)
+        base = ExtPlan(id=mcp_plan.id, summary=mcp_plan.summary)
+        base.guards.append(FileChange(manager.file, read_text(manager.file), manager.file.exists(), None))
+        for f in mcp_plan.files:
+            path = Path(f.profile.path)
+            base.files.append(FileChange(path, f.original, path.exists(), f.next))
+            parked = manager._parked_path(f.profile)
+            value = json.dumps(f.parked, ensure_ascii=False)
+            if value != f.parked_original:
+                base.files.append(FileChange(parked, f.parked_original, parked.exists(), value))
+            else:
+                base.guards.append(FileChange(parked, f.parked_original, parked.exists(), value))
+            base.profiles.append(f.profile.id)
+        plan = self.prepare(ext_ops, manager.list(), base=base)
+        plan.summary = merge_summary(plan.summary)
+        return plan
+
     def apply(self, plan: ExtPlan) -> list[dict[str, Any]]:
-        for f in plan.files:
+        for key, expected in plan.dependencies.items():
+            entry = self.library.get_extension(key)
+            if not entry or cbm.launch(self.library, entry) != expected:
+                raise ValueError('MCP 執行檔在預覽後改變，請重新預覽。')
+        for f in plan.files + plan.guards:
             if read_text(f.path) != f.original or f.path.exists() != f.existed:
                 raise ValueError("設定在預覽後改變，請重新預覽。")
         done: list[FileChange] = []
@@ -330,7 +445,9 @@ class ExtensionManager:
             failed = []
             for f in reversed(done):
                 try:
-                    if f.existed:
+                    if read_text(f.path) != (f.next or '') or f.path.exists() != (f.next is not None):
+                        failed.append(str(f.path))
+                    elif f.existed:
                         atomic_write(f.path, f.original)
                     else:
                         f.path.unlink(missing_ok=True)

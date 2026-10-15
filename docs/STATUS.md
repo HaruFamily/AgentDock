@@ -1,5 +1,9 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-15：移除 Inbox 選項上方的操作說明及回答／備註框的冗長提示；AGENTS.md 明訂後續功能不得重新加入常識性操作教學或改放 tooltip／placeholder。
+
+2026-10-15：新增 `codebase-memory-integration` 擴充庫項目與範本，管理 OpenCode V2／V1 1.18.29+ 搜尋補充外掛、Codex SessionStart／SubagentStart、Claude Code 生命週期與搜尋／讀檔 hooks。接管既有已辨識接入、清除重複 registrations，沿用 MCP 庫執行檔與環境；MCP 更新連帶排入擴充預覽。MCP 與擴充合併為單次備份／套用／失敗復原交易，保留其他 hooks 及 TOML 註解。完整 156 項測試通過（54.03 秒），測試只用暫存資料。已加入庫定義，尚未套用真實客戶端；重啟 AgentDock 後「全部更新 → 預覽並套用」，新接入可從 Agent 的 ＋ 加入。Codex 更新後需信任 hooks；技能／AGENTS.md 及上游產生器未改動，客戶端實際載入與圖譜補充效果仍待套用後驗收。
+
 最新驗證：Codex 背景建議過濾修正後完整 148 項測試通過（45.75 秒）。測試使用暫存資料，未改真實客戶端設定；尚需重啟 AgentDock 後確認實際下一輪對話。
 
 2026-10-14 Codex／WNReport 洗頻追查：實際新增的 session 診斷標記為 composer_predictions（產生下一句建議輸入），不是新的使用者討論。先前只排除純 SessionEnd 不足，因背景工作亦有活動事件。hook 現在辨識 UserPromptSubmit 的明確 app-generated suggested-next-message 前綴，只傳 background 布林，不存 prompt、不讀 transcript；標記在同 owner/client/session 的後續事件與重啟後保留，背景一般活動不列卡，意外的待授權仍可見。所有 ended 原生活動退出列表，舊背景結束卡片一併隱藏，原始紀錄保留；正常任務結果不受影響。需退出並重開 AgentDock，Codex hook 指向原始檔不需更新設定。OpenCode 使用者尚未實測，不宣稱已完成實機驗收。

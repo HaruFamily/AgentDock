@@ -1,5 +1,15 @@
 # 架構
 
+## Codebase Memory 整合（2026-10-15）
+
+`codebase-memory-integration` 是擴充庫定義，`mcp` 指向 MCP 庫中的項目，沿用其原生執行檔與環境，不另下載、不依賴 PATH。`codebase_integration.py` 辨識既有接入並產生受管理 hooks；`codebase_hook.py` 以 stdin 轉送事件至同一執行檔的 `hook-augment`，3 秒逾時，輸出只保留 additionalContext，不傳遞批准／拒絕決策。
+
+- OpenCode 使用內建 `assets/opencode/cbm-augment.ts`，支援 V2 setup 與 V1 1.18.29+ server；搜尋完成後從正確 input 取得 grep/glob 參數，解析 hook JSON 後補充結果，保留原結果與 metadata。這是搜尋補充接入，不宣稱涵蓋上游開發版的所有生命週期功能。
+- Codex 的 CBM hooks 寫入既有 config.toml，保留註解；亦檢查 hooks.json 並移除重複的已辨識 CBM registrations，其他 hooks 維持。事件為 SessionStart／SubagentStart，更新後需由使用者在 /hooks 信任。
+- Claude Code 接 SessionStart／SubagentStart、PreToolUse Grep/Glob/Bash、PostToolUse Read；辨識上游已知的 Windows cbm-*.cmd 呼叫，只接管 registrations，不刪原啟動腳本。
+- `status` 辨識部分安裝；`in_sync` 比對完整接入與 MCP 設定。MCP 更新後排入擴充更新；缺少 MCP／原生執行檔、非原生啟動器、自訂啟動參數皆明確提示，不猜測其他安裝路徑。
+- `ExtensionManager.prepare_all` 將 MCP 與擴充組成同一次交易，共用 config.toml 只寫一次。預覽列明接管與同步 MCP；套用前重查檔案、Agent 清單與執行檔依賴，備份後寫入，任何一筆失敗復原整批。技能、AGENTS.md 及上游產生器維持原管理；上游重新安裝覆寫接入時，透過「全部更新」預覽恢復。
+
 ## 討論歸屬（2026-10-14）
 
 `POST /conversation-links` 使用 broker 的 owner 驗證，保存 `chat.json.conversation_links`，將原始 work_id 連到 `session:<client>:<完整 session ID>`。hook/plugin 僅針對 Inbox ask_user/report_to_user 提取識別欄位；MCP 可選 conversation_id 走同一路徑。這是明確關聯，與已停用的舊 sync_aliases 無關。顯示、已讀、移除及待答檢查使用討論分組；儲存事件與問答的原 work_id/request_key 保持不變。同一 work_id 不能重綁其他 session；不同 owner 保持隔離。沒有關聯證據的舊卡片不猜測合併。

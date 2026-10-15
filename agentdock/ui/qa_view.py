@@ -17,11 +17,6 @@ from agentdock.ui import theme
 from agentdock.ui.question_text import QuestionText
 from agentdock.ui.widgets import ElidedLabel, RibbonBar, Row, dot, icon_button, muted
 
-HINTS = {"text": "用文字回答，也可以加入檔案或貼上圖片。",
-         "single": "選一項，或直接在下方輸入自己的答案。",
-         "multiple": "可選多項，也可以在下方補充想法。"}
-
-
 def button(text: str, *, primary: bool = False, danger: bool = False, flat: bool = False) -> QPushButton:
     b = QPushButton(text)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -950,7 +945,6 @@ class QaView(QWidget):
         state: dict[str, Any] = {"option_rows": {}}
         self.blocks[q["id"]] = state
         if q["options"]:
-            lay.addWidget(self._section_label({"single": "選一項（再點一次可取消）", "multiple": "可選多項"}.get(q["mode"], "選項")))
             group = QButtonGroup(box)
             group.setExclusive(q["mode"] == "single")
             opts = QVBoxLayout()
@@ -981,7 +975,7 @@ class QaView(QWidget):
                     rl.addWidget(desc)
                 if option.get("images"):
                     rl.addWidget(self._images(q, option["images"], 72))
-                note = AutoGrowText(draft["notes"].get(option["id"], ""), "備註（選填，可換行）", max_lines=6)
+                note = AutoGrowText(draft["notes"].get(option["id"], ""), "備註", max_lines=6)
                 note.parent_view = self  # type: ignore[attr-defined]
                 note.setReadOnly(readonly)
                 note.textChanged.connect(lambda n=note, oid=option["id"]: self._note(q, oid, n.toPlainText()))
@@ -996,7 +990,7 @@ class QaView(QWidget):
             self._paint_options(q)
 
         lay.addWidget(self._section_label("補充說明" if q["options"] else "你的回答"))
-        text = AutoGrowText(draft["text"], "" if readonly else "輸入文字（可換行、可貼上圖片或拖放檔案）", max_lines=12)
+        text = AutoGrowText(draft["text"], "", max_lines=12)
         text.parent_view = self  # type: ignore[attr-defined]
         text.setReadOnly(readonly)
         text.textChanged.connect(lambda: self._text(q))

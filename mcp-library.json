@@ -104,6 +104,33 @@
      "source": "{AGENTDOCK}/agentdock/assets/opencode/inbox-activity.js"
     }
    }
+  },
+  {
+   "key": "codebase-memory-integration",
+   "type": "command",
+   "command": "{MCP}",
+   "mcp": "codebase-memory-mcp",
+   "integration": "codebase-memory",
+   "path": false,
+   "description": "Codebase Memory 整合：由 AgentDock 管理 OpenCode 外掛及 Codex／Claude Code hooks，沿用所選 MCP 的執行檔。技能與 AGENTS.md 仍由原安裝管理；上游重裝後可用「全部更新」恢復接入。",
+   "hooks": {
+    "codex": {
+     "event": "SessionStart",
+     "matcher": "*",
+     "command": "{MCP}",
+     "events": ["SubagentStart"]
+    },
+    "claude-code": {
+     "event": "SessionStart",
+     "matcher": "*",
+     "command": "{MCP}",
+     "events": ["SubagentStart", "PreToolUse", "PostToolUse"]
+    },
+    "opencode": {
+     "plugin": "cbm-augment.ts",
+     "source": "{AGENTDOCK}/agentdock/assets/opencode/cbm-augment.ts"
+    }
+   }
   }
  ]
 }

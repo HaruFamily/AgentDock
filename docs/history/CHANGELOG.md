@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-15：新增 Codebase Memory 跨客戶端整合擴充與庫定義。OpenCode 使用相容 V1/V2 的維護版外掛；Codex／Claude Code 接管已辨識 hooks 並沿用 MCP 執行檔及環境，保留其他 hooks、技能與指引。MCP 與擴充更新合併預覽、備份及整批復原，修正共用 Codex 設定檔的交易衝突。完整 156 項測試通過（54.03 秒）；未套用真實客戶端，實機驗收待使用者預覽套用後進行。
+
 - 2026-10-14：修正 Codex composer_predictions 背景建議工作引起的逐輪新增卡片。從 UserPromptSubmit 的明確系統前綴產生持久背景標記，不儲存 prompt 或掃描 transcript；後續 Stop/SessionEnd 不使背景卡重現，保留真正待授權提醒。ended 原生活動一律退出列表，清除舊背景卡片顯示但保留紀錄。
 
 - 2026-10-14：修正同一討論的子任務回報各自列卡；以明確 owner/work_id/session 關聯持久分組，保留原協定 ID、重試去重、所有待答問題與編輯元件。已讀、移除、待答結束檢查及原生授權提醒皆支援合併卡片；OpenCode V1/V2 及 Codex/Claude Code hooks 傳送識別關聯，MCP 提供可選 conversation_id。舊資料不依名稱或時間猜測合併，客戶端擴充更新仍經預覽確認備份。完整 146 項測試通過（44.92 秒），真實客戶端接入待更新後驗收。

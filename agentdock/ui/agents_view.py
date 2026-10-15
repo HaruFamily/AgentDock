@@ -281,7 +281,7 @@ class ExtensionDialog(QDialog):
         for key in self.FIELDS:
             self.type.addItem({"command": "已安裝的指令"}.get(key, TYPES[key]), key)
         self.w: dict[str, QWidget] = {k: QLineEdit() for k in
-                                      ("key", "description", "repo", "asset", "tag", "exe", "download_url", "command")}
+                                      ("key", "description", "repo", "asset", "tag", "exe", "download_url", "command", "mcp")}
         self.w["key"].setPlaceholderText("例如 rtk")
         self.w["repo"].setPlaceholderText("owner/repo，例如 rtk-ai/rtk")
         self.w["asset"].setPlaceholderText(f"檔名規則（預設 {DEFAULT_ASSET}）")
@@ -290,7 +290,7 @@ class ExtensionDialog(QDialog):
         self.w["download_url"].setPlaceholderText("https://…")
         self.w["command"].setPlaceholderText("PATH 上的指令名稱或完整路徑，例如 rtk")
         labels = {"key": "名稱", "description": "說明", "repo": "GitHub 專案", "asset": "檔案規則", "tag": "版本",
-                  "exe": "執行檔", "download_url": "下載網址", "command": "指令"}
+                  "exe": "執行檔", "download_url": "下載網址", "command": "指令", "mcp": "沿用 MCP 庫項目"}
         self.form.addRow("類型", self.type)
         for key, widget in self.w.items():
             self.form.addRow(labels[key], widget)
@@ -353,15 +353,21 @@ class ExtensionDialog(QDialog):
 
     def _sync(self) -> None:
         shown = set(self.FIELDS[self.type.currentData()]) | {"key", "description"}
+        managed = getattr(self, '_loaded_extra', {}).get('integration') == 'codebase-memory'
+        if managed:
+            shown = {'key', 'description', 'mcp'}
+        self.type.setEnabled(not managed)
+        self.path.setVisible(not managed)
         for key, widget in self.w.items():
             self.form.setRowVisible(widget, key in shown)
         for kind, h in self.hooks.items():
             on = h["on"].isChecked()
             for name in ("event", "matcher", "command", "plugin", "source", "browse"):
                 if name in h:
-                    h[name].setEnabled(on)
+                    h[name].setEnabled(on and not managed)
 
     def _load(self, e: dict[str, Any]) -> None:
+        self._loaded_extra = {k: v for k, v in e.items() if k not in self.w and k not in ('hooks', 'path', 'type')}
         self.type.setCurrentIndex(max(0, self.type.findData(e.get("type", "github"))))
         for key, widget in self.w.items():
             widget.setText(str(e.get(key, "")))
@@ -379,11 +385,13 @@ class ExtensionDialog(QDialog):
     def _save(self) -> None:
         try:
             t = self.type.currentData()
-            entry: dict[str, Any] = {"type": t}
+            entry: dict[str, Any] = {**getattr(self, '_loaded_extra', {}), "type": t}
             if self.original:  # keep anything the form does not edit
                 entry = {**{k: v for k, v in self.original.items() if k not in self.w and k not in ("hooks", "path")}, "type": t}
             for key in ("key", "description", *self.FIELDS[t]):
                 entry[key] = self.w[key].text().strip()
+            if entry.get('integration') == 'codebase-memory':
+                entry['mcp'] = self.w['mcp'].text().strip()
             entry["path"] = self.path.isChecked()
             hooks: dict[str, Any] = {}
             for kind, h in self.hooks.items():
@@ -785,22 +793,15 @@ class AgentsView(QWidget):
         self.refresh()
 
     def _apply(self) -> None:
-        plan = self.manager.prepare(self.ops)
-        ext_plan = self.ext.prepare(self.ext_ops, self.manager.list())
-        if not plan.files and not ext_plan.files:
+        plan = self.ext.prepare_all(self.manager, self.ops, self.ext_ops)
+        if not plan.files:
             self.ops.clear()
             self.ext_ops.clear()
             self.info("沒有需要變更的設定。")
             return
-        summary = merge_summary(plan.summary, [s for s in ext_plan.summary if ext_plan.files])
-        if PreviewDialog(summary, self).exec() != QDialog.DialogCode.Accepted:
+        if PreviewDialog(plan.summary, self).exec() != QDialog.DialogCode.Accepted:
             return
-        results = self.manager.apply(plan) if plan.files else []
-        try:
-            results += self.ext.apply(ext_plan) if ext_plan.files else []
-        except Exception as e:
-            self.ops.clear()  # the MCP part is already written
-            raise RuntimeError(f"MCP 設定已寫入，但擴充寫入失敗：{e}") from None
+        results = self.ext.apply(plan)
         known = self.ui_state.get("known_mcp", {})
         for op in self.ops:   # removed on purpose: not "missing" later
             if op["op"] == "remove" and op["server"] in known.get(op["profile"], []):
@@ -814,11 +815,8 @@ class AgentsView(QWidget):
             self.library.cleanup(entry)
         now = time.time()
         restart = self.ui_state.setdefault("restart", {})
-        for f in plan.files:
-            restart[f.profile.id] = now
-        if ext_plan.files:
-            for pid in ext_plan.profiles:
-                restart[pid] = now
+        for pid in plan.profiles:
+            restart[pid] = now
         self.save_state()
         backups = [r["backup"] for r in results if r["backup"]]
         self.info("已套用。標示「需重啟」的 Agent 重開後生效。" + (f"（已備份 {len(backups)} 個設定檔）" if backups else ""))
@@ -1349,6 +1347,11 @@ class AgentsView(QWidget):
                 self.ops.append({"profile": row["id"], "server": key, "op": "update",
                                  "entry": self.library.render(entry, row["kind"], profile)})
                 n += 1
+        for ext in self.library.extensions():
+            if ext.get('integration') == 'codebase-memory' and ext.get('mcp') == key:
+                for op in self.ext.refresh_ops(ext, self.manager.list()):
+                    if not self._ext_op(op['profile'], op['ext']):
+                        self.ext_ops.append(op)
         return n
 
     def _new_mcp(self) -> None:
@@ -1539,7 +1542,7 @@ class AgentsView(QWidget):
             return Row(key, note="套用後從擴充庫刪除", dim=True, strike=True), 0
         installed = self.library.installed_exe(entry) if t in ("github", "download") else None
         ours = self.library.managed_by_agentdock(entry)
-        latest = self.library.cached_update(entry)
+        latest = None if entry.get('integration') == 'codebase-memory' else self.library.cached_update(entry)
         if latest and key not in self.busy:
             self.new_versions.append(entry)
         problems = self.library.ext_problems(entry)
@@ -1551,6 +1554,8 @@ class AgentsView(QWidget):
             note = "v" + version.lstrip("vV")
         else:
             note = "已下載" if installed else ""
+        if entry.get('integration') == 'codebase-memory':
+            note = '沿用 MCP' + (f' · {note}' if note else '')
         if latest:
             note += f" → {latest}"
         alert = "、".join(problems + ([f"有新版 {latest}"] if latest else []))
