@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QVBoxLayout, QWidget)
 
 from agentdock import clients
-from agentdock.agents import KINDS, QAI_NAMES, AgentManager, default_path
+from agentdock.agents import ACCOUNT_MCP_KINDS, KINDS, QAI_NAMES, AgentManager, default_path
 from agentdock.extensions import PRESETS, UNSUPPORTED, ExtensionManager, merge_summary
 from agentdock.library import DEFAULT_ASSET, LOCAL_PATH, QAI_KEY, TYPES, Library
 from agentdock.ui.qa_view import button, chip, label
@@ -92,7 +92,9 @@ class AgentDialog(QDialog):
         self.hint.setText({"claude-code": "使用者層級 .claude.json，或專案的 .mcp.json。",
                            "claude-desktop": "Microsoft Store 版路徑會自動偵測；可在 Claude 設定按「Edit config」確認。",
                            "opencode": "opencode.json 或 opencode.jsonc。",
-                           "codex": "Codex 的 config.toml。"}[self.kind.currentData()])
+                           "codex": "Codex 的 config.toml。",
+                           "grok-cli": "管理 Grok 原生設定；CLI 也可能載入 Claude／Cursor 的相容設定。",
+                           "grokbot": "MCP 使用 GrokBot 目前登入的帳號。"}[self.kind.currentData()])
 
     def _fill(self) -> None:
         kind = self.kind.currentData()
@@ -261,7 +263,7 @@ class McpDialog(QDialog):
 class ExtensionDialog(QDialog):
     """Add or edit an extension: same field-by-field form as MCP, plus how it plugs into each Agent type."""
     FIELDS = {"github": ["repo", "asset", "tag", "exe"], "download": ["download_url", "exe"], "command": ["command"]}
-    HOOK_KINDS = {"claude-code": "Claude Code", "codex": "Codex"}
+    HOOK_KINDS = {"claude-code": "Claude Code", "codex": "Codex", "grok-cli": "Grok CLI"}
 
     def __init__(self, parent: QWidget | None, library: Library, entry: dict[str, Any] | None = None) -> None:
         super().__init__(parent, _top())
@@ -305,7 +307,8 @@ class ExtensionDialog(QDialog):
             event, matcher, command = QLineEdit("PreToolUse"), QLineEdit("Bash"), QLineEdit()
             event.setPlaceholderText("事件")
             matcher.setPlaceholderText("工具")
-            command.setPlaceholderText("hook 指令，例如 rtk hook " + ("claude" if kind == "claude-code" else "codex"))
+            if kind != 'grok-cli':
+                command.setPlaceholderText("hook 指令，例如 rtk hook " + ("claude" if kind == "claude-code" else "codex"))
             pair = QHBoxLayout()
             pair.addWidget(event, 1)
             pair.addWidget(matcher, 1)
@@ -1076,7 +1079,10 @@ class AgentsView(QWidget):
         menu.addAction("編輯…", lambda p=profile: self._edit_agent(p))
         menu.addAction("移除登錄", lambda: self.guard(lambda: self.manager.remove(pid)))
         more.clicked.connect(lambda _=False, m=menu, b=more: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
-        fold.add_action(plus)
+        if row["kind"] not in ACCOUNT_MCP_KINDS:
+            fold.add_action(plus)
+        else:
+            plus.deleteLater()
         fold.add_action(more)
         kind = KINDS[row["kind"]] if row["name"] != KINDS[row["kind"]] else ""
         if row["error"]:
@@ -1084,6 +1090,14 @@ class AgentsView(QWidget):
             fold.set_meta(kind)
             fold.set_badge("(!)", alert=True)
             self._agent_alerts += 1
+            return fold
+        if row["kind"] in ACCOUNT_MCP_KINDS:
+            manage = button("管理 MCP")
+            manage.clicked.connect(lambda: self._grokbot_mcp(profile))
+            fold.body_lay.addWidget(manage)
+            fold.body_lay.addWidget(muted("帳號遠端 MCP · 額度自動追蹤"))
+            fold.body_lay.addWidget(muted("尚無已驗證的桌面 hook 接入"))
+            fold.set_meta(kind)
             return fold
         present = set()
         alerts = 0
@@ -1165,6 +1179,11 @@ class AgentsView(QWidget):
         lab = QLabel(text)
         lab.setObjectName("GroupLabel")
         return lab
+
+    def _grokbot_mcp(self, profile) -> None:
+        from agentdock.ui.grokbot_view import GrokBotMcpDialog
+        GrokBotMcpDialog(self, self.library, profile,
+                        self.manager.directory / "grokbot-backups").exec()
 
     def _server_row(self, profile: Any, row: dict[str, Any], server: dict[str, Any]) -> tuple[QWidget, int]:
         pid, name = row["id"], server["name"]

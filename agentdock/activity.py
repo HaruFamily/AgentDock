@@ -15,12 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from agentdock.files import atomic_json, load_json
 
 FRESH_SECONDS = 120
-SOURCES = {'codex': 'Codex', 'claude-code': 'Claude Code', 'opencode': 'OpenCode'}
+SOURCES = {'codex': 'Codex', 'claude-code': 'Claude Code', 'opencode': 'OpenCode', 'grok-cli': 'Grok CLI'}
 
 
 class ActivityInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    client: Literal['codex', 'claude-code', 'opencode']
+    client: Literal['codex', 'claude-code', 'opencode', 'grok-cli']
     session_id: str = Field(min_length=1, max_length=200)
     state: Literal['running', 'approval', 'approval_done', 'idle', 'ended', 'interrupted', 'error']
     title: str = Field(min_length=1, max_length=160)

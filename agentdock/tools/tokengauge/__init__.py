@@ -115,7 +115,7 @@ class QuotaModel(QObject):
         enabled = self.config().get("providers") or {}
         order = [k for k, _n, _f in gauge.PROVIDERS]
         shown = [r for r in self.results.values() if not r.missing and enabled.get(r.key, True)]
-        return sorted(shown, key=lambda r: order.index(r.key) if r.key in order else 99)
+        return sorted(gauge.display_results(shown), key=lambda r: order.index(r.key) if r.key in order else 99)
 
     def poll_seconds(self) -> int:
         try:

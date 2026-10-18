@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,7 +60,7 @@ def load_latest() -> tuple[float | None, list]:
     out = []
     for r in doc.get("results", []):
         accounts = [Account(a.get("label"), [Window(**w) for w in a.get("windows", [])], a.get("note"),
-                            a.get("identity"), a.get("plan")) for a in r.get("accounts", [])]
+                            a.get("identity"), a.get("plan"), a.get("unified", False)) for a in r.get("accounts", [])]
         out.append(ProviderResult(r["key"], r["name"], accounts, r.get("error"), r.get("stale", False), r.get("missing", False)))
     return doc.get("at"), out
 
@@ -137,6 +137,7 @@ class Account:
     note: str | None = None      # 沒有數字時的說明
     identity: str | None = None  # 用來判斷兩條途徑是否同一個帳號
     plan: str | None = None      # 訂閱方案，例如 Max 20x、Plus、Enterprise
+    unified: bool = False        # 供應商確認這是跨產品共用訂閱
 
 
 @dataclass
@@ -600,10 +601,10 @@ def claude_collect() -> ProviderResult:
 
     routes = []
     if CLAUDE_CREDS.exists():
-        routes.append(("Claude Code", None, via(ClaudeFile(CLAUDE_CREDS))))
+        routes.append(("Claude", None, via(ClaudeFile(CLAUDE_CREDS))))
     for label, src, _ in opencode_logins("anthropic"):
         routes.append((label or "opencode", None, via(src)))
-    return collect_routes("claude", "Claude Code", routes, "找不到 Claude Code 登入")
+    return collect_routes("claude", "Claude", routes, "找不到 Claude Code 登入")
 
 # ────────────────────────────── Codex（多 workspace） ──────────────────────────────
 #
@@ -826,12 +827,56 @@ def grok_collect() -> ProviderResult:
     routes = [(label or "xAI", None, via(src)) for label, src, _ in opencode_logins("xai")]
     return collect_routes("grok", "Grok", routes, "找不到 opencode 的 xAI 登入")
 
+
+def grokbot_collect() -> ProviderResult:
+    from agentdock.grokbot import Client, GrokBotError, usage_values, user_data_dir
+    if not (user_data_dir() / 'sand-secrets.json').is_file():
+        return ProviderResult('grokbot', 'GrokBot', missing=True)
+    try:
+        reply = Client().usage()
+        percent, reset, plan, note = usage_values(reply)
+        windows = [Window(WEEKLY, clamp(percent), parse_time(reset))] if percent is not None else []
+        return ProviderResult('grokbot', 'GrokBot', [Account(None, windows, note=note, plan=plan,
+                                                         unified=reply.get('isUnified') is True)])
+    except GrokBotError as e:
+        return ProviderResult('grokbot', 'GrokBot', error=str(e))
+
 # ────────────────────────────── 輪詢 ──────────────────────────────
 
+def display_results(results: list[ProviderResult]) -> list[ProviderResult]:
+    """One subscription card per brand; unified billing has one authoritative source.
+
+    GrokBot's unified subscription is the configured personal subscription view.
+    Legacy xAI routes remain the fallback, not a second estimate of that pool.
+    Non-unified subscriptions retain their own account rows.
+    """
+    out = [replace(r, name='Claude') if r.key == 'claude' else r
+           for r in results if r.key not in ('grok', 'grokbot')]
+    sources = [r for r in results if r.key in ('grok', 'grokbot')]
+    unified = next((r for r in sources if r.key == 'grokbot' and not r.stale
+                    and any(a.unified for a in r.accounts)), None)
+    if unified:
+        # Explicitly identified other accounts must not disappear into the
+        # default personal subscription. Unknown default routes use the
+        # authoritative unified source rather than comparing percentages.
+        identities = {a.identity for a in unified.accounts if a.identity}
+        others = [replace(a, label=a.label or r.name) for r in sources if r is not unified
+                  for a in r.accounts if a.identity and a.identity not in identities]
+        out.append(replace(unified, key='grok', name='Grok', accounts=[*unified.accounts, *others]))
+    elif sources:
+        live = [r for r in sources if r.accounts and not r.stale]
+        chosen = live or [r for r in sources if r.accounts] or sources
+        accounts = [replace(a, label=a.label or r.name) for r in chosen for a in r.accounts]
+        out.append(ProviderResult('grok', 'Grok', accounts,
+                   error='；'.join(r.error for r in chosen if r.error) or None,
+                   stale=any(r.stale for r in chosen)))
+    return out
+
 PROVIDERS = [
-    ("claude", "Claude Code", lambda cfg: claude_collect()),
+    ("claude", "Claude", lambda cfg: claude_collect()),
     ("codex", "Codex", codex_collect),
     ("grok", "Grok", lambda cfg: grok_collect()),
+    ("grokbot", "GrokBot", lambda cfg: grokbot_collect()),
 ]
 
 
@@ -880,7 +925,7 @@ def fmt_countdown(ts: float | None, now: float | None = None) -> str:
 def demo_results() -> list[ProviderResult]:
     now = time.time()
     return [
-        ProviderResult("claude", "Claude Code", [Account(None, [
+        ProviderResult("claude", "Claude", [Account(None, [
             Window(ROLLING, 42, now + 2 * 3600 + 13 * 60), Window(WEEKLY, 76, now + 3 * 86400 + 5 * 3600)],
             plan="Max 5x")]),
         ProviderResult("codex", "Codex", [

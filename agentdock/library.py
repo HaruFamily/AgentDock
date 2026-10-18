@@ -47,7 +47,7 @@ def split_local(env: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     return {k: v for k, v in env.items() if k not in local}, local
 DEFAULT_ASSET = r"windows.*(amd64|x86_64|x64)"
 EXT_TYPES = ("github", "download", "command")
-EXT_HOOK_KINDS = ("claude-code", "codex", "opencode")
+EXT_HOOK_KINDS = ("claude-code", "codex", "opencode", "grok-cli")
 
 
 def bundled_rtk_plugin(entry: dict[str, Any], spec: dict[str, Any]) -> bool:
@@ -262,7 +262,7 @@ class Library:
             raise ValueError("GitHub 專案請填 owner/repo，例如 rtk-ai/rtk。")
         hooks = e.get("hooks")
         if not isinstance(hooks, dict) or not hooks:
-            raise ValueError("hooks 必須是物件，至少列出一種 Agent（claude-code、codex、opencode）。")
+            raise ValueError("hooks 必須是物件，至少列出一種 Agent。")
         for kind, spec in hooks.items():
             if kind not in EXT_HOOK_KINDS:
                 raise ValueError(f"擴充不支援 {kind}；可用：{'、'.join(EXT_HOOK_KINDS)}。")
@@ -277,6 +277,11 @@ class Library:
                     _https(spec["source_url"].replace("{TAG}", "x"))
             elif not all(str(spec.get(f, "")).strip() for f in ("event", "matcher", "command")):
                 raise ValueError(f"hooks.{kind} 需要 event、matcher、command。")
+            if kind == 'grok-cli':
+                try:
+                    re.compile(spec['matcher'])
+                except re.error:
+                    raise ValueError('Grok CLI 的 matcher 必須是有效的正規表示式。') from None
             if 'events' in spec and (not isinstance(spec['events'], list) or
                                     any(not isinstance(v, str) or not v.strip() for v in spec['events'])):
                 raise ValueError('events 必須是非空事件名稱的陣列。')
@@ -634,12 +639,14 @@ class Library:
     HOST_CALL_LIMIT = {"claude-desktop": 50}
 
     def render(self, entry: dict[str, Any], kind: str, profile: Any) -> dict[str, Any]:
+        if kind == "grokbot":
+            raise ValueError("GrokBot 的 MCP 由 GrokBot 管理，無法寫入本機設定檔。")
         s = self.spec(entry, profile)
         if entry["type"] == "builtin" and kind in self.HOST_CALL_LIMIT:
             s["env"] = {**s["env"], "AGENTDOCK_MAX_WAIT": str(self.HOST_CALL_LIMIT[kind])}
         timeout = entry.get("timeout_sec")
         if "url" in s:
-            if kind == "codex":
+            if kind in ("codex", "grok-cli"):
                 return {"url": s["url"], "enabled": True}
             if kind == "opencode":
                 return {"type": "remote", "url": s["url"], "enabled": True}
@@ -654,7 +661,7 @@ class Library:
         out = {"command": s["command"], "args": s["args"]}
         if s["env"]:
             out["env"] = s["env"]
-        if kind == "codex":
+        if kind in ("codex", "grok-cli"):
             out["enabled"] = True
             if timeout:
                 out["tool_timeout_sec"] = timeout

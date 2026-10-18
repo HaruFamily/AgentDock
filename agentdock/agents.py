@@ -20,8 +20,10 @@ import tomlkit
 
 from agentdock.files import atomic_json, atomic_write, backup_path, load_json, prune_backups, read_text
 
-Kind = Literal["codex", "opencode", "claude-code", "claude-desktop"]
-KINDS: dict[str, str] = {"codex": "Codex", "opencode": "OpenCode", "claude-code": "Claude Code", "claude-desktop": "Claude Desktop / Cowork"}
+Kind = Literal["codex", "opencode", "claude-code", "claude-desktop", "grokbot", "grok-cli"]
+KINDS: dict[str, str] = {"codex": "Codex", "opencode": "OpenCode", "claude-code": "Claude Code", "claude-desktop": "Claude Desktop / Cowork", "grokbot": "GrokBot", "grok-cli": "Grok CLI"}
+TOML_KINDS = {"codex", "grok-cli"}
+ACCOUNT_MCP_KINDS = {"grokbot"}
 QAI_NAMES = ("inbox", "agentchat", "agentdock-qa", "agentdock_qa", "agent_interaction")  # current name first, then legacy
 QAI_TIMEOUT_SECONDS = 1860
 
@@ -29,6 +31,10 @@ QAI_TIMEOUT_SECONDS = 1860
 # --------------------------------------------------------------------------- defaults
 def default_path(kind: str) -> str:
     home = Path.home()
+    if kind == "grok-cli":
+        return str(Path(os.environ.get("GROK_HOME") or home / ".grok") / "config.toml")
+    if kind == "grokbot":
+        return str(home / ".grokbot" / "settings.json")
     if kind == "codex":
         return str(Path(os.environ.get("CODEX_HOME") or home / ".codex") / "config.toml")
     if kind == "opencode":
@@ -97,15 +103,15 @@ def strip_jsonc(text: str) -> tuple[str, bool]:
 
 
 def _section(kind: str) -> str:
-    return "mcp_servers" if kind == "codex" else "mcp" if kind == "opencode" else "mcpServers"
+    return "mcp_servers" if kind in TOML_KINDS else "mcp" if kind == "opencode" else "mcpServers"
 
 
 def _direct_disable(kind: str) -> bool:
-    return kind in ("codex", "opencode")
+    return kind in ("codex", "opencode", "grok-cli")
 
 
 def _parse(kind: str, text: str) -> Any:
-    if kind == "codex":
+    if kind in TOML_KINDS:
         try:
             return tomlkit.parse(text)
         except Exception as e:
@@ -128,6 +134,13 @@ def _plain(value: Any) -> Any:
 
 
 def _servers(kind: str, data: Any) -> dict[str, Any]:
+    # GrokBot's desktop settings only contain account preferences, not MCP definitions.
+    if kind in ACCOUNT_MCP_KINDS:
+        return {}
+    if kind == 'grok-cli':
+        disabled = data.get('disabled_mcp_servers', [])
+        if not isinstance(disabled, list) or any(not isinstance(n, str) for n in disabled):
+            raise ValueError('disabled_mcp_servers 必須是名稱陣列。')
     section = data.get(_section(kind))
     if section is None:
         return {}
@@ -138,7 +151,7 @@ def _servers(kind: str, data: Any) -> dict[str, Any]:
 
 def _dump(kind: str, original: str, data: Any) -> tuple[str, bool]:
     """Serialize. Returns (text, reformats_whole_file)."""
-    if kind == "codex":
+    if kind in TOML_KINDS:
         return tomlkit.dumps(data), False
     _, had_extras = strip_jsonc(original or "{}")
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -279,12 +292,15 @@ class AgentManager:
         for p in self.profiles:
             path = Path(p.path)
             try:
-                servers = _servers(p.kind, _parse(p.kind, read_text(path)))
+                data = _parse(p.kind, read_text(path))
+                servers = _servers(p.kind, data)
                 parked = self._parked(p)
                 rows = []
                 for name in list(servers) + [n for n in parked if n not in servers]:
                     entry = servers.get(name, parked.get(name))
                     enabled = name in servers and (servers[name].get("enabled", True) is not False if _direct_disable(p.kind) else True)
+                    if p.kind == 'grok-cli' and name in data.get('disabled_mcp_servers', []):
+                        enabled = False
                     remote = isinstance(entry, dict) and bool(entry.get("url"))
                     rows.append({"name": name, "enabled": enabled, "transport": "remote" if remote else "local",
                                  "qai": name in QAI_NAMES and _is_qai(entry), "config": entry,
@@ -302,6 +318,8 @@ class AgentManager:
         for o in ops:
             if o["profile"] not in known:
                 raise ValueError("Agent 清單已變更，請重新整理。")
+            if self.get(o["profile"]).kind in ACCOUNT_MCP_KINDS:
+                raise ValueError("GrokBot 的 MCP 由 GrokBot 管理，無法寫入本機設定檔。")
             if o["op"] not in ("enable", "disable", "remove", "add", "update"):
                 raise ValueError(f"未知的操作：{o['op']}")
             if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,100}", o["server"]) or o["server"] in ("__proto__", "constructor", "prototype"):
@@ -314,9 +332,10 @@ class AgentManager:
             path = Path(p.path)
             original = read_text(path)
             data = _parse(p.kind, original)
+            _servers(p.kind, data)  # Validate before planning mutations.
             section = _section(p.kind)
             if section not in data or data[section] is None:
-                data[section] = tomlkit.table() if p.kind == "codex" else {}
+                data[section] = tomlkit.table() if p.kind in TOML_KINDS else {}
             servers = data[section]
             parked = self._parked(p)
             parked_original = read_text(self._parked_path(p))
@@ -372,6 +391,16 @@ class AgentManager:
                             entry["enabled"] = False
                         parked[name] = entry
                     notes.append(f"{name} → 更新設定")
+                if p.kind == 'grok-cli' and op != 'update':
+                    # Both flags are honored by Grok. A removal tombstone also
+                    # prevents a lower-priority Claude/Cursor definition reviving.
+                    disabled = data.get('disabled_mcp_servers', [])
+                    on = op == 'enable' or (op == 'add' and o.get('enabled', True))
+                    desired = [n for n in disabled if n != name]
+                    if not on:
+                        desired.append(name)
+                    if desired != list(disabled):
+                        data['disabled_mcp_servers'] = desired
             text, reformats = _dump(p.kind, original, data)
             _parse(p.kind, text)
             plan.files.append(PlanFile(p, original, text, parked, parked_original))

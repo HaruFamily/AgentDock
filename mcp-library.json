@@ -72,6 +72,12 @@
    "path": false,
    "description": "Inbox 授權提醒與近期活動。僅通知，仍在原客戶端批准；兩分鐘無事件顯示未知。Claude Desktop 一般聊天尚無接入。",
    "hooks": {
+    "grok-cli": {
+     "event": "UserPromptSubmit",
+     "matcher": ".*",
+     "command": "{INBOX_HOOK}",
+     "events": ["PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "StopFailure", "StopCancelled", "SessionEnd"]
+    },
     "codex": {
      "event": "UserPromptSubmit",
      "matcher": "*",

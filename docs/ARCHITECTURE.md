@@ -1,5 +1,13 @@
 # 架構
 
+## Grok CLI 接入（2026-10-18）
+
+`grok-cli` 使用共用 TOML MCP 管理，另同步全域停用清單，移除時阻止相容設定同名項目回退。擴充寫入設定旁 `hooks/agentdock.json`，沿用合併交易。活動 adapter 解析 camelCase、排除子代理與截斷工具參數；Claude adapter 忽略 Grok 匯入事件。額度原始 provider 分開快取，`display_results` 統一品牌名稱並優先使用有效的 GrokBot 共用訂閱來源。範圍與驗證見 [GROK_CLI.md](GROK_CLI.md)。
+
+## GrokBot 帳號接入（2026-10-18）
+
+`grokbot.py` 以 Windows 桌面登入唯讀解密取得短期 token，直接使用 GrokBot 的 DashboardService 讀取個人 MCP 與週額度。`ui/grokbot_view.py` 提供獨立背景管理介面，遠端 MCP 的操作不混入本機 `ExtPlan`；套用前比對帳號與遠端快照、先備份再單次寫入及回讀。未知寫入結果不自動重送，備份還原重新預覽。TokenGauge 新增 grokbot provider。雲端命令與外掛設定保留唯讀，未實作桌面 hooks；細節與非原子衝突限制見 [GROKBOT.md](GROKBOT.md)。
+
 ## Codebase Memory 整合（2026-10-15）
 
 `codebase-memory-integration` 是擴充庫定義，`mcp` 指向 MCP 庫中的項目，沿用其原生執行檔與環境，不另下載、不依賴 PATH。`codebase_integration.py` 辨識既有接入並產生受管理 hooks；`codebase_hook.py` 以 stdin 轉送事件至同一執行檔的 `hook-augment`，3 秒逾時，輸出只保留 additionalContext，不傳遞批准／拒絕決策。

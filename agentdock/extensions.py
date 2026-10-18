@@ -51,6 +51,8 @@ PRESETS.append({
                   'events': ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'Stop', 'Interrupt', 'SessionEnd']},
         'claude-code': {'event': 'UserPromptSubmit', 'matcher': '*', 'command': '{INBOX_HOOK}',
                         'events': ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification', 'Stop', 'StopFailure', 'SessionEnd']},
+        'grok-cli': {'event': 'UserPromptSubmit', 'matcher': '.*', 'command': '{INBOX_HOOK}',
+                     'events': ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification', 'Stop', 'StopFailure', 'StopCancelled', 'SessionEnd']},
         'opencode': {'plugin': 'inbox-activity.js', 'source': '{AGENTDOCK}/agentdock/assets/opencode/inbox-activity.js'},
     },
 })
@@ -68,7 +70,7 @@ def agent_dir(profile: Profile) -> Path | None:
             return Path(env)
         # ~/.claude.json -> ~/.claude ; a config already inside a .claude folder -> that folder
         return cfg.parent if cfg.parent.name == ".claude" else cfg.parent / ".claude"
-    if profile.kind in ("codex", "opencode"):
+    if profile.kind in ("codex", "opencode", "grok-cli"):
         return cfg.parent
     return None
 
@@ -77,6 +79,8 @@ def hook_file(profile: Profile) -> Path | None:
     base = agent_dir(profile)
     if base is None:
         return None
+    if profile.kind == 'grok-cli':
+        return base / 'hooks' / 'agentdock.json'
     return base / ("settings.json" if profile.kind == "claude-code" else "hooks.json")
 
 

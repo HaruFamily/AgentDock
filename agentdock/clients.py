@@ -18,6 +18,7 @@ except ImportError:  # optional: without it the mark is cleared by clicking it
 # so they are told apart by where the executable lives.
 _DESKTOP_HINT = re.compile(r"windowsapps|anthropicclaude|claude_[a-z0-9]{6,}|\\claude\\app-", re.I)
 PROCESS_NAMES: dict[str, tuple[str, ...]] = {
+    "grok-cli": ("grok.exe", "grok"),
     "codex": ("codex.exe", "codex"),
     "claude-desktop": ("claude.exe", "claude"),
     "claude-code": ("claude.exe", "claude"),

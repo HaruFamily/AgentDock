@@ -15,6 +15,7 @@ if __package__ in (None, ''):
 
 
 def normalize(client, raw):
+    raw = hook_input(client, raw)
     session = raw.get('session_id')
     if not isinstance(session, str) or not session or raw.get('agent_id'):
         return None
@@ -27,6 +28,11 @@ def normalize(client, raw):
         state, detail = 'approval', '授權請求已發出，請回 Codex 確認是否需手動批准'
     if client == 'claude-code' and event == 'Notification' and raw.get('notification_type') == 'permission_prompt':
         state, detail = 'approval', '請回 Claude Code 批准'
+    if client == 'grok-cli':
+        if event == 'StopCancelled':
+            state = 'interrupted'
+        elif event == 'Notification' and raw.get('notification_type') == 'permission_prompt':
+            state, detail = 'approval', '請回 Grok CLI 批准'
     if not state:
         return None
     # Desktop composer suggestions run their own ephemeral sessions and fire
@@ -44,7 +50,20 @@ def normalize(client, raw):
             **({'background': True} if background else {})}
 
 
+def hook_input(client, raw):
+    if client != 'grok-cli':
+        # Grok imports Claude hooks by default. Never report their events with
+        # a Claude owner, even if a future version adds snake_case aliases.
+        return {} if 'hookEventName' in raw and 'sessionId' in raw else raw
+    return {'session_id': raw.get('sessionId'), 'hook_event_name': raw.get('hook_event_name'),
+            'agent_id': raw.get('subagentType') or raw.get('agentId'),
+            'cwd': raw.get('cwd'), 'tool_use_id': raw.get('toolUseId'),
+            'notification_type': raw.get('notificationType'), 'tool_name': raw.get('toolName', ''),
+            'tool_input': None if raw.get('toolInputTruncated') else raw.get('toolInput')}
+
+
 def conversation_link(client, raw):
+    raw = hook_input(client, raw)
     session = raw.get('session_id')
     name = raw.get('tool_name', '')
     args = raw.get('tool_input')
@@ -58,7 +77,7 @@ def conversation_link(client, raw):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--client', choices=['codex', 'claude-code'], required=True)
+    parser.add_argument('--client', choices=['codex', 'claude-code', 'grok-cli'], required=True)
     parser.add_argument('--identity', required=True)
     parser.add_argument('--data', required=True)
     args = parser.parse_args(argv)

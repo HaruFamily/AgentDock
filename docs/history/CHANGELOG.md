@@ -1,5 +1,11 @@
 # 版本歷史
 
+- 2026-10-18：加入 Grok CLI 原生 TOML MCP 與 command hooks 管理、Inbox Grok 事件 adapter，避免 Claude 相容 hooks 重複回報。Grok MCP 停用／移除同步全域停用清單，設定沿用預覽、備份、衝突檢查及失敗復原。額度卡顯示 Claude／Grok；有效的 GrokBot 共用訂閱優先，避免預設 xAI 來源重複顯示。完整 178 項測試通過（45.11 秒），未寫入真實客戶端設定；實機載入待使用者套用後驗收。
+
+- 2026-10-18：加入 GrokBot 帳號遠端 MCP 管理及每週額度追蹤。沿用桌面登入，token 只在記憶體使用；MCP 獨立預覽、備份、雙重衝突檢查、套用後回讀，備份可再次預覽還原；不重送結果不明的寫入。保留雲端命令與外掛，未新增未驗證的桌面 hook。完整 172 項測試通過（44.82 秒），實機驗證僅讀取，不套用真實設定。
+
+- 2026-10-18：新增 GrokBot Agent 登錄類型與預設 settings.json 路徑。帳號端 MCP 以「MCP 由 GrokBot 管理」呈現，不把本機偏好設定當成 MCP 清單；UI 隱藏加入入口、設定規劃及庫轉換拒絕寫入。新增暫存目錄登錄／移除、寫入防護與設定介面測試。
+
 - 2026-10-15：新增 Codebase Memory 跨客戶端整合擴充與庫定義。OpenCode 使用相容 V1/V2 的維護版外掛；Codex／Claude Code 接管已辨識 hooks 並沿用 MCP 執行檔及環境，保留其他 hooks、技能與指引。MCP 與擴充更新合併預覽、備份及整批復原，修正共用 Codex 設定檔的交易衝突。完整 156 項測試通過（54.03 秒）；未套用真實客戶端，實機驗收待使用者預覽套用後進行。
 
 - 2026-10-14：修正 Codex composer_predictions 背景建議工作引起的逐輪新增卡片。從 UserPromptSubmit 的明確系統前綴產生持久背景標記，不儲存 prompt 或掃描 transcript；後續 Stop/SessionEnd 不使背景卡重現，保留真正待授權提醒。ended 原生活動一律退出列表，清除舊背景卡片顯示但保留紀錄。

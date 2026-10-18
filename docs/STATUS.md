@@ -1,5 +1,15 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-18：新增 Grok CLI Agent，支援原生 config.toml MCP 與 hooks/agentdock.json 擴充管理，包含 Inbox 活動／授權提醒範本。MCP 停用／移除同步處理相容設定回退；匯入 Claude hooks 的 Grok 事件不重複回報。額度卡改為 Claude／Grok，GrokBot 明確共用訂閱作為個人額度主要來源，失敗時回退既有 xAI 來源。完整 178 項測試通過（45.11 秒），包含暫存設定預覽、備份、衝突及合併交易復原；未套用真實 CLI 設定。重啟後可從設定新增 Grok CLI，套用仍需預覽確認；CLI 載入與 hooks 實機驗收待套用。詳見 [GROK_CLI.md](GROK_CLI.md)。
+
+最新驗證（2026-10-18）：GrokBot 帳號管理與額度接入後完整 172 項測試通過（44.82 秒），介面已用示範資料檢視。真實 MCP／額度讀取成功，寫入功能僅在隔離假服務驗證，尚待使用者預覽確認後實機驗收。
+
+2026-10-18：GrokBot 卡片新增「管理 MCP」，可讀取目前登入帳號，新增／編輯／移除遠端 HTTPS MCP、由 MCP 庫加入遠端項目，並以備份重新預覽還原。帳號變更單獨預覽、備份、衝突重查、寫入與回讀；不混入本機全部更新，模糊失敗不自動重送。額度頁新增 GrokBot 每週用量、重置時間與統一訂閱共用標記。實機唯讀 MCP／額度查詢成功，未修改真實帳號設定；雲端指令、外掛與桌面 hooks 不宣稱支援。詳見 [GROKBOT.md](GROKBOT.md)。
+
+最新驗證（2026-10-18）：GrokBot 登錄修改後完整 158 項測試通過（52.09 秒）；使用暫存資料，未寫入真實客戶端設定。
+
+2026-10-18：設定「新增 Agent」加入 GrokBot，預設指向 `~/.grokbot/settings.json`，可登錄、編輯與移除。依本機已安裝 Grok Bot 的 app.asar 確認 MCP 透過 accountConfigProvider／accountMcpWriter 管理，settings.json 的 mcpBoxServers 只是識別清單；因此卡片顯示「MCP 由 GrokBot 管理」，不提供本機 MCP 新增，後端亦拒絕寫入。這次不新增額度或原生活動接入，不變更真實客戶端設定；重啟 AgentDock 後可選擇新類型。
+
 2026-10-15：移除 Inbox 選項上方的操作說明及回答／備註框的冗長提示；AGENTS.md 明訂後續功能不得重新加入常識性操作教學或改放 tooltip／placeholder。
 
 2026-10-15：新增 `codebase-memory-integration` 擴充庫項目與範本，管理 OpenCode V2／V1 1.18.29+ 搜尋補充外掛、Codex SessionStart／SubagentStart、Claude Code 生命週期與搜尋／讀檔 hooks。接管既有已辨識接入、清除重複 registrations，沿用 MCP 庫執行檔與環境；MCP 更新連帶排入擴充預覽。MCP 與擴充合併為單次備份／套用／失敗復原交易，保留其他 hooks 及 TOML 註解。完整 156 項測試通過（54.03 秒），測試只用暫存資料。已加入庫定義，尚未套用真實客戶端；重啟 AgentDock 後「全部更新 → 預覽並套用」，新接入可從 Agent 的 ＋ 加入。Codex 更新後需信任 hooks；技能／AGENTS.md 及上游產生器未改動，客戶端實際載入與圖譜補充效果仍待套用後驗收。
