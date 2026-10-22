@@ -276,8 +276,11 @@ def test_new_project_dialog_and_pasted_files(window, tmp_path, monkeypatch):
     win.add_project()
     assert projects.list()[0]['name'] == os.path.basename(str(tmp_path))
     assert win.pages.currentWidget() is win.project_view
+    (tmp_path / 'a b.txt').write_text('x', encoding='utf-8')
     data = QMimeData()
     data.setUrls([QUrl.fromLocalFile(str(tmp_path / 'a b.txt'))])
     box = win.new_view.composer.text
     box.insertFromMimeData(data)
-    assert box.toPlainText() == '"' + os.path.normpath(str(tmp_path / 'a b.txt')) + '"'
+    # Pasted files become attachments of the message.
+    assert box.toPlainText() == '' and win.new_view.composer.files == [os.path.normpath(str(tmp_path / 'a b.txt'))]
+    assert not win.new_view.composer.chips.isHidden()

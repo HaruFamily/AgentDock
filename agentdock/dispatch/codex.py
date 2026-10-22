@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from agentdock.dispatch.adapter import (MAX_OUTPUT, Adapter, ChildProcess, ClientError, child_env, first_file,
-                                        npm_dir, page, text_content)
+                                        image_type, npm_dir, page, text_content, with_file_list)
 
 CLIENT = 'codex'
 TIMEOUT = 60
@@ -25,6 +25,11 @@ LEGACY_DECISIONS = {'once': 'approved', 'always': 'approved_for_session', 'rejec
 APPROVALS = ('item/commandExecution/requestApproval', 'item/fileChange/requestApproval',
              'item/permissions/requestApproval', 'execCommandApproval', 'applyPatchApproval')
 USER_INPUT = 'item/tool/requestUserInput'
+# Codex's own presets (/approvals): what may run without asking, and where.
+MODES = [{'id': 'read-only', 'label': '唯讀'}, {'id': 'auto', 'label': '自動'}, {'id': 'full', 'label': '完全存取'}]
+MODE_POLICY = {'read-only': ('on-request', {'type': 'readOnly'}),
+               'auto': ('on-request', {'type': 'workspaceWrite'}),
+               'full': ('never', {'type': 'dangerFullAccess'})}
 
 
 def _is_codex_binary(path: Path) -> bool:
@@ -63,6 +68,18 @@ def _text(content: Any) -> str:
     return str(content or '')
 
 
+def _files(content: Any) -> list[str]:
+    if not isinstance(content, list):
+        return []
+    return [Path(str(c.get('path') or c.get('url') or '圖片')).name for c in content
+            if isinstance(c, dict) and c.get('type') in ('localImage', 'image')]
+
+
+def _reasoning(item: dict) -> str:
+    parts = item.get('summary') or item.get('content') or []
+    return '\n\n'.join(str(p.get('text', p) if isinstance(p, dict) else p) for p in parts if p)
+
+
 def command_text(source: dict) -> str:
     """The command as the agent wrote it, without the shell wrapper Codex adds (bash -lc / powershell)."""
     actions = [a.get('command') for a in source.get('commandActions') or [] if isinstance(a, dict)]
@@ -86,7 +103,9 @@ def tool_of(item: dict) -> dict | None:
     elif kind == 'fileChange':
         changes = [c for c in item.get('changes') or [] if isinstance(c, dict)]
         name, data = 'edit', {'path': ', '.join(str(c.get('path', '')) for c in changes)}
-        output = '\n\n'.join(str(c.get('diff', '')) for c in changes)
+        output = ''
+        diff = '\n'.join(f"--- {c.get('path', '')}\n+++ {c.get('path', '')}\n{c.get('diff', '')}".rstrip()
+                         for c in changes)
     elif kind == 'mcpToolCall':
         name = f"{item.get('server', '')}.{item.get('tool', '')}"
         data = item.get('arguments') if isinstance(item.get('arguments'), dict) else {}
@@ -109,7 +128,10 @@ def tool_of(item: dict) -> dict | None:
     if status == 'declined':
         error = '已拒絕'
     state = 'running' if status == 'inProgress' else 'error' if (error or status in ('failed', 'declined')) else 'completed'
-    return {'name': name, 'input': data, 'status': state, 'output': output[:MAX_OUTPUT], 'error': error}
+    tool = {'name': name, 'input': data, 'status': state, 'output': output[:MAX_OUTPUT], 'error': error}
+    if kind == 'fileChange' and diff.strip():
+        tool['diff'] = diff[:MAX_OUTPUT * 5]
+    return tool
 
 
 def messages_of(turns: list[dict]) -> list[dict]:
@@ -121,15 +143,21 @@ def messages_of(turns: list[dict]) -> list[dict]:
                 continue
             kind, iid = item.get('type'), str(item.get('id', ''))
             if kind == 'userMessage':
-                text = _text(item.get('content'))
+                text, files = _text(item.get('content')), _files(item.get('content'))
+                if text or files:
+                    out.append({'type': 'user', 'id': iid, 'text': text, **({'files': files} if files else {})})
+            elif kind == 'reasoning':
+                text = _reasoning(item)
                 if text:
-                    out.append({'type': 'user', 'id': iid, 'text': text})
+                    out.append({'type': 'assistant', 'id': iid, 'content': [{'type': 'reasoning', 'text': text}]})
             elif kind == 'agentMessage':
                 out.append({'type': 'assistant', 'id': iid, 'content': [{'type': 'text', 'text': str(item.get('text', ''))}]})
             else:
                 tool = tool_of(item)
                 if tool:
                     state = {'input': tool['input'], 'status': tool['status'], 'content': text_content(tool['output'])}
+                    if tool.get('diff'):
+                        state['diff'] = tool['diff']
                     if tool['error']:
                         state['error'] = {'message': tool['error']}
                     out.append({'type': 'assistant', 'id': iid,
@@ -368,6 +396,10 @@ class CodexClient(Adapter):
             self._item(thread, params.get('item') or {}, done=False)
         elif method == 'item/completed':
             self._item(thread, params.get('item') or {}, done=True)
+        elif method == 'item/reasoning/summaryTextDelta':
+            mid = str(params.get('itemId', ''))
+            self.event(thread, 'session.reasoning.delta', assistantMessageID=mid,
+                       ordinal=int(params.get('summaryIndex') or 0), delta=str(params.get('delta', '')))
         elif method == 'item/agentMessage/delta':
             self.event(thread, 'session.text.delta', assistantMessageID=str(params.get('itemId', '')), ordinal=0,
                        delta=str(params.get('delta', '')))
@@ -404,8 +436,16 @@ class CodexClient(Adapter):
             return
         if kind == 'userMessage':
             if not done:
-                self.event(thread, 'session.inbox.enqueued', inboxID=iid,
-                           item={'type': 'user', 'payload': {'text': _text(item.get('content'))}})
+                self.event(thread, 'session.inbox.enqueued', inboxID=iid, item={'type': 'user', 'payload': {
+                    'text': _text(item.get('content')), 'files': _files(item.get('content'))}})
+            return
+        if kind == 'reasoning':
+            if not done:
+                self.event(thread, 'session.step.started', assistantMessageID=iid)
+            else:
+                for index, part in enumerate(item.get('summary') or []):
+                    text = str(part.get('text', part) if isinstance(part, dict) else part)
+                    self.event(thread, 'session.reasoning.ended', assistantMessageID=iid, ordinal=index, text=text)
             return
         if kind == 'agentMessage':
             if not done:
@@ -430,13 +470,13 @@ class CodexClient(Adapter):
             self.event(thread, 'session.tool.failed', assistantMessageID=iid, id=iid, error={'message': tool['error']})
         else:
             self.event(thread, 'session.tool.success', assistantMessageID=iid, id=iid,
-                       content=text_content(tool['output']))
+                       content=text_content(tool['output']), **({'diff': tool['diff']} if tool.get('diff') else {}))
 
     # -- the adapter interface ----------------------------------------------------
-    def new_session(self, directory: str) -> str:
+    def new_session(self, directory: str, settings: dict | None = None) -> str:
         if not os.path.isdir(directory):
             raise ClientError(f'找不到資料夾：{directory}')
-        result = self.call('thread/start', {'cwd': directory})
+        result = self.call('thread/start', {'cwd': directory, **self._thread_settings(settings or {})})
         thread = str((result.get('thread') or {}).get('id', ''))
         if not thread:
             raise ClientError('Codex 沒有建立對話。')
@@ -454,10 +494,25 @@ class CodexClient(Adapter):
             with self._lock:
                 self._loaded.add(thread)
 
-    def prompt(self, row: dict, text: str) -> None:
+    @staticmethod
+    def _thread_settings(settings: dict) -> dict:
+        params: dict[str, Any] = {}
+        if settings.get('model'):
+            params['model'] = settings['model']
+        if settings.get('mode') in MODE_POLICY:
+            approval, sandbox = MODE_POLICY[settings['mode']]
+            params['approvalPolicy'] = approval
+            params['sandbox'] = {'readOnly': 'read-only', 'workspaceWrite': 'workspace-write',
+                                 'dangerFullAccess': 'danger-full-access'}[sandbox['type']]
+        return params
+
+    def prompt(self, row: dict, text: str, files: list[str] | None = None) -> None:
         self._load(row)
         thread = row['session_id']
-        message = [{'type': 'text', 'text': text, 'text_elements': []}]
+        files = files or []
+        images = [f for f in files if image_type(f)]
+        message = [{'type': 'text', 'text': with_file_list(text, [f for f in files if f not in images]),
+                    'text_elements': []}] + [{'type': 'localImage', 'path': f} for f in images]
         with self._lock:
             turn = self._turns.get(thread)
         if turn:
@@ -470,7 +525,29 @@ class CodexClient(Adapter):
                     if self._turns.get(thread) == turn:
                         raise
                 # The turn ended in between: start a new one.
-        self.call('turn/start', {'threadId': thread, 'input': message})
+        params: dict[str, Any] = {'threadId': thread, 'input': message}
+        if row.get('model'):
+            params['model'] = row['model']
+        if row.get('effort'):
+            params['effort'] = row['effort']
+        if row.get('mode') in MODE_POLICY:
+            params['approvalPolicy'], params['sandboxPolicy'] = MODE_POLICY[row['mode']]
+        self.call('turn/start', params)
+
+    def options(self, row: dict | None, directory: str) -> dict:
+        models = []
+        for m in self.call('model/list', {}).get('data') or []:
+            if isinstance(m, dict) and not m.get('hidden'):
+                models.append({'id': str(m.get('model') or m.get('id')), 'label': str(m.get('displayName') or m.get('id')),
+                               'efforts': [str(e.get('reasoningEffort')) for e in m.get('supportedReasoningEfforts') or []
+                                           if isinstance(e, dict) and e.get('reasoningEffort')]})
+        options = {'models': models, 'modes': MODES}
+        self.remember(options)
+        return options
+
+    def compact(self, row: dict) -> None:
+        self._load(row)
+        self.call('thread/compact/start', {'threadId': row['session_id']})
 
     def running(self, sid: str) -> bool:
         with self._lock:

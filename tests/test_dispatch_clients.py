@@ -327,8 +327,8 @@ def test_claude_transcript_parsing(tmp_path, monkeypatch):
     assert path == folder / 'sid.jsonl'
     messages = read_history(path)
     assert [m['type'] for m in messages] == ['user', 'assistant', 'user', 'idle']
-    tool = messages[1]['content'][1]
-    assert messages[1]['content'][0] == {'type': 'text', 'text': 'Looking.'}
+    tool = messages[1]['content'][2]
+    assert messages[1]['content'][:2] == [{'type': 'reasoning', 'text': '…'}, {'type': 'text', 'text': 'Looking.'}]
     assert tool['name'] == 'Bash' and tool['state']['status'] == 'completed'
     assert tool['state']['content'] == [{'type': 'text', 'text': 'a.txt'}]
     assert messages[3]['outcome'] == 'interrupted'

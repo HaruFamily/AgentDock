@@ -1,5 +1,7 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-22：對話視窗第二批。附件與圖片（迴紋針、拖曳、貼上截圖）；模型、推理強度、權限模式選單（清單來自各 Agent，新對話依 Agent 記住，對話中立即套用）；思考過程收合；檔案修改上色差異；壓縮對話（⋯ 或 /compact）；左側搜尋比對內容、對話內 Ctrl+F。完整 283 項測試通過，另以真實 Claude Code、Codex、Grok 實測圖片、設定、推理、壓縮，以真實 OpenCode 服務實測模型與 agent 清單、切換與壓縮；尚待使用者以真實帳號驗收。
+
 2026-10-22：對話視窗第一批補強。清單右鍵選單（改名、移到專案、複製工作階段 ID、在終端機接續、刪除；F2／Delete），刪除可選擇連 Agent 端紀錄一起刪；清單顯示最後更新時間；訊息與程式碼區塊複製、編輯後重送、失敗或停止後重試；執行中可繼續送（Codex 用 turn/steer）；Ctrl+N、Ctrl+K、Esc、Alt+↑↓；重開回到上次的對話。完整 276 項測試通過，另以真實 Claude Code、Codex、Grok 實測排隊／插話與刪除。
 
 2026-10-22：Grok 接上收發。透過 `grok agent stdio`（ACP 標準協定）一個子行程服務全部 Grok 對話；授權用 session/request_permission、問題用 Grok 的 ask_user_question 擴充、停止用 session/cancel，紀錄由 session/load 重播；不開 yolo，沿用 Grok 自己的權限模式。完整 260 項測試通過，另以真實 Grok 1.0.67 搭配假模型實測；尚待使用者以真實帳號驗收。

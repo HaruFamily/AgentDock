@@ -13,8 +13,14 @@
 - 新對話：選 Agent（OpenCode／Claude Code／Codex／Grok）、選專案或未分類（未分類要選資料夾）。在未分類送出時記住這次的 Agent，下次預設用它；專案則用專案的預設 Agent。
 - 對話：完整紀錄（每次 60 則，往上可載入更早），新內容即時出字；工具動作收成一行，點開看參數與輸出；授權與問題顯示在對話最下方；Enter 送出、Shift+Enter 換行，執行中出現「停止」。執行中也能繼續送：OpenCode、Claude Code、Grok 排隊依序處理，Codex 用 `turn/steer` 加進正在跑的那一輪。
 - 訊息：滑鼠移上去出現「複製」（自己的訊息另有「編輯」：放回輸入框改完再送，原訊息保留）；回覆裡的程式碼區塊各自有「複製」，不換行、可左右捲。最後一輪失敗或停止時旁邊有「重試」，重送最後一則訊息。
+- 附件：輸入框左下的迴紋針、拖曳檔案到輸入框、貼上檔案或截圖（截圖存在 `data/attachments/chat/`）。送出前是一排可點掉的標籤，送出後顯示在自己的訊息下方。圖片（png、jpg、gif、webp，5 MB 內）直接給模型看：Claude Code 為 base64 圖片區塊、Codex 為 `localImage`、Grok 為 ACP image 區塊；其他檔案給路徑讓 Agent 自己讀（OpenCode 用 prompt 的 `files`、Grok 用 `resource_link`、Claude Code 與 Codex 在訊息後列出「附件：路徑」）。OpenCode 的圖片同樣走 `files`。
+- 模型、推理強度、權限模式：輸入框下方三個選單，「預設…」代表用該 Agent 自己的設定。清單來自各 Agent（Claude Code 的 initialize 回應、Codex `model/list`、Grok `_x.ai/models/list`、OpenCode `/api/model` 與 `/api/agent`），記在 `dispatch.json` 的 `options`，下次先用記住的再更新。推理強度依所選模型列出。新對話時的選擇依 Agent 記住（`ui.json` 的 `new_settings`）；對話中改了立刻套用：Claude Code 用 `set_model`、`apply_flag_settings`（effortLevel）、`set_permission_mode`，或下次啟動時帶 `--model`／`--effort`／`--permission-mode`；Codex 在下一輪 `turn/start` 帶 model、effort、approvalPolicy、sandboxPolicy（唯讀／自動／完全存取＝Codex 自己的三種預設）；Grok 用 `session/set_config_option`，權限模式（詢問／自動判斷／全部允許）只能在開新對話時選；OpenCode 用 `/model`（推理強度＝模型 variant）與 `/agent`（Build、Plan 等）。
+- 思考過程：模型的推理（Claude Code thinking、Codex reasoning 摘要、Grok thought、OpenCode reasoning）收成「思考過程」一行，點開才看。
+- 檔案修改：編輯類工具點開會顯示上色的差異（Codex、Grok 由 Agent 給，Claude Code、OpenCode 由舊／新文字算出）。
+- 壓縮對話：標題列「⋯」→「壓縮對話」，或直接送出 `/compact`。OpenCode `/compact`、Codex `thread/compact/start`、Claude Code 與 Grok 送 `/compact` 指令。
+- 搜尋：左側搜尋也比對對話最後一則訊息、回覆、Agent 與資料夾；對話內 Ctrl+F 在已載入的訊息裡找，Enter／↓ 下一個，Esc 關閉。
 - 快捷鍵：Ctrl+N 在目前對話的專案（或資料夾）用同一個 Agent 開新對話；Ctrl+K 搜尋；Esc 停止目前對話（搜尋框有字時先清搜尋）；Alt+↑／↓ 切換上一個／下一個對話。
-- 重開視窗回到上次開著的對話（只在視窗第一次顯示時；開機只在系統匣時什麼都不載入）。貼上檔案會變成檔案路徑文字（附件尚未支援）。
+- 重開視窗回到上次開著的對話（只在視窗第一次顯示時；開機只在系統匣時什麼都不載入）。
 - 授權：「允許」「一律允許」「拒絕」。不按就一直等，不會自動決定。問題：選項或自填，「回答」或「略過」。
 
 ## 各家的差別

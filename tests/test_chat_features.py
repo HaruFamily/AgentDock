@@ -329,3 +329,169 @@ def test_copy_edit_and_retry(window):
     assert part.findChild(CodeBlock) is block and block.code == 'npm test --watch'   # updated in place
     assistant_buttons = {b.text(): b for b in assistant.actions.findChildren(QPushButton)}
     assert set(assistant_buttons) == {'複製'}
+
+
+# --------------------------------------------------------------------------- batch 2
+PNG = bytes.fromhex('89504e470d0a1a0a0000000d4948445200000001000000010806000000'
+                    '1f15c4890000000d49444154789c63f8cfc0f00f0004850180848a8c21'
+                    '0000000049454e44ae426082')
+
+
+def test_settings_bar_follows_the_model(ui_app):
+    from agentdock.ui.chat_window import SettingsBar
+    bar = SettingsBar()
+    changes = []
+    bar.changed.connect(lambda f, v: changes.append((f, v)))
+    options = {'models': [{'id': 'a', 'label': 'A', 'efforts': ['low', 'high']}, {'id': 'b', 'label': 'B', 'efforts': []}],
+               'modes': [{'id': 'plan', 'label': '計畫'}]}
+    bar.set_options(options, {'model': 'a', 'effort': 'high', 'mode': ''})
+    assert bar.values() == {'model': 'a', 'effort': 'high', 'mode': ''} and changes == []
+    effort = bar.combos['effort']
+    assert [effort.itemText(i) for i in range(effort.count())] == ['預設推理', '低', '高']
+    bar.combos['model'].setCurrentIndex(bar.combos['model'].findData('b'))
+    assert ('model', 'b') in changes and bar.combos['effort'].isHidden()   # B has no efforts to pick
+    bar.set_options(options, {'mode': 'plan'}, mode_locked=True)
+    assert not bar.combos['mode'].isEnabled() and bar.values()['mode'] == 'plan'
+    bar.set_options({}, {})
+    assert all(c.isHidden() for c in bar.combos.values())
+
+
+def test_new_conversation_sends_settings_and_attachments(window, tmp_path):
+    win, make, store, sender, notes, work, projects, state, app = window
+    (work / 'shot.png').write_bytes(PNG)
+    (work / 'notes.txt').write_text('n', encoding='utf-8')
+    store.dispatch.remember_options('claude-code', {'models': [{'id': 'sonnet', 'label': 'Sonnet', 'efforts': ['low']}],
+                                                     'modes': [{'id': 'plan', 'label': '計畫'}]})
+    win.show_new()
+    view = win.new_view
+    view.pick_agent('claude-code')
+    bar = view.composer.settings
+    bar.combos['model'].setCurrentIndex(bar.combos['model'].findData('sonnet'))
+    bar.combos['effort'].setCurrentIndex(bar.combos['effort'].findData('low'))
+    bar.combos['mode'].setCurrentIndex(bar.combos['mode'].findData('plan'))
+    assert state['new_settings']['claude-code'] == {'model': 'sonnet', 'effort': 'low', 'mode': 'plan'}
+    view.folder.setText(str(work))
+    view.composer.add_files([str(work / 'shot.png'), str(work / 'notes.txt'), str(work / 'missing.txt')])
+    assert [Path(f).name for f in view.composer.files] == ['shot.png', 'notes.txt']
+    view.composer.text.setPlainText('look')
+    view.send()
+    wait(lambda: win.current_key and store.dispatch.get(win.current_key)['state'] == 'done', app=app)
+    row = store.dispatch.get(win.current_key)
+    assert (row['model'], row['effort'], row['mode']) == ('sonnet', 'low', 'plan')
+    log = lines(Path(store.dispatch.file).parent.parent / 'claude.log')
+    argv = next(l['argv'] for l in log if 'argv' in l)
+    assert argv[argv.index('--model') + 1] == 'sonnet' and argv[argv.index('--effort') + 1] == 'low'
+    assert argv[argv.index('--permission-mode') + 1] == 'plan'
+    content = next(l for l in log if l.get('type') == 'user')['message']['content']
+    assert content[0] == {'type': 'text', 'text': f"look\n\n附件：{work / 'notes.txt'}"}
+    assert content[1]['type'] == 'image' and content[1]['source']['media_type'] == 'image/png'
+    user = next(w for w in win.conversation.widgets.values() if w.item['kind'] == 'user')
+    assert user.item['files'] == ['shot.png', 'notes.txt'] and not view.composer.files
+    # The same Agent starts with the same choices next time.
+    win.show_new()
+    view.pick_agent('claude-code')
+    assert view.composer.settings.values() == {'model': 'sonnet', 'effort': 'low', 'mode': 'plan'}
+
+
+def test_changing_settings_in_a_conversation(window):
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'claude-code', 'hello')
+    wait(done(store, key), app=app)
+    store.dispatch.remember_options('claude-code', {'models': [{'id': 'haiku', 'label': 'Haiku', 'efforts': ['high']}],
+                                                     'modes': [{'id': 'acceptEdits', 'label': '自動接受編輯'}]})
+    win.open_conversation(key)
+    bar = win.conversation.composer.settings
+    wait(lambda: not bar.combos['model'].isHidden(), app=app)
+    bar.combos['model'].setCurrentIndex(bar.combos['model'].findData('haiku'))
+    bar.combos['mode'].setCurrentIndex(bar.combos['mode'].findData('acceptEdits'))
+    wait(lambda: store.dispatch.get(key).get('mode') == 'acceptEdits', app=app)
+    log_file = Path(store.dispatch.file).parent.parent / 'claude.log'
+    wait(lambda: sum(l.get('type') == 'control_request' and l['request']['subtype'] in ('set_model', 'set_permission_mode')
+                     for l in lines(log_file)) == 2, app=app)
+    assert store.dispatch.get(key)['model'] == 'haiku' and notes == []
+
+
+def test_codex_options_and_compact(window):
+    win, make, store, sender, notes, work, projects, state, app = window
+    got = []
+    sender.options('codex', None, str(work), got.append)
+    wait(lambda: got)
+    assert got[-1]['models'] == [{'id': 'gpt-x', 'label': 'GPT X', 'efforts': ['low', 'high']}]   # hidden left out
+    assert store.dispatch.options['codex']['models'][0]['id'] == 'gpt-x'
+    key = start(sender, work, 'codex', 'hello')
+    wait(done(store, key), app=app)
+    win.open_conversation(key)
+    win.conversation.composer.text.setPlainText('/compact')
+    win.conversation.send()
+    tmp = Path(store.dispatch.file).parent.parent
+    wait(lambda: any(l.get('method') == 'thread/compact/start' for l in lines(tmp / 'codex.log')), app=app)
+    wait(lambda: store.dispatch.get(key)['state'] == 'done', app=app)
+    assert not any(l.get('method') == 'turn/start' and l['params']['input'][0]['text'] == '/compact'
+                   for l in lines(tmp / 'codex.log'))
+
+
+def test_grok_settings_at_start(clients):
+    store, sender, notes, events, work, tmp, fake = clients
+    started = []
+    sender.start_task(str(work), 'hello', OWNER, started=started.append, client='grok-cli',
+                      settings={'model': 'grok-b', 'effort': 'low', 'mode': 'auto'})
+    wait(lambda: started and store.dispatch.get(started[0])['state'] == 'done')
+    log = lines(tmp / 'grok.log')
+    new = next(l for l in log if l.get('method') == 'session/new')['params']
+    assert new['_meta'] == {'autoMode': True}
+    configs = [l['config'] for l in log if 'config' in l]
+    assert [(c['configId'], c['value']) for c in configs] == [('model', 'grok-b'), ('reasoning_effort', 'low')]
+    got = []
+    sender.options('grok-cli', None, str(work), got.append)
+    wait(lambda: got)
+    assert got[-1]['models'][0] == {'id': 'grok-a', 'label': 'Grok A', 'efforts': ['low', 'high']}
+    assert got[-1]['mode_fixed'] is True
+
+
+def test_find_reasoning_diff_and_content_search(window):
+    from agentdock.ui.chat_window import MessageWidget, diff_of
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'grok-cli', 'hello')
+    wait(done(store, key), app=app)
+    win.open_conversation(key)
+    wait(lambda: any(w.item['kind'] == 'assistant' and w.parts for w in win.conversation.widgets.values()), app=app)
+    # Ctrl+F finds text in the loaded messages.
+    win.find_in_conversation()
+    find = win.conversation.find
+    assert find.isVisible()
+    find.query.setText('there')
+    assert find.count.text() == '1/1'
+    find.query.setText('zzz')
+    assert find.count.text() == '0'
+    win.escape()
+    assert not find.isVisible()
+    # The list search also looks at the conversation's text.
+    win.sidebar.search.setText('Hello there')
+    assert win.sidebar.keys() == [key]
+    win.sidebar.search.setText('nothing like this')
+    assert win.sidebar.keys() == []
+    win.sidebar.search.clear()
+    # Thinking folds away; edits show as a diff.
+    widget = MessageWidget({'kind': 'assistant', 'id': 'm', 'error': '', 'parts': [
+        {'type': 'reasoning', 'key': 'reasoning:0', 'text': 'pondering'},
+        {'type': 'tool', 'key': 'tool:t', 'name': 'Edit', 'status': 'completed', 'output': '', 'error': '', 'diff': '',
+         'input': {'file_path': 'a.py', 'old_string': 'x = 1', 'new_string': 'x = 2'}}]})
+    reasoning, tool = widget.parts['reasoning:0'], widget.parts['tool:t']
+    assert reasoning.toggle.text() == '▸ 思考過程' and reasoning.text.isHidden()
+    assert '-x = 1' in tool.diff_text and '+x = 2' in tool.diff_text
+    assert 'old_string' not in tool.detail.text()
+    assert diff_of({'diff': '--- a\n+++ a\n+y'}) == '--- a\n+++ a\n+y'
+    widget.deleteLater()
+
+
+def test_pasted_image_is_saved_and_attached(window, tmp_path):
+    from PySide6.QtGui import QImage
+    win, make, store, sender, notes, work, projects, state, app = window
+    composer = win.new_view.composer
+    image = QImage(4, 4, QImage.Format.Format_RGB32)
+    image.fill(0xff0000)
+    composer.add_image(image)
+    assert len(composer.files) == 1 and composer.files[0].endswith('.png')
+    assert Path(composer.files[0]).parent == Path(store.dispatch.file).parent / 'attachments' / 'chat'
+    composer.remove_file(composer.files[0])
+    assert composer.files == [] and composer.chips.isHidden()

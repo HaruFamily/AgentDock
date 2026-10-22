@@ -146,8 +146,35 @@ class OpenCodeService:
     def create_session(self, directory: str, title: str) -> dict:
         return self.request('POST', '/api/session', {'title': title, 'location': {'directory': directory}})['data']
 
-    def prompt(self, session_id: str, text: str) -> dict:
-        return self.request('POST', f'/api/session/{_q(session_id)}/prompt', {'text': text})['data']
+    def prompt(self, session_id: str, text: str, files: list[str] | None = None) -> dict:
+        body: dict = {'text': text}
+        if files:
+            body['files'] = [{'uri': Path(f).resolve().as_uri(), 'name': Path(f).name} for f in files]
+        return self.request('POST', f'/api/session/{_q(session_id)}/prompt', body)['data']
+
+    def compact(self, session_id: str) -> None:
+        self.request('POST', f'/api/session/{_q(session_id)}/compact', {})
+
+    def set_model(self, session_id: str, model: str, variant: str = '') -> None:
+        provider, _, name = model.partition('/')
+        ref = {'id': name, 'providerID': provider, **({'variant': variant} if variant else {})}
+        self.request('POST', f'/api/session/{_q(session_id)}/model', {'model': ref})
+
+    def set_agent(self, session_id: str, agent: str) -> None:
+        self.request('POST', f'/api/session/{_q(session_id)}/agent', {'agent': agent})
+
+    def options(self, directory: str) -> dict:
+        """Models (provider/model, variants as efforts) and primary agents as the modes."""
+        query = '?' + urllib.parse.urlencode({'location[directory]': directory}) if directory else ''
+        models = []
+        for m in (self.request('GET', '/api/model' + query) or {}).get('data', []):
+            if m.get('enabled', True) and m.get('status') != 'deprecated':
+                models.append({'id': f"{m.get('providerID')}/{m.get('id')}", 'label': str(m.get('name') or m.get('id')),
+                               'efforts': [str(v.get('id')) for v in m.get('variants') or [] if v.get('id')]})
+        agents = [{'id': str(a['id']), 'label': str(a.get('name') or a['id'])}
+                  for a in (self.request('GET', '/api/agent' + query) or {}).get('data', [])
+                  if a.get('mode') in ('primary', 'all') and not a.get('hidden')]
+        return {'models': models, 'modes': agents}
 
     def interrupt(self, session_id: str) -> bool:
         return bool((self.request('POST', f'/api/session/{_q(session_id)}/interrupt') or {}).get('interrupted'))

@@ -34,8 +34,8 @@ def save():
             json.dump(sessions, f)
 
 
-def read():
-    if inbox:
+def read(queued=True):
+    if queued and inbox:
         return inbox.pop(0)
     line = sys.stdin.readline()
     if not line:
@@ -59,7 +59,7 @@ def ask_client(method, params):
     rid = 500 + counter[0]
     out({'id': rid, 'method': method, 'params': params})
     while True:
-        message = read()
+        message = read(queued=False)
         if message.get('id') == rid and 'method' not in message:
             return message.get('result') or {}
         inbox.append(message)
@@ -139,6 +139,13 @@ while True:
         for entry in sessions.get(sid, []):
             out({'method': 'session/update', 'params': {'sessionId': sid, 'update': entry['update'], '_meta': entry['meta']}})
         out({'id': mid, 'result': {}})
+    elif method == '_x.ai/models/list':
+        out({'id': mid, 'result': {'result': {'currentModelId': 'grok-a', 'availableModels': [
+            {'modelId': 'grok-a', 'name': 'Grok A', '_meta': {'reasoningEfforts': [{'value': 'low'}, {'value': 'high'}]}},
+            {'modelId': 'grok-b', 'name': 'Grok B'}]}}})
+    elif method == 'session/set_config_option':
+        log({'config': params})
+        out({'id': mid, 'result': {'configOptions': []}})
     elif method == '_x.ai/session/delete':
         sessions.pop(params['sessionId'], None)
         save()

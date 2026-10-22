@@ -40,6 +40,7 @@ class Adapter:
 
     def __init__(self) -> None:
         self.emit: Callable[[str, dict], None] = lambda _sid, _event: None
+        self.remember: Callable[[dict], None] = lambda _options: None   # set by the dispatcher
 
     def event(self, sid: str, kind: str, event_id: str | None = None, **data: Any) -> None:
         event = {'type': kind, 'data': {'sessionID': sid, **data}}
@@ -48,10 +49,10 @@ class Adapter:
         self.emit(sid, event)
 
     # The interface the dispatcher uses.
-    def new_session(self, directory: str) -> str:
+    def new_session(self, directory: str, settings: dict | None = None) -> str:
         raise NotImplementedError
 
-    def prompt(self, row: dict, text: str) -> None:
+    def prompt(self, row: dict, text: str, files: list[str] | None = None) -> None:
         raise NotImplementedError
 
     def interrupt(self, row: dict) -> None:
@@ -70,11 +71,53 @@ class Adapter:
         """Delete the session in the client itself (its saved history)."""
         raise ClientError(f'{self.name} 不支援刪除。')
 
+    def options(self, row: dict | None, directory: str) -> dict:
+        """Models (with their efforts) and permission modes this client offers; may start the client."""
+        return {}
+
+    def configure(self, row: dict, changes: dict) -> None:
+        """Apply the row's model / effort / mode to a live session; otherwise they apply on the next start."""
+
+    def compact(self, row: dict) -> None:
+        raise ClientError(f'{self.name} 不支援壓縮。')
+
     def running(self, sid: str) -> bool:
         return False
 
     def close(self) -> None:
         pass
+
+
+IMAGE_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+               '.webp': 'image/webp'}
+MAX_IMAGE = 5 * 1024 * 1024
+
+
+def image_type(path: str) -> str:
+    return IMAGE_TYPES.get(Path(path).suffix.lower(), '')
+
+
+def read_image(path: str) -> tuple[str, str]:
+    """(media type, base64) of an attached image."""
+    import base64
+    try:
+        data = Path(path).read_bytes()
+    except OSError as e:
+        raise ClientError(f'無法讀取圖片：{e}') from e
+    if len(data) > MAX_IMAGE:
+        raise ClientError(f'圖片太大（上限 5 MB）：{Path(path).name}')
+    return image_type(path), base64.b64encode(data).decode()
+
+
+def with_file_list(text: str, files: list[str]) -> str:
+    """Files the client cannot take directly are named by path, which every agent can read."""
+    if not files:
+        return text
+    return text + '\n\n' + '\n'.join(f'附件：{f}' for f in files)
+
+
+EFFORT_LABELS = {'none': '不推理', 'minimal': '最低', 'low': '低', 'medium': '中', 'high': '高', 'xhigh': '很高', 'max': '最高',
+                 'ultra': '極限'}
 
 
 def page(messages: list[dict], cursor: str | None, size: int = PAGE) -> tuple[list[dict], str | None]:

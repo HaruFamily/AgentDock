@@ -16,10 +16,11 @@ import shutil
 import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from agentdock.dispatch.adapter import (MAX_OUTPUT, Adapter, ChildProcess, ClientError, child_env, first_file,
-                                        npm_dir, page, text_content)
+from agentdock.dispatch.adapter import (EFFORT_LABELS, MAX_OUTPUT, Adapter, ChildProcess, ClientError, child_env,
+                                        first_file, image_type, npm_dir, page, read_image, text_content,
+                                        with_file_list)
 
 CLIENT = 'claude-code'
 IDLE_SECONDS = 600
@@ -27,6 +28,8 @@ INTERRUPTED = '[Request interrupted by user'
 SKIP_USER = re.compile(r'^\s*<(local-command-|command-name|command-message|command-args|session-start-hook|'
                        r'system-reminder|task-notification|bash-|user-prompt-submit-hook)')
 DENIED = 'The user denied this in AgentDock.'
+MODES = [{'id': 'default', 'label': '詢問'}, {'id': 'acceptEdits', 'label': '自動接受編輯'}, {'id': 'plan', 'label': '計畫'},
+         {'id': 'auto', 'label': '自動判斷'}, {'id': 'bypassPermissions', 'label': '全部允許'}]
 SKIPPED = 'The user skipped this question.'
 
 
@@ -128,6 +131,8 @@ def read_history(path: Path | None) -> list[dict]:
                     continue
                 if block.get('type') == 'text':
                     messages[-1]['content'].append({'type': 'text', 'text': str(block.get('text', ''))})
+                elif block.get('type') == 'thinking' and block.get('thinking'):
+                    messages[-1]['content'].append({'type': 'reasoning', 'text': str(block['thinking'])})
                 elif block.get('type') == 'tool_use':
                     part = {'type': 'tool', 'id': block.get('id', ''), 'name': str(block.get('name', '')),
                             'state': {'input': block.get('input') if isinstance(block.get('input'), dict) else {},
@@ -146,20 +151,26 @@ def read_history(path: Path | None) -> list[dict]:
                         else:
                             state.update(status='completed', content=text_content(output))
             text = _user_text(content).strip()
-            if not text or SKIP_USER.match(text):
+            images = sum(1 for b in content if isinstance(b, dict) and b.get('type') == 'image') \
+                if isinstance(content, list) else 0
+            if (not text and not images) or SKIP_USER.match(text):
                 continue
             if text.startswith(INTERRUPTED):
                 messages.append({'type': 'idle', 'id': entry['uuid'], 'outcome': 'interrupted'})
             else:
-                messages.append({'type': 'user', 'id': entry['uuid'], 'text': text})
+                user = {'type': 'user', 'id': entry['uuid'], 'text': text}
+                if images:
+                    user['files'] = ['圖片'] * images
+                messages.append(user)
     return messages
 
 
 class Session:
     """One running claude process for one conversation."""
 
-    def __init__(self, owner: 'ClaudeClient', sid: str, directory: str, fresh: bool):
+    def __init__(self, owner: 'ClaudeClient', sid: str, directory: str, fresh: bool, settings: dict | None = None):
         self.owner, self.sid = owner, sid
+        settings = settings or {}
         self.pending: dict[str, dict] = {}       # control request id -> can_use_tool request
         self.busy = False
         self.queued = 0                          # messages sent and not finished; Claude Code runs them in turn
@@ -167,6 +178,7 @@ class Session:
         self._blocks: dict[int, dict] = {}
         self._mid = ''
         self._text_count: dict[str, int] = {}
+        self._thinking_count: dict[str, int] = {}
         self._streamed: set[str] = set()
         self._tool_message: dict[str, str] = {}
         self._timer: threading.Timer | None = None
@@ -174,32 +186,52 @@ class Session:
         args = [*owner.command(), '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json',
                 '--include-partial-messages', '--permission-prompt-tool', 'stdio',
                 '--session-id' if fresh else '--resume', sid]
+        for flag, name in (('--model', 'model'), ('--effort', 'effort'), ('--permission-mode', 'mode')):
+            if settings.get(name):
+                args += [flag, str(settings[name])]
         env = child_env({'CLAUDE_CODE_ENTRYPOINT': 'sdk-py'}, drop=('CLAUDECODE',))
         if not os.path.isdir(directory):
             raise ClientError(f'找不到資料夾：{directory}')
         self.process = ChildProcess(args, directory, env, self._line, self._exit, 'Claude Code')
-        self._control({'subtype': 'initialize', 'hooks': None})
+        self._init = self._control({'subtype': 'initialize', 'hooks': None})
 
     # -- requests -------------------------------------------------------------
-    def _control(self, request: dict) -> None:
+    def _control(self, request: dict) -> str:
         self._next += 1
-        self.process.send({'type': 'control_request', 'request_id': f'req_{self._next}_{uuid.uuid4().hex[:8]}',
-                           'request': request})
+        request_id = f'req_{self._next}_{uuid.uuid4().hex[:8]}'
+        self.process.send({'type': 'control_request', 'request_id': request_id, 'request': request})
+        return request_id
+
+    def configure(self, settings: dict) -> None:
+        """Change model, effort and permission mode of the running session, as /model and Shift+Tab do."""
+        if 'model' in settings:
+            self._control({'subtype': 'set_model', 'model': settings['model'] or 'default'})
+        if 'effort' in settings:
+            self._control({'subtype': 'apply_flag_settings', 'settings': {'effortLevel': settings['effort'] or None}})
+        if settings.get('mode'):
+            self._control({'subtype': 'set_permission_mode', 'mode': settings['mode']})
 
     def respond(self, request_id: str, response: dict) -> None:
         self.process.send({'type': 'control_response',
                            'response': {'subtype': 'success', 'request_id': request_id, 'response': response}})
 
-    def prompt(self, text: str) -> None:
+    def prompt(self, text: str, files: list[str] | None = None) -> None:
         self._cancel_timer()
+        files = files or []
+        images = [f for f in files if image_type(f)]
+        content: Any = with_file_list(text, [f for f in files if f not in images])
+        if images:
+            content = [{'type': 'text', 'text': content}] + [
+                {'type': 'image', 'source': {'type': 'base64', 'media_type': kind, 'data': data}}
+                for kind, data in (read_image(f) for f in images)]
         message_id = str(uuid.uuid4())
         self.queued += 1
         self.owner.event(self.sid, 'session.inbox.enqueued', inboxID=message_id,
-                         item={'type': 'user', 'payload': {'text': text}})
+                         item={'type': 'user', 'payload': {'text': text, 'files': [Path(f).name for f in files]}})
         if not self.busy:
             self.busy, self.interrupting = True, False
             self.owner.event(self.sid, 'session.execution.started')
-        self.process.send({'type': 'user', 'message': {'role': 'user', 'content': text},
+        self.process.send({'type': 'user', 'message': {'role': 'user', 'content': content},
                            'parent_tool_use_id': None, 'session_id': self.sid, 'uuid': message_id})
 
     def interrupt(self) -> None:
@@ -233,6 +265,10 @@ class Session:
             self._result(message)
         elif kind == 'control_request':
             self._request(message.get('request_id', ''), message.get('request') or {})
+        elif kind == 'control_response':
+            response = message.get('response') or {}
+            if response.get('request_id') == self._init and isinstance(response.get('response'), dict):
+                self.owner.learned(response['response'])
         elif kind == 'control_cancel_request':
             rid = message.get('request_id', '')
             request = self.pending.pop(rid, None)
@@ -258,6 +294,11 @@ class Session:
                 self._text_count[mid] = ordinal + 1
                 self._blocks[index] = {'type': 'text', 'ordinal': ordinal, 'text': str(block.get('text', ''))}
                 self.owner.event(self.sid, 'session.text.started', assistantMessageID=mid, ordinal=ordinal)
+            elif block.get('type') == 'thinking':
+                ordinal = self._thinking_count.get(mid, 0)
+                self._thinking_count[mid] = ordinal + 1
+                self._blocks[index] = {'type': 'thinking', 'ordinal': ordinal, 'text': str(block.get('thinking', ''))}
+                self.owner.event(self.sid, 'session.reasoning.started', assistantMessageID=mid, ordinal=ordinal)
             elif block.get('type') == 'tool_use':
                 tid, name = str(block.get('id', '')), str(block.get('name', ''))
                 self._blocks[index] = {'type': 'tool', 'id': tid, 'name': name, 'json': ''}
@@ -271,6 +312,10 @@ class Session:
                 block['text'] += str(delta.get('text', ''))
                 self.owner.event(self.sid, 'session.text.delta', assistantMessageID=mid, ordinal=block['ordinal'],
                                  delta=str(delta.get('text', '')))
+            elif block['type'] == 'thinking' and delta.get('type') == 'thinking_delta':
+                block['text'] += str(delta.get('thinking', ''))
+                self.owner.event(self.sid, 'session.reasoning.delta', assistantMessageID=mid, ordinal=block['ordinal'],
+                                 delta=str(delta.get('thinking', '')))
             elif block['type'] == 'tool' and delta.get('type') == 'input_json_delta':
                 block['json'] += str(delta.get('partial_json', ''))
         elif kind == 'content_block_stop':
@@ -279,6 +324,9 @@ class Session:
                 return
             if block['type'] == 'text':
                 self.owner.event(self.sid, 'session.text.ended', assistantMessageID=mid, ordinal=block['ordinal'],
+                                 text=block['text'])
+            elif block['type'] == 'thinking':
+                self.owner.event(self.sid, 'session.reasoning.ended', assistantMessageID=mid, ordinal=block['ordinal'],
                                  text=block['text'])
             else:
                 try:
@@ -408,6 +456,7 @@ class ClaudeClient(Adapter):
         self._sessions: dict[str, Session] = {}
         self._fresh: set[str] = set()
         self._closed = False
+        self._options: dict = {}
 
     def command(self) -> list[str]:
         found = self._find()
@@ -415,7 +464,7 @@ class ClaudeClient(Adapter):
             raise ClientError('找不到 Claude Code（claude）。請先安裝並登入一次。')
         return list(found) if isinstance(found, (list, tuple)) else [found]
 
-    def new_session(self, directory: str) -> str:
+    def new_session(self, directory: str, settings: dict | None = None) -> str:
         sid = str(uuid.uuid4())
         with self._lock:
             self._fresh.add(sid)
@@ -431,7 +480,8 @@ class ClaudeClient(Adapter):
                 return session
             # A new session stays "fresh" until Claude Code has started it, so a failed first start
             # does not leave a session id that --resume cannot find.
-            session = Session(self, sid, row.get('directory') or os.path.expanduser('~'), sid in self._fresh)
+            session = Session(self, sid, row.get('directory') or os.path.expanduser('~'), sid in self._fresh,
+                              {name: row.get(name, '') for name in ('model', 'effort', 'mode')})
             self._sessions[sid] = session
             return session
 
@@ -439,6 +489,18 @@ class ClaudeClient(Adapter):
         with self._lock:
             session = self._sessions.get(sid)
         return session if session is not None and session.process.alive() else None
+
+    def learned(self, init: dict) -> None:
+        """Models and their effort levels from Claude Code's initialize response."""
+        models = [{'id': str(m.get('value')), 'label': str(m.get('displayName') or m.get('value')),
+                   'efforts': [str(e) for e in m.get('supportedEffortLevels') or []]}
+                  for m in init.get('models') or [] if isinstance(m, dict) and m.get('value')]
+        if models:
+            self._options = {'models': models, 'modes': MODES}
+            self.remember(self._options)
+
+    def options(self, row: dict | None, directory: str) -> dict:
+        return {'models': [], **self._options, 'modes': MODES}
 
     def started(self, sid: str) -> None:
         with self._lock:
@@ -459,8 +521,16 @@ class ClaudeClient(Adapter):
         session = self._live(sid)
         return bool(session and session.busy)
 
-    def prompt(self, row: dict, text: str) -> None:
-        self._session(row).prompt(text)
+    def prompt(self, row: dict, text: str, files: list[str] | None = None) -> None:
+        self._session(row).prompt(text, files)
+
+    def configure(self, row: dict, changes: dict) -> None:
+        session = self._live(row['session_id'])
+        if session is not None:
+            session.configure(changes)
+
+    def compact(self, row: dict) -> None:
+        self._session(row).prompt('/compact')
 
     def interrupt(self, row: dict) -> None:
         session = self._live(row['session_id'])

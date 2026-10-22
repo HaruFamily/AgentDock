@@ -154,6 +154,17 @@ while True:
         out({'id': mid, 'result': {'thread': {'id': params['threadId']}}})
     elif method == 'thread/read':
         out({'id': mid, 'result': {'thread': {'id': params['threadId'], 'turns': threads.get(params['threadId'], [])}}})
+    elif method == 'thread/compact/start':
+        out({'id': mid, 'result': {}})
+        turn = new_id('turn')
+        note('turn/started', threadId=params['threadId'], turn={'id': turn, 'items': [], 'status': 'inProgress'})
+        note('turn/completed', threadId=params['threadId'], turn={'id': turn, 'items': [], 'status': 'completed'})
+    elif method == 'model/list':
+        out({'id': mid, 'result': {'data': [
+            {'id': 'gpt-x', 'model': 'gpt-x', 'displayName': 'GPT X', 'hidden': False,
+             'supportedReasoningEfforts': [{'reasoningEffort': 'low', 'description': ''},
+                                           {'reasoningEffort': 'high', 'description': ''}]},
+            {'id': 'old', 'model': 'old', 'displayName': 'Old', 'hidden': True, 'supportedReasoningEfforts': []}]}})
     elif method == 'thread/delete':
         threads.pop(params['threadId'], None)
         out({'id': mid, 'result': {}})

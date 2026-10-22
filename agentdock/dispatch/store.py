@@ -16,6 +16,7 @@ from typing import Any, Callable
 from agentdock.files import atomic_json, load_json
 
 FINAL = ('done', 'failed', 'interrupted')
+SETTINGS = ('model', 'effort', 'mode')
 STATES = ('running', 'unknown', *FINAL)
 SOURCES = {'opencode': 'OpenCode', 'claude-code': 'Claude Code', 'codex': 'Codex', 'grok-cli': 'Grok'}
 MAX_TEXT = 20000
@@ -53,14 +54,25 @@ class DispatchStore:
         self.rows = {k: {**r, 'state': 'unknown' if r.get('state') == 'running' else r.get('state', 'unknown')}
                      for k, r in rows.items() if isinstance(r, dict) and r.get('session_id')}
         self.recent = [d for d in data.get('recent_dirs', []) if isinstance(d, str)][:MAX_RECENT]
+        # Last known models / efforts / permission modes per client, for the pickers before a session exists.
+        self.options = {k: v for k, v in (data.get('options') or {}).items() if isinstance(v, dict)}
         self.offline = ''
 
     def _save(self) -> None:
-        atomic_json(self.file, {'rows': self.rows, 'recent_dirs': self.recent})
+        atomic_json(self.file, {'rows': self.rows, 'recent_dirs': self.recent, 'options': self.options})
+
+    def remember_options(self, client: str, options: dict) -> None:
+        with self.lock:
+            merged = {**self.options.get(client, {}), **{k: v for k, v in options.items() if k != 'current'}}
+            if merged == self.options.get(client):
+                return
+            self.options = {**self.options, client: merged}
+            self._save()
 
     # -- writes ---------------------------------------------------------------
     def track(self, client: str, session_id: str, *, owner: str, title: str, directory: str = '',
-              prompt: str = '', state: str = 'running', project: str | None = None) -> dict:
+              prompt: str = '', state: str = 'running', project: str | None = None,
+              settings: dict | None = None) -> dict:
         key = key_for(client, session_id)
         with self.lock:
             old = self.rows.get(key, {})
@@ -73,6 +85,10 @@ class DispatchStore:
                    'read': True, 'id': str(uuid.uuid4())}
             if project is not None or 'project' in old:
                 row['project'] = project if project is not None else old['project']
+            for name in SETTINGS:   # model, effort, permission mode; '' is the client's own default
+                value = (settings or {}).get(name, old.get(name, ''))
+                if value:
+                    row[name] = value
             self.rows = {**self.rows, key: row}
             if directory:
                 self.recent = [directory, *[d for d in self.recent if d.lower() != directory.lower()]][:MAX_RECENT]

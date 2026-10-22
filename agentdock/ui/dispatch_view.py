@@ -20,21 +20,31 @@ STATUS = {'running': '進行中', 'unknown': '狀態未知', 'done': '已完成'
 
 
 class ChatInput(AutoGrowText):
-    """Pasted files become their paths (the Agent reads them); Enter can send, Shift+Enter breaks a line."""
+    """Pasted files become their paths (the Agent reads them), or attachments where the box takes them.
+    Enter can send, Shift+Enter breaks a line."""
     submitted = Signal()
+    files_pasted = Signal(list)
+    image_pasted = Signal(object)
 
     def __init__(self, max_lines: int, enter_sends: bool = False):
         super().__init__(max_lines=max_lines)
         self.enter_sends = enter_sends
+        self.attachments = False   # True: files and images go to files_pasted / image_pasted
         # A fixed-height box must not make its card soak up the list's spare space.
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def insertFromMimeData(self, source) -> None:  # noqa: N802
         if source.hasUrls() and all(u.isLocalFile() for u in source.urls()):
-            self.insertPlainText(' '.join(f'"{os.path.normpath(u.toLocalFile())}"' for u in source.urls()))
+            paths = [os.path.normpath(u.toLocalFile()) for u in source.urls()]
+            if self.attachments:
+                self.files_pasted.emit(paths)
+            else:
+                self.insertPlainText(' '.join(f'"{p}"' for p in paths))
             return
         if source.hasImage():
-            return  # attachments are not supported yet
+            if self.attachments:
+                self.image_pasted.emit(source.imageData())
+            return
         QPlainTextEdit.insertFromMimeData(self, source)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802

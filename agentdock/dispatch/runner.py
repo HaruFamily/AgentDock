@@ -47,6 +47,7 @@ class Dispatcher:
         self.adapters: dict[str, Adapter] = {}
         for adapter in adapters if adapters is not None else default_adapters():
             adapter.emit = lambda sid, event, client=adapter.client: self.handle(event, client)
+            adapter.remember = lambda options, client=adapter.client: self.store.remember_options(client, options)
             self.adapters[adapter.client] = adapter
         self.clients = (CLIENT, *self.adapters)
         self.listeners: list[Callable[[str, dict], None]] = []   # live events of tracked sessions
@@ -67,12 +68,78 @@ class Dispatcher:
             self._ensure_listener()
 
     def start_task(self, directory: str, text: str, owner: str, project: str | None = None,
-                   started: Callable[[str], None] | None = None, client: str = CLIENT) -> None:
+                   started: Callable[[str], None] | None = None, client: str = CLIENT,
+                   settings: dict | None = None, files: list[str] | None = None) -> None:
+        settings = {k: v for k, v in (settings or {}).items() if v}
         if client in self.adapters:
-            self._work(lambda: self._start_adapter(self.adapters[client], directory, text, owner, project, started),
-                       '無法送出任務')
+            self._work(lambda: self._start_adapter(self.adapters[client], directory, text, owner, project, started,
+                                                   settings, files or []), '無法送出任務')
         else:
-            self._work(lambda: self._start(directory, text, owner, project, started), '無法送出任務')
+            self._work(lambda: self._start(directory, text, owner, project, started, settings, files or []),
+                       '無法送出任務')
+
+    def options(self, client: str, key: str | None, directory: str, done: Callable[[dict], None]) -> None:
+        """The pickers' choices: cached ones at once, then the client's current list."""
+        cached = self.store.options.get(client, {})
+        if cached:
+            done(cached)
+
+        def run():
+            row = self.store.get(key) if key else None
+            adapter = self.adapters.get(client)
+            if adapter is not None:
+                fresh = adapter.options(row, directory)
+            else:
+                service = self._service_for(start=False)
+                fresh = service.options(directory or (row or {}).get('directory', ''))
+                self.store.remember_options(client, fresh)
+            fresh = {**self.store.options.get(client, {}), **{k: v for k, v in (fresh or {}).items() if v}}
+            if fresh:
+                done(fresh)
+
+        def quietly():
+            # The pickers simply keep what they have when a client cannot list them (not installed, offline).
+            try:
+                run()
+            except Exception as e:
+                logging.info('options of %s: %s', client, e)
+        threading.Thread(target=quietly, name='AgentDock options', daemon=True).start()
+
+    def configure(self, key: str, **changes: str) -> None:
+        """Model / effort / mode for this conversation; applied now when the client allows it."""
+        self.store.update(key, **changes)
+
+        def run():
+            row = self._row(key)
+            adapter = self._adapter(row)
+            if adapter is not None:
+                adapter.configure(row, changes)
+            else:
+                self._configure_opencode(self._service_for(True), row, changes)
+        self._work(run, '無法變更設定', key)
+
+    def compact(self, key: str) -> None:
+        def run():
+            row = self._row(key)
+            adapter = self._adapter(row)
+            self.store.update(key, state='running', error='')
+            try:
+                if adapter is not None:
+                    adapter.compact(row)
+                else:
+                    with self._listening():
+                        self._service_for(True).compact(row['session_id'])
+            except (ClientError, OpenCodeError) as e:
+                self.store.update(key, state='failed', error=str(e))
+                raise
+        self._work(run, '無法壓縮對話', key)
+
+    @staticmethod
+    def _configure_opencode(service: OpenCodeService, row: dict, changes: dict) -> None:
+        if ('model' in changes or 'effort' in changes) and row.get('model'):
+            service.set_model(row['session_id'], row['model'], row.get('effort', ''))
+        if changes.get('mode'):
+            service.set_agent(row['session_id'], changes['mode'])
 
     def history(self, key: str, cursor: str | None, done: Callable[[list[dict], str | None], None],
                 failed: Callable[[str], None] | None = None) -> None:
@@ -101,14 +168,14 @@ class Dispatcher:
             done(list(reversed(messages)), older)
         self._work(run, '無法讀取對話紀錄', key)
 
-    def send(self, key: str, text: str) -> None:
+    def send(self, key: str, text: str, files: list[str] | None = None) -> None:
         def run():
             row = self._row(key)
             adapter = self._adapter(row)
             if adapter is not None:
                 self.store.update(key, state='running', prompt=text, error='')
                 try:
-                    adapter.prompt(row, text)
+                    adapter.prompt(row, text, files or [])
                 except ClientError as e:
                     self.store.update(key, state='failed', error=str(e))
                     raise
@@ -117,7 +184,7 @@ class Dispatcher:
             with self._listening():
                 self.store.update(key, state='running', prompt=text, error='')
                 try:
-                    service.prompt(row['session_id'], text)
+                    service.prompt(row['session_id'], text, files or [])
                 except OpenCodeError as e:
                     self.store.update(key, state='failed', error=str(e))
                     raise
@@ -227,17 +294,18 @@ class Dispatcher:
         return self.adapters.get(row.get('client', CLIENT))
 
     def _start_adapter(self, adapter: Adapter, directory: str, text: str, owner: str, project: str | None,
-                       started: Callable[[str], None] | None) -> None:
+                       started: Callable[[str], None] | None, settings: dict | None = None,
+                       files: list[str] | None = None) -> None:
         if not text.strip():
             raise ValueError('內容是空的。')
-        session_id = adapter.new_session(directory)
+        session_id = adapter.new_session(directory, settings or {})
         key = key_for(adapter.client, session_id)
         self.store.track(adapter.client, session_id, owner=owner, title=title_for(text), directory=directory,
-                         prompt=text, project=project)
+                         prompt=text, project=project, settings=settings)
         if started:
             started(key)
         try:
-            adapter.prompt(self._row(key), text)
+            adapter.prompt(self._row(key), text, files or [])
         except ClientError as e:
             self.store.update(key, state='failed', error=str(e))
             raise
@@ -253,7 +321,8 @@ class Dispatcher:
             self._service = None
 
     def _start(self, directory: str, text: str, owner: str, project: str | None = None,
-               started: Callable[[str], None] | None = None) -> None:
+               started: Callable[[str], None] | None = None, settings: dict | None = None,
+               files: list[str] | None = None) -> None:
         if not text.strip():
             raise ValueError('內容是空的。')
         service = self._service_for(start=True)
@@ -262,11 +331,13 @@ class Dispatcher:
             session = service.create_session(directory, title)
             key = key_for(CLIENT, session['id'])
             self.store.track(CLIENT, session['id'], owner=owner, title=title, directory=directory, prompt=text,
-                             project=project)
+                             project=project, settings=settings)
+            if settings:
+                self._configure_opencode(service, self._row(key), settings)
             if started:
                 started(key)
             try:
-                service.prompt(session['id'], text)
+                service.prompt(session['id'], text, files or [])
             except OpenCodeError as e:
                 self.store.update(key, state='failed', error=str(e))
                 raise

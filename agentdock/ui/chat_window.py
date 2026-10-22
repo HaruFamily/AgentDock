@@ -5,11 +5,15 @@ and continued. Approvals, answers, sends and stops only happen on a click, as in
 """
 from __future__ import annotations
 
+import difflib
+import html
 import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
@@ -18,6 +22,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
+from agentdock.dispatch.adapter import EFFORT_LABELS
 from agentdock.dispatch.projects import UNSORTED
 from agentdock.dispatch.store import owner_for, work_id
 from agentdock.dispatch.transcript import Transcript, tool_summary
@@ -133,6 +138,13 @@ def _style() -> str:
 #CodeLang {{ color: {t.MUTED}; font-size: 11px; }}
 QPushButton#MiniButton {{ border: none; background: transparent; color: {t.MUTED}; padding: 2px 8px; font-size: 12px; border-radius: 6px; }}
 QPushButton#MiniButton:hover {{ background: {t.HOVER}; color: {t.INK}; }}
+QPushButton#FileChip {{ border: 1px solid {t.LINE}; border-radius: 10px; padding: 2px 10px; background: {t.CANVAS}; color: {t.INK}; font-size: 12px; }}
+#FileNote {{ color: {t.MUTED}; font-size: 12px; }}
+#Composer QComboBox {{ border: none; background: transparent; color: {t.MUTED}; padding: 2px 4px; }}
+#Composer QComboBox:hover {{ background: {t.HOVER}; border-radius: 6px; }}
+#DiffView {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 8px; padding: 8px; }}
+#Reasoning {{ color: {t.MUTED}; }}
+#FindBar {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 10px; }}
 QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
 #SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
 #SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 14px; }}
@@ -147,6 +159,7 @@ class Bridge(QObject):
     live = Signal(str, dict)
     started = Signal(str)
     deleted = Signal(str)
+    options = Signal(str, str, dict)   # client, conversation key ('' for a new one), choices
 
 
 ICONS = {
@@ -154,6 +167,8 @@ ICONS = {
     'tools': 'M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z',
     'settings': 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3 1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8 1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
     'folder': 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+    'clip': 'M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9',
+    'more': 'M5 12h.01M12 12h.01M19 12h.01',
 }
 
 
@@ -378,7 +393,8 @@ class Sidebar(QFrame):
         rows = sorted(w.store.dispatch.rows.items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
         groups: dict[str, list] = {}
         for key, row in rows:
-            if query and query not in row['title'].lower():
+            if query and not any(query in str(row.get(name, '')).lower()
+                                 for name in ('title', 'prompt', 'reply', 'source', 'directory')):
                 continue
             groups.setdefault(w.projects.project_of(row), []).append((key, row))
         self.tree.clear()
@@ -433,6 +449,85 @@ def theme_color(name: str):
 
 
 # --------------------------------------------------------------------------- messages
+EDIT_KEYS = (('old_string', 'new_string'), ('oldString', 'newString'))
+
+
+def diff_of(part: dict) -> str:
+    """A unified diff for an edit: given by the client, or made from the tool's old/new text."""
+    if part.get('diff'):
+        return part['diff']
+    data = part.get('input') or {}
+    path = str(data.get('file_path') or data.get('filePath') or data.get('path') or '')
+    for old_key, new_key in EDIT_KEYS:
+        if isinstance(data.get(old_key), str) and isinstance(data.get(new_key), str):
+            return '\n'.join(difflib.unified_diff(data[old_key].splitlines(), data[new_key].splitlines(),
+                                                   path, path, lineterm=''))
+    edits = data.get('edits')
+    if isinstance(edits, list):
+        out = []
+        for e in edits:
+            if isinstance(e, dict) and isinstance(e.get('old_string'), str) and isinstance(e.get('new_string'), str):
+                out += difflib.unified_diff(e['old_string'].splitlines(), e['new_string'].splitlines(), path, path,
+                                            lineterm='')
+        return '\n'.join(out)
+    return ''
+
+
+def diff_html(diff: str) -> str:
+    """Coloured diff lines; everything escaped, nothing loaded."""
+    good, bad = theme.OK or '#2e7d32', theme.DANGER or '#c62828'
+    lines = []
+    for line in diff.splitlines()[:400]:
+        text = html.escape(line) or '&nbsp;'
+        if line.startswith('+') and not line.startswith('+++'):
+            lines.append(f'<span style="color:{good}">{text}</span>')
+        elif line.startswith('-') and not line.startswith('---'):
+            lines.append(f'<span style="color:{bad}">{text}</span>')
+        elif line.startswith('@@'):
+            lines.append(f'<span style="color:{theme.MUTED}">{text}</span>')
+        else:
+            lines.append(text)
+    return ('<pre style="margin:0; font-family: Consolas, \'JetBrains Mono\', monospace; font-size:12px;">'
+            + '<br>'.join(lines) + '</pre>')
+
+
+class ReasoningRow(QWidget):
+    """The model's thinking, folded away like a tool row."""
+
+    def __init__(self, part: dict):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.toggle = QPushButton()
+        self.toggle.setObjectName('ToolRow')
+        self.toggle.setCheckable(True)
+        self.toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.toggle.toggled.connect(self._toggled)
+        layout.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self.text = QuestionText('')
+        self.text.setObjectName('Reasoning')
+        self.text.hide()
+        layout.addWidget(self.text)
+        self.update_part(part)
+
+    def update_part(self, part: dict) -> None:
+        self.part = part
+        self.toggle.setText(('▾' if self.toggle.isChecked() else '▸') + ' 思考過程')
+        source = f":::note\n{part.get('text', '')}\n:::"   # muted, smaller: it is not the answer
+        if self.text.source != source:
+            self.text.source = source
+            if self.text.isVisible():
+                self.text.refresh_theme()
+
+    def _toggled(self, shown: bool) -> None:
+        if shown:
+            self.text.refresh_theme()
+        self.text.setVisible(shown)
+        self.update_part(self.part)
+
+
 class ToolRow(QWidget):
     def __init__(self, part: dict):
         super().__init__()
@@ -449,6 +544,14 @@ class ToolRow(QWidget):
         self.detail = label('', name='ToolDetail')
         self.detail.hide()
         layout.addWidget(self.detail)
+        self.diff = QLabel()
+        self.diff.setObjectName('DiffView')
+        self.diff.setTextFormat(Qt.TextFormat.RichText)
+        self.diff.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.diff.setWordWrap(True)
+        self.diff.hide()
+        layout.addWidget(self.diff)
+        self.diff_text = ''
         self.update_part(part)
 
     def update_part(self, part: dict) -> None:
@@ -461,14 +564,21 @@ class ToolRow(QWidget):
             text = text[:89] + '…'
         self.arrow = '▾' if self.toggle.isChecked() else '▸'
         self.toggle.setText(f'{self.arrow} {text}{mark}')
+        diff = diff_of(part)
+        hidden = {'old_string', 'new_string', 'oldString', 'newString', 'edits'} if diff else set()
         lines = []
         if part.get('input'):
-            lines += [f'{k}: {v}' for k, v in part['input'].items() if isinstance(v, (str, int, float, bool))]
-        if part.get('output'):
+            lines += [f'{k}: {v}' for k, v in part['input'].items()
+                      if isinstance(v, (str, int, float, bool)) and k not in hidden]
+        if part.get('output') and part.get('output') != diff:
             lines += ['', part['output']]
         if part.get('error'):
             lines += ['', part['error']]
         self.detail.setText('\n'.join(lines).strip())
+        if diff != self.diff_text:
+            self.diff_text = diff
+            self.diff.setText(diff_html(diff) if diff else '')
+        self.diff.setVisible(self.toggle.isChecked() and bool(diff))
 
     def _toggled(self, shown: bool) -> None:
         self.detail.setVisible(shown and bool(self.detail.text()))
@@ -487,7 +597,7 @@ def copy_to_clipboard(text: str, b: QPushButton | None = None) -> None:
     if b is not None:
         old = b.text()
         b.setText('已複製')
-        QTimer.singleShot(1200, lambda: b.setText(old) if b.text() == '已複製' else None)
+        QTimer.singleShot(1200, b, lambda: b.setText(old) if b.text() == '已複製' else None)
 
 
 class CodeBlock(QFrame):
@@ -609,6 +719,12 @@ class MessageWidget(QWidget):
                           default=0)
             self.user_text.setMinimumWidth(min(longest + 4, 560))
             inner.addWidget(self.user_text)
+            self.user_text.setVisible(bool(item['text']))
+            if item.get('files'):
+                files = QLabel('　'.join(f'附件：{name}' for name in item['files']))
+                files.setObjectName('FileNote')
+                files.setWordWrap(True)
+                inner.addWidget(files)
             row.addWidget(bubble, 0)
             self.layout_.addLayout(row)
             self._add_actions(right=True, edit=True)
@@ -686,6 +802,13 @@ class MessageWidget(QWidget):
                     self._insert(widget)
                 else:
                     widget.set_text(part['text'])
+            elif part['type'] == 'reasoning':
+                if widget is None:
+                    widget = ReasoningRow(part)
+                    self.parts[part['key']] = widget
+                    self._insert(widget)
+                else:
+                    widget.update_part(part)
             else:
                 if widget is None:
                     widget = ToolRow(part)
@@ -730,6 +853,11 @@ class ConversationView(QWidget):
         self.agent_chip = QLabel()
         self.agent_chip.setObjectName('ChatChip')
         head.addWidget(self.agent_chip)
+        self.more_button = QPushButton()
+        self.more_button.setObjectName('MiniButton')
+        self.more_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more_button.clicked.connect(self._more_menu)
+        head.addWidget(self.more_button)
         outer.addWidget(header)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -763,6 +891,16 @@ class ConversationView(QWidget):
         self.composer = Composer(self, enter_sends=True)
         self.composer.submitted.connect(self.send)
         self.composer.stop.clicked.connect(lambda: self.window_.dispatcher.interrupt(self.key))
+        self.composer.settings.changed.connect(
+            lambda field, value: self.key and self.window_.dispatcher.configure(self.key, **{field: value}))
+        self.find = FindBar(self)
+        find_row = QHBoxLayout()
+        find_row.setContentsMargins(24, 6, 24, 0)
+        find_row.addStretch(1)
+        find_row.addWidget(self.find, 100)
+        find_row.addStretch(1)
+        self.find.setMaximumWidth(820)
+        outer.addLayout(find_row)
         wrap = QHBoxLayout()
         wrap.setContentsMargins(24, 8, 24, 18)
         wrap.addStretch(1)
@@ -795,8 +933,33 @@ class ConversationView(QWidget):
         self.request_ids = ()
         self.composer.load_draft(key)
         self.buffered = []
+        self.find.hide()
+        row = self.window_.store.dispatch.get(key) or {}
+        self.composer.settings.set_options(self.window_.store.dispatch.options.get(row.get('client', ''), {}), row,
+                                           self.window_.store.dispatch.options.get(row.get('client', ''), {})
+                                           .get('mode_fixed', False))
         self.update_row()
         self._fetch(None)
+        self.window_.request_options(row.get('client', ''), key, row.get('directory', ''))
+
+    def options_arrived(self, key: str, options: dict) -> None:
+        row = self.window_.store.dispatch.get(key)
+        if key == self.key and row is not None:
+            self.composer.settings.set_options(options, row, options.get('mode_fixed', False))
+
+    def _more_menu(self) -> None:
+        if not self.key:
+            return
+        menu = QMenu(self)
+        menu.addAction('搜尋對話（Ctrl+F）', self.find.open_bar)
+        compact = menu.addAction('壓縮對話', lambda: self.window_.dispatcher.compact(self.key))
+        row = self.window_.store.dispatch.get(self.key) or {}
+        compact.setEnabled(row.get('state') != 'running')
+        menu.addSeparator()
+        menu.addAction('改名', lambda: self.window_.rename_conversation(self.key))
+        delete = menu.addAction('刪除…', lambda: self.window_.delete_conversation(self.key))
+        delete.setEnabled(row.get('state') != 'running')
+        menu.exec(self.more_button.mapToGlobal(self.more_button.rect().bottomLeft()))
 
     def _fetch(self, cursor) -> None:
         key, bridge = self.key, self.window_.bridge
@@ -971,10 +1134,14 @@ class ConversationView(QWidget):
 
     def send(self) -> None:
         text = self.composer.text.toPlainText().strip()
-        if text and self.key:
-            self.window_.dispatcher.send(self.key, text)
-            self.composer.clear()
-            self._stick = True
+        if not self.key or not (text or self.composer.files):
+            return
+        if text == '/compact' and not self.composer.files:
+            self.window_.dispatcher.compact(self.key)   # each Agent's own way to compact
+        else:
+            self.window_.dispatcher.send(self.key, text, self.composer.take_files())
+        self.composer.clear()
+        self._stick = True
 
     def _open_project(self) -> None:
         row = self.window_.store.dispatch.get(self.key)
@@ -992,23 +1159,116 @@ class ConversationView(QWidget):
             self.scroll.verticalScrollBar().setValue(maximum)
 
 
+class SettingsBar(QWidget):
+    """Model, reasoning effort and permission mode for one conversation; '' leaves the client's default."""
+    changed = Signal(str, str)   # field, value
+
+    def __init__(self):
+        super().__init__()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        self.combos: dict[str, QComboBox] = {}
+        for field in ('model', 'effort', 'mode'):
+            combo = QComboBox()
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+            combo.currentIndexChanged.connect(lambda _i, f=field: self._picked(f))
+            combo.hide()
+            row.addWidget(combo)
+            self.combos[field] = combo
+        self.options: dict = {}
+        self._loading = False
+
+    def set_options(self, options: dict, current: dict, mode_locked: bool = False) -> None:
+        self._loading = True
+        self.options = options or {}
+        self._fill('model', '預設模型', [(m['id'], m['label']) for m in self.options.get('models', [])],
+                   current.get('model', ''))
+        self._fill_efforts(current.get('effort', ''))
+        self._fill('mode', '預設權限', [(m['id'], m['label']) for m in self.options.get('modes', [])],
+                   current.get('mode', ''))
+        self.combos['mode'].setEnabled(not mode_locked)
+        self._loading = False
+
+    def _fill(self, field: str, default: str, items: list[tuple[str, str]], value: str) -> None:
+        combo = self.combos[field]
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(default, '')
+        for item_id, text in items:
+            combo.addItem(text, item_id)
+        if value and combo.findData(value) < 0:
+            combo.addItem(value, value)   # chosen earlier, no longer listed: keep showing it
+        combo.setCurrentIndex(max(0, combo.findData(value)))
+        combo.setVisible(combo.count() > 1)
+        combo.blockSignals(False)
+
+    def _fill_efforts(self, value: str, keep: bool = True) -> None:
+        model = self.combos['model'].currentData() or ''
+        models = self.options.get('models', [])
+        chosen = next((m for m in models if m['id'] == model), None)
+        efforts: list[str] = list(chosen.get('efforts', [])) if chosen else []
+        if not chosen:
+            for m in models:   # the default model: what the listed models offer
+                efforts += [e for e in m.get('efforts', []) if e not in efforts]
+        if not keep and value not in efforts:
+            value = ''   # the new model does not offer it
+        self._fill('effort', '預設推理', [(e, EFFORT_LABELS.get(e, e)) for e in efforts], value)
+
+    def _picked(self, field: str) -> None:
+        if self._loading:
+            return
+        if field == 'model':
+            self._loading = True
+            before = self.combos['effort'].currentData() or ''
+            self._fill_efforts(before, keep=False)
+            self._loading = False
+            if (self.combos['effort'].currentData() or '') != before:
+                self.changed.emit('effort', '')
+        self.changed.emit(field, self.combos[field].currentData() or '')
+
+    def values(self) -> dict:
+        return {field: combo.currentData() or '' for field, combo in self.combos.items()}
+
+
 class Composer(QFrame):
+    """The message box: text, attachments, the conversation's settings, send and stop."""
     submitted = Signal()
 
     def __init__(self, parent=None, enter_sends: bool = True, max_lines: int = 10):
         super().__init__(parent)
         self.setObjectName('Composer')
         self.setMaximumWidth(820)
-        self.drafts: dict[str, str] = {}
+        self.setAcceptDrops(True)
+        self.drafts: dict[str, tuple[str, list[str]]] = {}
         self.draft_key = ''
+        self.files: list[str] = []
+        self.attach_dir: Path | None = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 10, 10)
         layout.setSpacing(6)
+        self.chips = QWidget()
+        self.chip_row = QHBoxLayout(self.chips)
+        self.chip_row.setContentsMargins(0, 0, 0, 0)
+        self.chip_row.setSpacing(6)
+        self.chips.hide()
+        layout.addWidget(self.chips)
         self.text = text_box(max_lines, enter_sends=enter_sends)
+        self.text.attachments = True
         self.text.submitted.connect(self.submitted.emit)
+        self.text.files_pasted.connect(self.add_files)
+        self.text.image_pasted.connect(self.add_image)
         layout.addWidget(self.text)
         self.bar = QHBoxLayout()
         self.bar.setSpacing(8)
+        self.attach = QPushButton()
+        self.attach.setObjectName('MiniButton')
+        self.attach.setToolTip('附加檔案')
+        self.attach.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.attach.clicked.connect(self.pick_files)
+        self.bar.addWidget(self.attach)
+        self.settings = SettingsBar()
+        self.bar.addWidget(self.settings)
         self.bar.addStretch(1)
         self.stop = button('■ 停止', danger=True)
         self.stop.hide()
@@ -1018,21 +1278,177 @@ class Composer(QFrame):
         self.send.clicked.connect(self.submitted.emit)
         self.bar.addWidget(self.send)
         layout.addLayout(self.bar)
+        self.restyle()
 
+    def restyle(self) -> None:
+        self.attach.setIcon(icon('clip', theme.MUTED or '#888888', 16))
+
+    # -- attachments -------------------------------------------------------------
+    def pick_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, '附加檔案')
+        self.add_files(paths)
+
+    def add_files(self, paths) -> None:
+        for path in paths:
+            path = os.path.normpath(path)
+            if os.path.isfile(path) and path not in self.files:
+                self.files.append(path)
+        self._chips()
+
+    def add_image(self, image) -> None:
+        """A pasted screenshot is saved next to AgentDock's other attachments and attached as a file."""
+        if image is None or self.attach_dir is None:
+            return
+        self.attach_dir.mkdir(parents=True, exist_ok=True)
+        path = self.attach_dir / f"paste-{time.strftime('%Y%m%d-%H%M%S')}-{len(self.files)}.png"
+        if image.save(str(path), 'PNG'):
+            self.add_files([str(path)])
+
+    def remove_file(self, path: str) -> None:
+        self.files = [f for f in self.files if f != path]
+        self._chips()
+
+    def _chips(self) -> None:
+        while self.chip_row.count():
+            item = self.chip_row.takeAt(0)
+            if item.widget():
+                item.widget().hide()
+                item.widget().deleteLater()
+        for path in self.files:
+            chip = QPushButton(f'{os.path.basename(path)}  ✕')
+            chip.setObjectName('FileChip')
+            chip.setToolTip(path)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.clicked.connect(lambda _c=False, p=path: self.remove_file(p))
+            self.chip_row.addWidget(chip)
+        self.chip_row.addStretch(1)
+        self.chips.setVisible(bool(self.files))
+
+    def take_files(self) -> list[str]:
+        files, self.files = self.files, []
+        self._chips()
+        return files
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if event.mimeData().hasUrls() and all(u.isLocalFile() for u in event.mimeData().urls()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):  # noqa: N802
+        self.add_files([u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()])
+        event.acceptProposedAction()
+
+    # -- state -------------------------------------------------------------------
     def set_running(self, running: bool) -> None:
         self.stop.setVisible(running)
 
     def save_draft(self) -> None:
         if self.draft_key:
-            self.drafts[self.draft_key] = self.text.toPlainText()
+            self.drafts[self.draft_key] = (self.text.toPlainText(), list(self.files))
 
     def load_draft(self, key: str) -> None:
         self.draft_key = key
-        self.text.setPlainText(self.drafts.get(key, ''))
+        text, files = self.drafts.get(key, ('', []))
+        self.text.setPlainText(text)
+        self.files = list(files)
+        self._chips()
 
     def clear(self) -> None:
         self.text.clear()
+        self.files = []
+        self._chips()
         self.drafts.pop(self.draft_key, None)
+
+
+class FindBar(QFrame):
+    """Ctrl+F in a conversation: finds text in the loaded messages, Enter / ↓ for the next match."""
+
+    def __init__(self, view):
+        super().__init__()
+        self.view = view
+        self.setObjectName('FindBar')
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 4, 6, 4)
+        row.setSpacing(4)
+        self.query = QLineEdit()
+        self.query.setPlaceholderText('搜尋對話')
+        self.query.textChanged.connect(lambda _t: self.search(0))
+        self.query.returnPressed.connect(lambda: self.step(1))
+        row.addWidget(self.query, 1)
+        self.count = QLabel('')
+        self.count.setObjectName('FileNote')
+        row.addWidget(self.count)
+        for text, step in (('↑', -1), ('↓', 1)):
+            b = mini_button(text)
+            b.clicked.connect(lambda _c=False, s=step: self.step(s))
+            row.addWidget(b)
+        close = mini_button('✕')
+        close.clicked.connect(self.close_bar)
+        row.addWidget(close)
+        self.matches: list[tuple[QWidget, int]] = []
+        self.index = -1
+        self.hide()
+
+    def open_bar(self) -> None:
+        self.show()
+        self.query.setFocus()
+        self.query.selectAll()
+        self.search(0)
+
+    def close_bar(self) -> None:
+        self.hide()
+        self.matches, self.index = [], -1
+        self.view.composer.text.setFocus()
+
+    @staticmethod
+    def _text_of(widget: QWidget) -> str:
+        if isinstance(widget, QuestionText):
+            return widget.document().toPlainText()
+        return widget.text() if isinstance(widget, QLabel) else ''
+
+    def _targets(self) -> list[QWidget]:
+        found = []
+        for item in self.view.transcript.items:
+            message = self.view.widgets.get(item['id'])
+            if message is None:
+                continue
+            if item['kind'] == 'user':
+                found.append(message.user_text)
+            for part in message.parts.values():
+                if isinstance(part, RichText):
+                    found += [w.text if isinstance(w, CodeBlock) else w for _k, w in part.blocks]
+        return found
+
+    def search(self, start: int) -> None:
+        needle = self.query.text().strip().lower()
+        self.matches = []
+        if needle:
+            for widget in self._targets():
+                text = self._text_of(widget).lower()
+                at = text.find(needle)
+                while at >= 0:
+                    self.matches.append((widget, at))
+                    at = text.find(needle, at + 1)
+        self.index = -1
+        if self.matches:
+            self.step(1)
+        else:
+            self.count.setText('0' if needle else '')
+
+    def step(self, direction: int) -> None:
+        if not self.matches:
+            return
+        self.index = (self.index + direction) % len(self.matches)
+        widget, at = self.matches[self.index]
+        length = len(self.query.text().strip())
+        if isinstance(widget, QuestionText):
+            cursor = widget.textCursor()
+            cursor.setPosition(at)
+            cursor.setPosition(at + length, cursor.MoveMode.KeepAnchor)
+            widget.setTextCursor(cursor)
+        elif isinstance(widget, QLabel):
+            widget.setSelection(at, length)
+        self.view.scroll.ensureWidgetVisible(widget, 0, 80)
+        self.count.setText(f'{self.index + 1}/{len(self.matches)}')
 
 
 # --------------------------------------------------------------------------- new conversation
@@ -1065,21 +1481,24 @@ class NewConversationView(QWidget):
         lay.addLayout(chips)
         self.composer = Composer(self, enter_sends=True, max_lines=12)
         self.composer.submitted.connect(self.send)
+        self.composer.settings.changed.connect(self._setting_changed)
+        lay.addWidget(self.composer)
+        place = QHBoxLayout()
+        place.setSpacing(8)
         self.project = QComboBox()
         self.project.setMinimumWidth(200)
         self.project.currentIndexChanged.connect(lambda _i: self._project_changed())
-        self.composer.bar.insertWidget(0, self.project)
+        place.addWidget(self.project)
         self.folder = QLineEdit()
         self.folder.setPlaceholderText('資料夾')
         self.folder.setMinimumWidth(220)
-        self.composer.bar.insertWidget(1, self.folder)
+        place.addWidget(self.folder, 1)
         self.browse = icon_button('…', '選擇資料夾')
         self.browse.clicked.connect(self.pick_folder)
-        self.composer.bar.insertWidget(2, self.browse)
-        lay.addWidget(self.composer)
+        place.addWidget(self.browse)
         self.where = label('', muted=True)
-        self.where.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        lay.addWidget(self.where)
+        place.addWidget(self.where, 1)
+        lay.addLayout(place)
         self.error = label('', muted=True)
         self.error.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.error.hide()
@@ -1125,10 +1544,33 @@ class NewConversationView(QWidget):
         for key, b in self.agent_buttons.items():
             b.setChecked(key == kind)
             b.setEnabled(key in self.window_.dispatcher.clients or key == kind)
+        changed = kind != self.agent or not self.composer.settings.options
         self.agent = kind
         self.error.setText('' if ready else f'{dict(AGENTS)[kind]} 尚未支援。')
         self.error.setVisible(not ready)
         self.composer.send.setEnabled(ready)
+        self.composer.settings.set_options(self.window_.store.dispatch.options.get(kind, {}), self._saved())
+        if ready and changed:
+            self.window_.request_options(kind, '', self._folder_now())
+
+    def _saved(self) -> dict:
+        return dict((self.window_.ui_state.get('new_settings') or {}).get(self.agent) or {})
+
+    def _setting_changed(self, field: str, value: str) -> None:
+        """Remember the choice per Agent for the next new conversation."""
+        saved = dict(self.window_.ui_state.get('new_settings') or {})
+        saved[self.agent] = {**self._saved(), field: value}
+        self.window_.ui_state['new_settings'] = saved
+        self.window_.save_state()
+
+    def options_arrived(self, client: str, options: dict) -> None:
+        if client == self.agent:
+            self.composer.settings.set_options(options, self._saved())
+
+    def _folder_now(self) -> str:
+        pid = self.project.currentData()
+        project = self.window_.projects.get(pid) if pid else None
+        return project['root'] if project else self.folder.text().strip().strip('"')
 
     def pick_folder(self) -> bool:
         start = self.folder.text() if os.path.isdir(self.folder.text()) else os.path.expanduser('~')
@@ -1156,7 +1598,9 @@ class NewConversationView(QWidget):
         target = self.window_.target_for(self.agent)
         self.window_.dispatcher.start_task(os.path.normpath(folder), text, target['owner'],
                                            project=pid if project else None,
-                                           started=self.window_.bridge.started.emit, client=self.agent)
+                                           started=self.window_.bridge.started.emit, client=self.agent,
+                                           settings=self.composer.settings.values(),
+                                           files=self.composer.take_files())
         if not project and self.window_.ui_state.get('last_agent') != self.agent:
             self.window_.ui_state['last_agent'] = self.agent   # the next unsorted conversation starts with it
             self.window_.save_state()
@@ -1388,6 +1832,9 @@ class ChatWindow(QWidget):
         self.bridge.live.connect(self.conversation.live_event)
         self.bridge.started.connect(self.open_conversation)
         self.bridge.deleted.connect(self._deleted)
+        self.bridge.options.connect(self._options_arrived)
+        attach_dir = Path(store.dispatch.file).parent / 'attachments' / 'chat'
+        self.new_view.composer.attach_dir = self.conversation.composer.attach_dir = attach_dir
         dispatcher.listeners.append(self.bridge.live.emit)
         self._refresh = QTimer(self, singleShot=True, interval=120)
         self._refresh.timeout.connect(self.refresh)
@@ -1400,6 +1847,7 @@ class ChatWindow(QWidget):
         self._restored = False
         self.show_new()
         for keys, action in (('Ctrl+N', self.new_like_current), ('Ctrl+K', self.focus_search),
+                             ('Ctrl+F', self.find_in_conversation),
                              ('Escape', self.escape), ('Alt+Up', lambda: self.step_conversation(-1)),
                              ('Alt+Down', lambda: self.step_conversation(1))):
             shortcut = QShortcut(QKeySequence(keys), self)
@@ -1542,6 +1990,21 @@ class ChatWindow(QWidget):
             self.show_new(pid, agent=row['client'], folder=None if pid else row.get('directory'))
         self.new_view.composer.text.setFocus()
 
+    def request_options(self, client: str, key: str, directory: str) -> None:
+        if client:
+            self.dispatcher.options(client, key or None, directory,
+                                    lambda options: self.bridge.options.emit(client, key or '', options))
+
+    def _options_arrived(self, client: str, key: str, options: dict) -> None:
+        if key:
+            self.conversation.options_arrived(key, options)
+        else:
+            self.new_view.options_arrived(client, options)
+
+    def find_in_conversation(self) -> None:
+        if self.pages.currentWidget() is self.conversation and self.current_key:
+            self.conversation.find.open_bar()
+
     def focus_search(self) -> None:
         if self.sidebar.isHidden():
             self.show_page('chat')
@@ -1551,6 +2014,9 @@ class ChatWindow(QWidget):
     def escape(self) -> None:
         if self.sidebar.search.hasFocus() and self.sidebar.search.text():
             self.sidebar.search.clear()
+            return
+        if self.conversation.find.isVisible():
+            self.conversation.find.close_bar()
             return
         row = self.store.dispatch.get(self.current_key) if self.pages.currentWidget() is self.conversation else None
         if row and row['state'] == 'running':
@@ -1585,6 +2051,9 @@ class ChatWindow(QWidget):
 
     def refresh_theme(self) -> None:
         self.setStyleSheet(_style())
+        for composer in (self.new_view.composer, self.conversation.composer):
+            composer.restyle()
+        self.conversation.more_button.setIcon(icon('more', theme.MUTED or '#888888', 18))
         self.rail.set_current(self.rail.current)
         self.sidebar.refresh()
         for widget in self.extra_pages.values():

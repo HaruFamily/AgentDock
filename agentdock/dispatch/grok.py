@@ -23,12 +23,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agentdock.dispatch.adapter import (MAX_OUTPUT, Adapter, ChildProcess, ClientError, child_env, first_file,
-                                        npm_dir, page, text_content)
+                                        image_type, npm_dir, page, read_image, text_content)
 
 CLIENT = 'grok-cli'
 TIMEOUT = 60
 LOAD_TIMEOUT = 120
 ASK = '_x.ai/ask_user_question'
+# Set when a session is created (ACP session/new `_meta`); Grok has no way to switch them afterwards.
+MODES = [{'id': 'ask', 'label': '詢問'}, {'id': 'auto', 'label': '自動判斷'}, {'id': 'yolo', 'label': '全部允許'}]
 DECISIONS = {'once': ('allow_once',), 'always': ('allow_always', 'allow_once'), 'reject': ('reject_once', 'reject_always')}
 
 
@@ -64,6 +66,19 @@ def _blocks_text(content: Any) -> str:
     return '\n'.join(parts)[:MAX_OUTPUT]
 
 
+def _diff(content: Any) -> str:
+    """Unified diff of ACP `diff` content blocks (path, oldText, newText)."""
+    import difflib
+    out = []
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get('type') == 'diff':
+            path = str(block.get('path', ''))
+            old = str(block.get('oldText') or '').splitlines()
+            new = str(block.get('newText') or '').splitlines()
+            out += list(difflib.unified_diff(old, new, path, path, lineterm=''))
+    return '\n'.join(out)[:MAX_OUTPUT * 5]
+
+
 def _tool_name(update: dict) -> str:
     tool = ((update.get('_meta') or {}).get('x.ai/tool') or {})
     return str(tool.get('name') or update.get('kind') or update.get('title') or 'tool')
@@ -92,13 +107,13 @@ class Record:
         self.messages: list[dict] = []
         self._by_id: dict[str, dict] = {}
         self._tools: dict[str, dict] = {}
-        self._segment: dict[str, dict | None] = {}     # message -> the text part being written
-        self._ordinal: dict[str, int] = {}
+        self._segment: dict[str, dict | None] = {}     # message -> the text / reasoning part being written
+        self._ordinal: dict[tuple[str, str], int] = {}
         self.current = ''                              # the assistant message of the running prompt
 
-    def user(self, mid: str, text: str) -> None:
+    def user(self, mid: str, text: str, files: list[str] | None = None) -> None:
         if mid not in self._by_id:
-            message = {'type': 'user', 'id': mid, 'text': text}
+            message = {'type': 'user', 'id': mid, 'text': text, **({'files': files} if files else {})}
             self.messages.append(message)
             self._by_id[mid] = message
 
@@ -117,41 +132,49 @@ class Record:
         if part is not None:
             self._segment[mid] = None
             if emit:
-                emit('session.text.ended', assistantMessageID=mid, ordinal=part['ordinal'], text=part['text'])
+                kind = 'session.reasoning.ended' if part['type'] == 'reasoning' else 'session.text.ended'
+                emit(kind, assistantMessageID=mid, ordinal=part['ordinal'], text=part['text'])
 
     def apply(self, update: dict, meta: dict, emit: Callable[..., None] | None = None) -> None:
         kind = update.get('sessionUpdate')
         if kind == 'user_message_chunk':
             content = update.get('content') or {}
+            previous = self.messages[-1] if self.messages else None
+            if not (previous and previous['type'] == 'user' and previous.get('_chunked')):
+                self.user(str(meta.get('eventId') or uuid.uuid4().hex), '')
+                previous = self.messages[-1]
+                previous['_chunked'] = True
             if content.get('type') == 'text' and content.get('text'):
-                mid = str(meta.get('eventId') or uuid.uuid4().hex)
-                previous = self.messages[-1] if self.messages else None
-                if previous and previous['type'] == 'user' and previous.get('_chunked'):
-                    previous['text'] += str(content['text'])
-                else:
-                    self.user(mid, str(content['text']))
-                    self.messages[-1]['_chunked'] = True
+                previous['text'] += str(content['text'])
+            elif content.get('type') in ('image', 'resource_link', 'resource'):
+                name = str(content.get('name') or content.get('uri') or '圖片').rsplit('/', 1)[-1]
+                previous.setdefault('files', []).append(name)
             return
-        if kind not in ('agent_message_chunk', 'tool_call', 'tool_call_update'):
+        if kind not in ('agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update'):
             return
         mid = str(meta.get('promptId') or self.current or uuid.uuid4().hex)
         self.current = mid
         message = self._assistant(mid, emit)
-        if kind == 'agent_message_chunk':
+        if kind in ('agent_message_chunk', 'agent_thought_chunk'):
             content = update.get('content') or {}
             if content.get('type') != 'text':
                 return
             delta = str(content.get('text', ''))
+            kind_of = 'text' if kind == 'agent_message_chunk' else 'reasoning'
             part = self._segment.get(mid)
+            if part is not None and part['type'] != kind_of:
+                self.close_text(mid, emit)
+                part = None
             if part is None:
-                ordinal = self._ordinal.get(mid, 0)
-                self._ordinal[mid] = ordinal + 1
-                part = {'type': 'text', 'text': '', 'ordinal': ordinal}
+                ordinal = self._ordinal.get((mid, kind_of), 0)
+                self._ordinal[(mid, kind_of)] = ordinal + 1
+                part = {'type': kind_of, 'text': '', 'ordinal': ordinal}
                 message['content'].append(part)
                 self._segment[mid] = part
             part['text'] += delta
             if emit:
-                emit('session.text.delta', assistantMessageID=mid, ordinal=part['ordinal'], delta=delta)
+                event = 'session.text.delta' if kind_of == 'text' else 'session.reasoning.delta'
+                emit(event, assistantMessageID=mid, ordinal=part['ordinal'], delta=delta)
             return
         tid = str(update.get('toolCallId', ''))
         if not tid:
@@ -173,10 +196,14 @@ class Record:
                 emit('session.tool.called', assistantMessageID=mid, id=tid, name=tool['name'], input=tool['state']['input'])
         status = update.get('status')
         output = _blocks_text(update.get('content'))
+        diff = _diff(update.get('content'))
+        if diff:
+            tool['state']['diff'] = diff
         if status == 'completed':
             tool['state'].update(status='completed', content=text_content(output))
             if emit:
-                emit('session.tool.success', assistantMessageID=mid, id=tid, content=text_content(output))
+                emit('session.tool.success', assistantMessageID=mid, id=tid, content=text_content(output),
+                     **({'diff': tool['state']['diff']} if tool['state'].get('diff') else {}))
         elif status == 'failed':
             tool['state'].update(status='error', error={'message': output or '失敗'})
             if emit:
@@ -409,13 +436,39 @@ class GrokClient(Adapter):
             self._resolved(rid, request)
 
     # -- the adapter interface ------------------------------------------------------
-    def new_session(self, directory: str) -> str:
+    def options(self, row: dict | None, directory: str) -> dict:
+        result = self._call(self._ensure(), '_x.ai/models/list', {})
+        listing = result.get('result') if isinstance(result.get('result'), dict) else result
+        models = []
+        for m in listing.get('availableModels') or []:
+            efforts = ((m.get('_meta') or {}).get('reasoningEfforts') or []) if isinstance(m, dict) else []
+            models.append({'id': str(m.get('modelId')), 'label': str(m.get('name') or m.get('modelId')),
+                           'efforts': [str(e.get('value')) for e in efforts if isinstance(e, dict) and e.get('value')]})
+        options = {'models': models, 'modes': MODES, 'mode_fixed': True}
+        self.remember(options)
+        return options
+
+    def _set_options(self, process: ChildProcess, sid: str, settings: dict) -> None:
+        for config, name in (('model', 'model'), ('reasoning_effort', 'effort')):
+            if settings.get(name):
+                self._call(process, 'session/set_config_option',
+                           {'sessionId': sid, 'configId': config, 'value': settings[name]})
+
+    def new_session(self, directory: str, settings: dict | None = None) -> str:
         if not os.path.isdir(directory):
             raise ClientError(f'找不到資料夾：{directory}')
-        result = self._call(self._ensure(), 'session/new', {'cwd': directory, 'mcpServers': []})
+        settings = settings or {}
+        params: dict[str, Any] = {'cwd': directory, 'mcpServers': []}
+        if settings.get('mode') == 'auto':
+            params['_meta'] = {'autoMode': True}
+        elif settings.get('mode') == 'yolo':
+            params['_meta'] = {'yoloMode': True}   # the user chose it for this conversation
+        process = self._ensure()
+        result = self._call(process, 'session/new', params)
         sid = str(result.get('sessionId') or '')
         if not sid:
             raise ClientError('Grok 沒有建立對話。')
+        self._set_options(process, sid, settings)
         done = threading.Event()
         done.set()
         with self._lock:
@@ -458,23 +511,38 @@ class GrokClient(Adapter):
             record.current = ''
         return record
 
-    def prompt(self, row: dict, text: str) -> None:
+    def configure(self, row: dict, changes: dict) -> None:
+        self._load(row)
+        self._set_options(self._ensure(), row['session_id'], changes)
+
+    def compact(self, row: dict) -> None:
+        self.prompt(row, '/compact')
+
+    def prompt(self, row: dict, text: str, files: list[str] | None = None) -> None:
         sid = row['session_id']
+        files = files or []
+        blocks: list[dict] = [{'type': 'text', 'text': text}]
+        for f in files:
+            if image_type(f):
+                kind, data = read_image(f)
+                blocks.append({'type': 'image', 'mimeType': kind, 'data': data})
+            else:
+                blocks.append({'type': 'resource_link', 'uri': Path(f).resolve().as_uri(), 'name': Path(f).name})
         record = self._load(row)
         process = self._ensure()
         mid = uuid.uuid4().hex
-        record.user(mid, text)
+        record.user(mid, text, [Path(f).name for f in files])
         with self._lock:
             busy = self._running.get(sid, 0) > 0
             self._running[sid] = self._running.get(sid, 0) + 1
         if not busy:
             record.current = ''
-        self.event(sid, 'session.inbox.enqueued', inboxID=mid, item={'type': 'user', 'payload': {'text': text}})
+        self.event(sid, 'session.inbox.enqueued', inboxID=mid,
+                   item={'type': 'user', 'payload': {'text': text, 'files': [Path(f).name for f in files]}})
         if not busy:
             self.event(sid, 'session.execution.started')
         try:
-            waiter = self._send_request(process, 'session/prompt',
-                                        {'sessionId': sid, 'prompt': [{'type': 'text', 'text': text}]})
+            waiter = self._send_request(process, 'session/prompt', {'sessionId': sid, 'prompt': blocks})
         except ClientError:
             with self._lock:
                 self._running[sid] = max(0, self._running.get(sid, 1) - 1)
