@@ -1198,7 +1198,10 @@ class AgentsView(QWidget):
             return Row(name, note="系統（由客戶端管理）", dim=True), 0
         entry = self.library.get(name)
         alert, note = "", ""
-        if server["qai"] and name != QAI_KEY:
+        if server["qai"] and self.library.inbox_retired:
+            alert = "Inbox 已停用，會在「全部更新」時移除"
+            self.needs.append({"profile": pid, "server": name, "op": "remove"})
+        elif server["qai"] and name != QAI_KEY:
             alert = f"Inbox 舊名稱，會在「全部更新」時換成 {QAI_KEY}"
             self.needs.append({"profile": pid, "server": name, "op": "remove"})
             if not any(s["name"] == QAI_KEY for s in row["servers"]):
@@ -1488,7 +1491,8 @@ class AgentsView(QWidget):
     # ------------------------------------------------------------------ extensions (hooks / plugins)
     def _addable_extensions(self, profile: Any) -> list[dict[str, Any]]:
         return [e for e in self.library.extensions()
-                if self.ext.status(e, profile) is False and not self._ext_op(profile.id, e["key"])]
+                if self.ext.status(e, profile) is False and not self._ext_op(profile.id, e["key"])
+                and not (self.library.inbox_retired and e["key"] in self.library.RETIRED_EXTENSIONS)]
 
     def _extension_rows(self, profile: Any) -> list[QWidget]:
         out: list[QWidget] = []
@@ -1506,7 +1510,10 @@ class AgentsView(QWidget):
             else:
                 problems = self.library.ext_problems(entry)
                 alert = ("、".join(problems) + "：Agent 執行時會找不到它") if problems else ""
-                if not self.ext.in_sync(entry, profile):
+                if self.library.inbox_retired and key in self.library.RETIRED_EXTENSIONS:
+                    alert = "Inbox 已停用，會在「全部更新」時移除"
+                    self.ext_needs.append({"profile": profile.id, "ext": key, "op": "uninstall"})
+                elif not self.ext.in_sync(entry, profile):
                     alert = alert or f"{kind} 和新版不同，會在「全部更新」時更新"
                     self.ext_needs.append({"profile": profile.id, "ext": key, "op": "install"})
                 line = Row(key, note=kind, alert=alert)

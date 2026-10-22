@@ -1,5 +1,9 @@
 # 架構
 
+## 系統匣 App（2026-10-22）
+
+`main()` 預設建立 `ui/tray_app.py` 的 TrayApp（Dock 子類別，重用外觀、字型、開機自動啟動與啟動器檢查，但不建立浮動卡片、小圖示與 DockLayout）。ChatWindow 啟動時建立並隱藏，`add_page` 放入 AgentsView（設定）與 ToolsPage（工具）；QuotaModel 只在工具頁顯示或額度浮動視窗開著時取數字。系統匣角標由 dispatch 列計算；`dispatch-attention` 事件觸發通知。Broker 以 `inbox=False` 建立；Library `inbox_retired=True`。`ui.json` 的 `"shell": "card"` 才走舊 Dock。
+
 ## 對話視窗（2026-10-22）
 
 `ui/chat_window.py` 的 ChatWindow 由 App 延遲建立，關閉只隱藏。資料：`dispatch/projects.py`（`data/projects.json`）、`dispatch/transcript.py`（訊息與即時事件 → 對話項目）、`Dispatcher.history()`／`listeners`。所有背景結果經 Bridge 的 Qt 信號回到 UI 執行緒；store 變更經 App 的 bus 節流刷新。細節見 [DISPATCH.md](DISPATCH.md)。

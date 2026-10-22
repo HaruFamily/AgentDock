@@ -38,11 +38,21 @@ class _ConversationLink(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=240, pattern=r'^session:')
 
 
+RETIRED = ("AgentDock no longer relays questions: its Inbox is retired. Ask the user directly in this client, "
+           "for example with your built-in question tool, and do not call ask_user again. "
+           "（AgentDock 已停用 Inbox，請直接在客戶端詢問使用者。）")
+
+
 class Broker:
-    def __init__(self, directory: Path, store: QuestionStore, on_show: Callable[[str | None], None] = lambda _id: None):
+    def __init__(self, directory: Path, store: QuestionStore, on_show: Callable[[str | None], None] = lambda _id: None,
+                 inbox: bool = True):
         self.directory = directory
         self.store = store
         self.on_show = on_show
+        # Without the Inbox, conversations are answered natively in the window. Old MCP entries still
+        # reach the broker until they are removed: questions fail fast with RETIRED so the Agent asks
+        # in its own client, reports and activity are accepted and dropped.
+        self.inbox = inbox
         self.token = secrets.token_hex(32)
         self._server: ThreadingHTTPServer | None = None
 
@@ -63,6 +73,11 @@ class Broker:
             if method == "POST" and path == "/show":
                 self.on_show(None)
                 return 200, {"ok": True}
+            if not self.inbox and method == "POST":
+                if path == "/questions":
+                    return 410, {"error": RETIRED}
+                if path in ("/chat/events", "/activity", "/conversation-links"):
+                    return 200, {"status": "ignored"}
             if method == 'POST' and path == '/conversation-links':
                 link = _ConversationLink.model_validate_json(body)
                 self.store.bind_conversation(owner, link.work_id, link.conversation_id)

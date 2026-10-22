@@ -643,7 +643,12 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("AgentDock")
     app.setQuitOnLastWindowClosed(False)
     try:
-        dock = Dock(app, args.background)
+        # The tray app is the default; ui.json "shell": "card" keeps the old floating card for now.
+        shell = Dock
+        if load_json(data / "ui.json", {}).get("shell") != "card":
+            from agentdock.ui.tray_app import TrayApp
+            shell = TrayApp
+        dock = shell(app, args.background)
     except Exception as e:
         logging.exception("startup failed")
         from PySide6.QtWidgets import QMessageBox

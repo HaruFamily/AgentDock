@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-22：系統匣 App 取代浮動卡片（舊版以 ui.json `"shell": "card"` 保留一版）。新增 `ui/tray_app.py`（角標、待授權／待回答通知與開關、外觀、開機自動啟動帶 --background、Ctrl+Alt+Q 開視窗）、`ui/quota_view.py`（工具頁額度、可拖曳的額度浮動視窗）；對話視窗加入設定與工具頁。Inbox 停用：broker `inbox=False` 對 ask_user 回 410、report／activity 忽略；Library `inbox_retired` 不再提供內建 Inbox，「全部更新」移除舊 Inbox MCP 與 inbox-activity。新增 5 項測試，完整 217 項通過。
+
 - 2026-10-22：新增對話視窗與專案。系統匣、Inbox「＋」與送出卡片「↗」開啟；窄邊欄滑鼠移上展開；清單依專案分組並可拖曳換專案；從 OpenCode 分頁讀取完整紀錄、即時事件出字（節流重繪）、工具動作收合、對話內授權／question、Enter 送出與停止；新增 `projects.json`、transcript 模型、歷史分頁與事件轉送。修正貼上檔案時的錯誤（改為插入路徑）。新增 11 項測試並擴充 App 測試，完整 212 項通過。
 
 - 2026-10-22：新增收發。Inbox「＋」送任務給 OpenCode 2.x，卡片顯示最新回覆、授權（允許／一律允許／拒絕）、question 表單、接續輸入與停止；原生 OpenCode 卡片可接手。透過 service.json 連共用背景服務，必要時以無視窗方式 `opencode service start`；SSE 先訂閱再對帳，送出前等候訂閱避免漏接；重啟後為狀態未知直到確認。與 Inbox MCP／活動 hook 共用 owner 與 session work_id 合併卡片；通知角標納入授權、問題與結果。新增 24 項測試，完整 201 項通過。

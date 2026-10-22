@@ -94,8 +94,13 @@ class Library:
         return {"key": QAI_KEY, "type": "builtin",
                 "description": "Inbox：用 ask_user 提問、report_to_user 回報完成／失敗摘要；不鏡像原生聊天。", "timeout_sec": 1860}
 
+    # The tray app retires the Inbox: its built-in MCP is no longer offered, and installed copies
+    # (and the inbox-activity extension) are proposed for removal by 「全部更新」.
+    inbox_retired = False
+    RETIRED_EXTENSIONS = ('inbox-activity',)
+
     def entries(self) -> list[dict[str, Any]]:
-        return [self.builtin()] + copy.deepcopy(self._stored())
+        return ([] if self.inbox_retired else [self.builtin()]) + copy.deepcopy(self._stored())
 
     def get(self, key: str) -> dict[str, Any] | None:
         return next((e for e in self.entries() if e["key"] == key), None)

@@ -103,6 +103,7 @@ class Rail(QFrame):
         layout.addStretch(1)
         layout.addWidget(self._button('settings', '設定'))
         self.set_open(False)
+        self.current = 'chat'
         self.set_current('chat')
 
     def _button(self, name, text):
@@ -124,6 +125,7 @@ class Rail(QFrame):
             self.raise_()
 
     def set_current(self, name: str) -> None:
+        self.current = name
         for key, b in self.buttons.items():
             b.setIcon(icon(key, (theme.ACCENT_DEEP if key == name else theme.MUTED) or '#888888'))
             b.setProperty('current', key == name)
@@ -965,6 +967,7 @@ class ProjectDialog(QDialog):
 # --------------------------------------------------------------------------- window
 class ChatWindow(QWidget):
     closed = Signal()
+    page_changed = Signal(str)   # 'chat', or a page added with add_page
 
     def __init__(self, store, dispatcher, projects, targets, notify=lambda _m: None,
                  open_page=lambda _name: None, ui_state=None, save_state=lambda: None):
@@ -974,6 +977,7 @@ class ChatWindow(QWidget):
         self.ui_state = ui_state if ui_state is not None else {}
         self.save_state = save_state
         self.current_key = ''
+        self.extra_pages: dict[str, QWidget] = {}
         self.setObjectName('ChatWindow')
         self.setWindowTitle('AgentDock')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
@@ -1009,7 +1013,19 @@ class ChatWindow(QWidget):
         self.show_new()
 
     # -- navigation --------------------------------------------------------------
+    def add_page(self, name: str, widget: QWidget) -> None:
+        """Tools / settings live in the window; without one, the rail asks open_page instead."""
+        self.extra_pages[name] = widget
+        self.pages.addWidget(widget)
+
+    def _chat_mode(self) -> None:
+        if self.sidebar.isHidden() or self.rail.current != 'chat':
+            self.sidebar.show()
+            self.rail.set_current('chat')
+            self.page_changed.emit('chat')
+
     def show_new(self, project: str | None = None) -> None:
+        self._chat_mode()
         self.current_key = ''
         self.new_view.prepare(project)
         self.pages.setCurrentWidget(self.new_view)
@@ -1018,22 +1034,37 @@ class ChatWindow(QWidget):
     def open_conversation(self, key: str) -> None:
         if self.store.dispatch.get(key) is None:
             return
+        self._chat_mode()
         self.current_key = key
         self.pages.setCurrentWidget(self.conversation)
         self.conversation.open(key)
         self.sidebar.refresh()
 
     def show_project(self, pid: str) -> None:
+        self._chat_mode()
         self.current_key = ''
         self.project_view.show_project(pid)
         self.pages.setCurrentWidget(self.project_view)
         self.sidebar.refresh()
 
-    def _rail_picked(self, name: str) -> None:
+    def show_page(self, name: str) -> None:
         if name == 'chat':
-            self.raise_()
-        else:
+            if self.pages.currentWidget() in self.extra_pages.values():
+                if self.current_key and self.store.dispatch.get(self.current_key):
+                    self.open_conversation(self.current_key)
+                else:
+                    self.show_new()
+            return
+        if name not in self.extra_pages:
             self.open_page(name)
+            return
+        self.sidebar.hide()
+        self.rail.set_current(name)
+        self.pages.setCurrentWidget(self.extra_pages[name])
+        self.page_changed.emit(name)
+
+    def _rail_picked(self, name: str) -> None:
+        self.show_page(name)
 
     # -- actions -----------------------------------------------------------------
     def add_project(self) -> None:
@@ -1068,7 +1099,11 @@ class ChatWindow(QWidget):
 
     def refresh_theme(self) -> None:
         self.setStyleSheet(_style())
+        self.rail.set_current(self.rail.current)
         self.sidebar.refresh()
+        for widget in self.extra_pages.values():
+            if hasattr(widget, 'restyle'):
+                widget.restyle()
 
     def remember(self) -> None:
         g = self.geometry()

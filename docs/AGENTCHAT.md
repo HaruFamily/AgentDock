@@ -1,5 +1,7 @@
 # Inbox：問答與任務結果
 
+> 2026-10-22 起預設停用。系統匣版（預設）的 broker 對 ask_user 回 410 與停用說明，report_to_user／活動事件接受後丟棄；設定的「全部更新」會移除 Inbox MCP 與 inbox-activity 擴充。只有 `data/ui.json` 設 `"shell": "card"` 的舊浮動卡片仍使用以下行為。
+
 Inbox 集中處理 Agent 的待答問題與任務結果。完整對話、原生聊天圖片及工具執行歷史留在各 Agent App。
 
 ## Agent 使用方式
