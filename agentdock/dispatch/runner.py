@@ -1,0 +1,290 @@
+"""Background connection to the clients that AgentDock sends tasks to.
+
+UI calls return immediately; the network work runs on worker threads and every failure is
+reported through `notify`. Decisions (permissions, answers, stops) only arrive from UI clicks.
+"""
+from __future__ import annotations
+
+import contextlib
+import logging
+import threading
+import time
+from typing import Callable
+
+from agentdock.dispatch.opencode import CLIENT, OpenCodeError, OpenCodeService, message_text
+from agentdock.dispatch.store import FINAL, DispatchStore, key_for
+
+OUTCOMES = {'succeeded': 'done', 'failed': 'failed', 'interrupted': 'interrupted'}
+RETRY_SECONDS = (1, 2, 5, 10)
+
+
+def title_for(text: str) -> str:
+    line = next((l.strip() for l in text.splitlines() if l.strip()), '')
+    return line[:60] + ('…' if len(line) > 60 else '')
+
+
+class Dispatcher:
+    def __init__(self, store: DispatchStore, notify: Callable[[str], None] = lambda _m: None,
+                 connect: Callable[[bool], OpenCodeService] = OpenCodeService.connect):
+        self.store, self.notify, self._connect = store, notify, connect
+        self._service: OpenCodeService | None = None
+        self._lock = threading.Lock()
+        self._listener: threading.Thread | None = None
+        self._closed = threading.Event()
+        self._ready = threading.Event()   # subscribed and caught up
+        self._holds = 0                   # sends in progress keep the listener alive
+        self.clients = (CLIENT,)
+
+    # -- public, called from the UI thread -----------------------------------
+    def resume(self) -> None:
+        """At start-up: ask the client about cards that were not finished, without starting it."""
+        if any(r['state'] not in FINAL or r.get('permissions') or r.get('forms') for r in self.store.rows.values()):
+            self._ensure_listener()
+
+    def start_task(self, directory: str, text: str, owner: str) -> None:
+        self._work(lambda: self._start(directory, text, owner), '無法送出任務')
+
+    def send(self, key: str, text: str) -> None:
+        def run():
+            row = self._row(key)
+            service = self._service_for(start=True)
+            with self._listening():
+                self.store.update(key, state='running', prompt=text, error='')
+                try:
+                    service.prompt(row['session_id'], text)
+                except OpenCodeError as e:
+                    self.store.update(key, state='failed', error=str(e))
+                    raise
+        self._work(run, '無法送出訊息', key)
+
+    def interrupt(self, key: str) -> None:
+        self._work(lambda: self._service_for(True).interrupt(self._row(key)['session_id']), '無法停止', key)
+
+    def reply_permission(self, key: str, request_id: str, decision: str) -> None:
+        def run():
+            row = self._row(key)
+            self._service_for(True).reply_permission(row['session_id'], request_id, decision)
+            permissions = {k: v for k, v in row.get('permissions', {}).items() if k != request_id}
+            self.store.update(key, permissions=permissions)
+        self._work(run, '無法回覆授權', key)
+
+    def reply_form(self, key: str, form_id: str, answer: dict | None) -> None:
+        def run():
+            row = self._row(key)
+            service = self._service_for(True)
+            if answer is None:
+                service.cancel_form(row['session_id'], form_id)
+            else:
+                service.reply_form(row['session_id'], form_id, answer)
+            self.store.update(key, forms={k: v for k, v in row.get('forms', {}).items() if k != form_id})
+        self._work(run, '無法回覆問題', key)
+
+    def adopt(self, client: str, session_id: str, owner: str, title: str) -> None:
+        """Take over a session that was started in the client, so the Inbox can continue it."""
+        if client != CLIENT:
+            self.notify('這個 Agent 還不能從 AgentDock 接手。')
+            return
+        def run():
+            key = key_for(client, session_id)
+            self.store.track(client, session_id, owner=owner, title=title, state='unknown')
+            self._reconcile(self._service_for(True), key)
+            self._ensure_listener()
+        self._work(run, '無法接手')
+
+    def close(self) -> None:
+        self._closed.set()
+
+    # -- internals ------------------------------------------------------------
+    def _work(self, job: Callable[[], None], failure: str, key: str | None = None) -> None:
+        def run():
+            try:
+                job()
+            except (OpenCodeError, KeyError, ValueError) as e:
+                self.notify(f'{failure}：{e}')
+            except Exception as e:  # never let a worker kill the app
+                logging.exception('dispatch')
+                self.notify(f'{failure}：{e}')
+        threading.Thread(target=run, name='AgentDock dispatch', daemon=True).start()
+
+    def _row(self, key: str) -> dict:
+        row = self.store.get(key)
+        if row is None:
+            raise KeyError('這張卡片已移除。')
+        return row
+
+    def _service_for(self, start: bool) -> OpenCodeService:
+        with self._lock:
+            if self._service is None:
+                self._service = self._connect(start)
+            return self._service
+
+    def _drop_service(self) -> None:
+        with self._lock:
+            self._service = None
+
+    def _start(self, directory: str, text: str, owner: str) -> None:
+        if not text.strip():
+            raise ValueError('內容是空的。')
+        service = self._service_for(start=True)
+        title = title_for(text)
+        with self._listening():
+            session = service.create_session(directory, title)
+            key = key_for(CLIENT, session['id'])
+            self.store.track(CLIENT, session['id'], owner=owner, title=title, directory=directory, prompt=text)
+            try:
+                service.prompt(session['id'], text)
+            except OpenCodeError as e:
+                self.store.update(key, state='failed', error=str(e))
+                raise
+
+    @contextlib.contextmanager
+    def _listening(self):
+        """Be subscribed before sending, so even an instant reply is seen as events."""
+        with self._lock:
+            self._holds += 1
+        try:
+            self._ensure_listener()
+            self._ready.wait(5)
+            yield
+        finally:
+            with self._lock:
+                self._holds -= 1
+
+    def _ensure_listener(self) -> None:
+        with self._lock:
+            if self._listener is not None:
+                return
+            self._listener = threading.Thread(target=self._listen, name='AgentDock OpenCode events', daemon=True)
+            self._listener.start()
+
+    def _needs_watch(self) -> bool:
+        return any(r['client'] == CLIENT and (r['state'] not in FINAL or r.get('permissions') or r.get('forms'))
+                   for r in self.store.rows.values())
+
+    def _wanted(self) -> bool:
+        return not self._closed.is_set() and (self._holds > 0 or self._needs_watch())
+
+    def _keep_listening(self) -> bool:
+        # Decided under the same lock as _ensure_listener, so a send never lands on a listener that is leaving.
+        with self._lock:
+            if not self._wanted():
+                self._listener = None
+                self._ready.clear()
+                return False
+            return True
+
+    def _listen(self) -> None:
+        failures = 0
+        while self._keep_listening():
+            self._ready.clear()
+            try:
+                service = self._service_for(start=False)
+                events = service.events(timeout=90)
+                # Subscribe first, then read the current state, so nothing falls in between.
+                first = next(events, None)
+                for key in self.store.keys(CLIENT):
+                    self._reconcile(service, key)
+                self.store.set_offline('')
+                self._ready.set()
+                failures = 0
+                if first:
+                    self.handle(first)
+                for event in events:
+                    if self._closed.is_set():
+                        break
+                    self.handle(event)
+                    if not self._wanted():
+                        break
+                else:
+                    raise OpenCodeError('OpenCode 連線中斷。')
+                continue
+            except OpenCodeError as e:
+                self._drop_service()
+                self.store.set_offline(str(e))
+            except Exception:
+                logging.exception('OpenCode events')
+                self._drop_service()
+                self.store.set_offline('OpenCode 連線中斷。')
+            self._ready.set()  # a waiting send fails fast instead of hanging
+            if self._closed.wait(RETRY_SECONDS[min(failures, len(RETRY_SECONDS) - 1)]):
+                with self._lock:
+                    self._listener = None
+                return
+            failures += 1
+
+    def _reconcile(self, service: OpenCodeService, key: str) -> None:
+        row = self.store.get(key)
+        if row is None:
+            return
+        sid = row['session_id']
+        try:
+            session = service.session(sid)
+        except OpenCodeError as e:
+            if '404' in str(e):
+                self.store.update(key, state='failed', error='OpenCode 找不到這個工作階段。', permissions={}, forms={})
+                return
+            raise
+        changes = {'title': session.get('title') or row['title'],
+                   'directory': (session.get('location') or {}).get('directory') or row['directory'],
+                   'permissions': {p['id']: _permission(p) for p in service.permissions(sid)},
+                   'forms': {f['id']: f for f in service.forms(sid)}}
+        messages = service.messages(sid)
+        if sid in service.active():
+            changes['state'] = 'running'
+        elif session.get('outcome'):
+            changes['state'] = OUTCOMES.get(session['outcome'], 'done')
+            idle = next((m for m in messages if m.get('type') == 'idle'), {})
+            if changes['state'] == 'failed':
+                changes['error'] = (idle.get('error') or {}).get('message') or row.get('error') or '執行失敗'
+        elif row['state'] == 'unknown':
+            changes['state'] = 'done'   # never ran, nothing to wait for
+        prompt = next((m for m in messages if m.get('type') == 'user'), None)
+        reply = next((m for m in messages if m.get('type') == 'assistant' and message_text(m)), None)
+        if prompt:
+            changes['prompt'] = message_text(prompt)
+        if reply:
+            changes['reply'], changes['reply_message'] = message_text(reply), reply['id']
+        self.store.update(key, **changes)
+
+    def handle(self, event: dict) -> None:
+        kind = event.get('type', '')
+        data = event.get('data') or {}
+        sid = data.get('sessionID') or (data.get('form') or {}).get('sessionID')
+        if not sid:
+            return
+        key = key_for(CLIENT, sid)
+        row = self.store.get(key)
+        if row is None:
+            return
+        if kind == 'session.execution.started':
+            self.store.update(key, state='running', error='')
+        elif kind == 'session.inbox.enqueued' and (data.get('item') or {}).get('type') == 'user':
+            self.store.update(key, prompt=str((data['item'].get('payload') or {}).get('text', '')))
+        elif kind == 'session.tool.input.started':
+            self.store.update(key, doing=str(data.get('name', '')))
+        elif kind == 'session.text.ended':
+            text = str(data.get('text', ''))
+            message = data.get('assistantMessageID', '')
+            if message and message == row.get('reply_message') and row.get('reply'):
+                text = row['reply'] + '\n\n' + text
+            self.store.update(key, reply=text, reply_message=message)
+        elif kind == 'permission.asked':
+            self.store.update(key, permissions={**row.get('permissions', {}), data['id']: _permission(data)})
+        elif kind == 'permission.replied':
+            rid = data.get('requestID') or data.get('id')
+            self.store.update(key, permissions={k: v for k, v in row.get('permissions', {}).items() if k != rid})
+        elif kind == 'form.created' and data.get('form', {}).get('id'):
+            self.store.update(key, forms={**row.get('forms', {}), data['form']['id']: data['form']})
+        elif kind.startswith('form.') and data.get('id'):
+            self.store.update(key, forms={k: v for k, v in row.get('forms', {}).items() if k != data['id']})
+        elif kind == 'session.execution.succeeded':
+            self.store.update(key, state='done', permissions={}, forms={})
+        elif kind == 'session.execution.failed':
+            error = (data.get('error') or {}).get('message') or '執行失敗'
+            self.store.update(key, state='failed', error=str(error), permissions={}, forms={})
+        elif kind == 'session.execution.interrupted':
+            self.store.update(key, state='interrupted', permissions={}, forms={})
+
+
+def _permission(data: dict) -> dict:
+    return {'action': str(data.get('action', '')), 'resources': [str(r) for r in data.get('resources', [])][:5]}

@@ -34,6 +34,7 @@ class Bus(QObject):
     new_question = Signal(dict)
     new_message = Signal(dict)
     show_requested = Signal()
+    notice = Signal(str)
 
 
 class LauncherIcon(FloatingCard):
@@ -74,7 +75,9 @@ class Dock(QObject):
         self.icon.moved.connect(lambda _p: self._save_ui())
         self.icon.quit_requested.connect(self.quit)
         self.icon.theme_requested.connect(self.apply_theme)
-        self.qa = InboxView(self.store)
+        from agentdock.dispatch.runner import Dispatcher
+        self.dispatcher = Dispatcher(self.store.dispatch, notify=self.bus.notice.emit)
+        self.qa = InboxView(self.store, self.dispatcher, self._dispatch_targets)
         self.agents = AgentsView(self.manager, self.library, ui_state=self.ui, save_state=self._save_ui)
         self.ball.set_qa(self.qa)
         self.ball.set_settings(self.agents)
@@ -113,6 +116,7 @@ class Dock(QObject):
         self.bus.new_question.connect(self._on_new_question)
         self.bus.new_message.connect(self._on_new_message)
         self.bus.show_requested.connect(self.summon)
+        self.bus.notice.connect(self.notify)
 
         try:
             from agentdock.tools.tokengauge import QuotaModel
@@ -133,6 +137,7 @@ class Dock(QObject):
         self.icon.show()
         self._sync_icon()
         self.broker.start()
+        self.dispatcher.resume()
         self._keep_visible()
         self._tick = QTimer(self, interval=3000)   # "Agent waiting / reconnecting" label of the open question
         self._tick.timeout.connect(self._tick_waiting)
@@ -198,8 +203,8 @@ class Dock(QObject):
         # Called from the broker thread: hop to the UI thread via queued signals.
         if event == "new-question" and question:
             self.bus.new_question.emit(question)
-        elif event in ("new-message", "native-approval") and question:
-            if event == 'native-approval':
+        elif event in ("new-message", "native-approval", "dispatch-attention") and question:
+            if event in ('native-approval', 'dispatch-attention'):
                 question = {**question, '_native_approval': True}
             self.bus.new_message.emit(question)
         else:
@@ -251,7 +256,7 @@ class Dock(QObject):
         if hasattr(self, 'layout_controller'):
             self.layout_controller.sync_tabs()
         unread = sum(w["state"] == "unread" for w in self.store.conversation_summaries())
-        unread += self.store.activity.attention()
+        unread += self.store.activity.attention() + self.store.dispatch.attention()
         self.icon.set_attention(bool(count or unread))
         self.ball.set_attention(bool(count or unread))
         notice = notice_for(self.store.inbox_tasks())
@@ -330,13 +335,20 @@ class Dock(QObject):
     def refresh_agents(self) -> None:
         self.agents.refresh()
 
+    def _dispatch_targets(self) -> list[dict]:
+        """Agents that can receive a task from AgentDock, with the same owner as their Inbox MCP."""
+        from agentdock.dispatch.store import owner_for
+        targets = [{'label': p.name, 'client': p.kind, 'owner': owner_for(p.id, p.kind)}
+                   for p in self.manager.list() if p.kind in self.dispatcher.clients]
+        return targets or [{'label': 'OpenCode', 'client': 'opencode', 'owner': owner_for(None, 'opencode')}]
+
     def notify(self, text: str) -> None:
         self._toast_qid = None   # a plain notice: clicking it opens nothing
         if self.tray:
             self.tray.showMessage("AgentDock", text, QSystemTrayIcon.MessageIcon.Information, 4000)
 
     def _tick_waiting(self) -> None:
-        if self.store.activity.rows:
+        if self.store.activity.rows or self.store.dispatch.rows:
             self._pending(getattr(self, '_pending_count', 0))
         if self.ball.isVisible() and self.qa.isVisible():
             self.qa.tick()
@@ -552,6 +564,7 @@ class Dock(QObject):
             self.layout_controller.animation.stop()
             self.layout_controller.strip.close()
         self.qa._flush()
+        self.dispatcher.close()
         self.store.flush_reads()
         if getattr(self, "hotkey", None):
             self.hotkey.unregister()

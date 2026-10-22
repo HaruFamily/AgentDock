@@ -16,6 +16,9 @@ KINDS = {
 }
 
 
+DISPATCH_KINDS = {'done': 'completed', 'failed': 'failed', 'interrupted': 'cancelled'}
+
+
 @dataclass(frozen=True)
 class Notice:
     counts: tuple = ()
@@ -50,6 +53,14 @@ def notice_for(tasks):
             counts['question'] = counts.get('question', 0) + 1
         latest = task['latest']
         kind = latest['kind']
+        if kind == 'dispatch':
+            for fid in latest.get('forms', {}):
+                key = ('question', task['owner'], fid)
+                keys.add(key)
+                actions.add(key)
+                counts['question'] = counts.get('question', 0) + 1
+            # Only a finished run is a result; questions and approvals are counted on their own.
+            kind = DISPATCH_KINDS.get(latest['state'], 'question')
         if task['state'] == 'approval':
             # Native observation IDs change on unrelated activity. Use permission IDs.
             for request in latest.get('approvals', {}) or {'pending': ''}:

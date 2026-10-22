@@ -83,6 +83,8 @@ class QuestionStore:
         self._listeners: list[Callable[[str, dict | None], None]] = []
         from agentdock.activity import ActivityStore
         self.activity = ActivityStore(directory, self._emit)
+        from agentdock.dispatch.store import DispatchStore
+        self.dispatch = DispatchStore(directory, self._emit)
         self.chat_file = directory / "chat.json"
         self._chat = load_json(self.chat_file, {"events": [], "hidden_questions": []})
         if not isinstance(self._chat, dict) or not isinstance(self._chat.get("events"), list) or not isinstance(self._chat.get("hidden_questions"), list):
@@ -221,8 +223,26 @@ class QuestionStore:
             tasks.append({**summary, "latest": copy.deepcopy(latest),
                           "pending": copy.deepcopy(pending)})
         represented = {(t['owner'], t['work_id']): t for t in tasks}
+        dispatched = set()
+        for t in self.dispatch.tasks():
+            key = t['owner'], t['work_id']
+            dispatched.add((t['latest']['client'], t['latest']['session_id']))
+            base = represented.get(key)
+            if base is None:
+                tasks.append(t)
+                represented[key] = t
+                continue
+            # Inbox MCP questions and the sent session are one conversation.
+            old = base['latest']
+            if old['kind'] != 'question' and not old['read']:
+                t['latest']['also_read'] = old['id']
+            state = t['state'] if t['state'] == 'approval' or not base['pending'] else 'waiting'
+            base.update(state=state, latest=t['latest'], work_title=t['work_title'],
+                        updated_at=max(base['updated_at'], t['updated_at']))
         native = []
         for t in self.activity.tasks():
+            if (t['latest']['client'], t['latest']['session_id']) in dispatched:
+                continue  # the sent session already has a richer card
             key = t['owner'], f"session:{t['latest']['client']}:{t['latest']['session_id']}"
             if key not in represented:
                 native.append(t)
@@ -258,7 +278,18 @@ class QuestionStore:
             self._save_chat({**self._chat, 'opened_questions': sorted(opened | ids)})
 
     def mark_read(self, owner: str, work_id: str, event_ids: list[str]) -> bool:
+        sent = False
         if work_id.startswith('session:'):
+            _, client, session_id = (work_id.split(':', 2) + ['', ''])[:3]
+            row = self.dispatch.find(client, session_id)
+            if row and row['owner'] == owner:
+                from agentdock.dispatch.store import key_for
+                sent = any(self.dispatch.mark_read(key_for(client, session_id), i) for i in event_ids)
+                event_ids = [i for i in event_ids if i != row['id']]
+                if sent and not event_ids:
+                    self._emit('change')
+                    return True
+        if work_id.startswith('session:') and not sent:
             for task in self.activity.tasks():
                 row = task['latest']
                 if task['owner'] == owner and work_id == f"session:{row['client']}:{row['session_id']}":
@@ -272,10 +303,12 @@ class QuestionStore:
         def unread(e):
             return e["id"] in ids and self._chat_key(e['owner'], e['work_id']) == (owner, work_id) and not e["read"]
         if not ids or not any(unread(e) for e in self._chat["events"]):
-            return False
+            if sent:
+                self._emit("change")
+            return sent
         with self._lock:
             if not any(unread(e) for e in self._chat["events"]):
-                return False
+                return sent
             data = {**self._chat, "events": [{**e, "read": True} if unread(e) else e for e in self._chat["events"]]}
             self._save_chat(data)
         self._emit("change")
@@ -326,6 +359,11 @@ class QuestionStore:
                 row = task['latest']
                 if task['owner'] == owner and work_id == f"session:{row['client']}:{row['session_id']}":
                     self.activity.remove(owner, task['work_id'])
+            _, client, session_id = (work_id.split(':', 2) + ['', ''])[:3]
+            sent = self.dispatch.find(client, session_id)
+            if sent and sent['owner'] == owner:
+                from agentdock.dispatch.store import key_for
+                self.dispatch.remove(key_for(client, session_id))
         with self._lock:
             data = copy.deepcopy(self._chat)
             removed = [e for e in data["events"] if self._chat_key(e["owner"], e["work_id"]) == (owner, work_id)]

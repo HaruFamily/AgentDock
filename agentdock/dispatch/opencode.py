@@ -1,0 +1,193 @@
+"""OpenCode V2 background service: discovery, HTTP API and the event stream.
+
+OpenCode 2.x runs one shared background server that its TUI also uses. Its address and
+password are in `<state>/opencode/service.json`; `opencode service start` starts it.
+Tasks therefore keep running when AgentDock exits, and the same sessions are visible in OpenCode.
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any, Iterator
+
+CLIENT = 'opencode'
+NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0  # CREATE_NO_WINDOW
+
+
+class OpenCodeError(RuntimeError):
+    """A message that can be shown to the user as is."""
+
+
+def state_dir() -> Path:
+    base = os.environ.get('XDG_STATE_HOME')
+    return (Path(base) if base else Path.home() / '.local' / 'state') / 'opencode'
+
+
+def find_executable() -> str | None:
+    """The real opencode.exe, not the npm .cmd shim (a shim would flash a console window)."""
+    candidates = []
+    found = shutil.which('opencode')
+    if found:
+        path = Path(found)
+        if path.suffix.lower() in ('.cmd', '.ps1', '') and path.parent.name.lower() == 'npm':
+            candidates.append(path.parent / 'node_modules' / '@opencode' / 'cli' / 'bin' / 'opencode.exe')
+        candidates.append(path)
+    appdata = os.environ.get('APPDATA')
+    if appdata:
+        candidates.append(Path(appdata) / 'npm' / 'node_modules' / '@opencode' / 'cli' / 'bin' / 'opencode.exe')
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+class OpenCodeService:
+    def __init__(self, url: str, password: str, version: str = ''):
+        self.url = url.rstrip('/')
+        self.version = version
+        token = base64.b64encode(f'opencode:{password}'.encode()).decode()
+        self._auth = 'Basic ' + token
+        # The service is local; a system proxy must never see the password.
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    # -- discovery ------------------------------------------------------------
+    @classmethod
+    def discover(cls) -> 'OpenCodeService | None':
+        try:
+            info = json.loads((state_dir() / 'service.json').read_text(encoding='utf-8'))
+            service = cls(info['url'], info['password'], str(info.get('version', '')))
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        try:
+            found = service.request('GET', '/api/info', timeout=3)
+        except OpenCodeError:
+            return None
+        service.version = str(found.get('version') or service.version)
+        return service
+
+    @classmethod
+    def connect(cls, start: bool = False) -> 'OpenCodeService':
+        service = cls.discover()
+        if service is None and start:
+            exe = find_executable()
+            if not exe:
+                raise OpenCodeError('找不到 OpenCode（opencode.exe）。')
+            try:
+                subprocess.run([exe, 'service', 'start'], capture_output=True, timeout=60,
+                               stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, check=False)
+            except (OSError, subprocess.SubprocessError) as e:
+                raise OpenCodeError(f'無法啟動 OpenCode 服務：{e}') from e
+            service = cls.discover()
+        if service is None:
+            raise OpenCodeError('OpenCode 服務未執行。' if not start else 'OpenCode 服務沒有回應。')
+        major = service.version.split('.')[0]
+        if major.isdigit() and int(major) < 2:
+            raise OpenCodeError(f'需要 OpenCode 2.x，目前是 {service.version}。')
+        return service
+
+    # -- HTTP -----------------------------------------------------------------
+    def _open(self, method: str, path: str, body: Any = None, timeout: float = 15):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(self.url + path, data=data, method=method,
+                                         headers={'Authorization': self._auth, 'Content-Type': 'application/json',
+                                                  'Accept': 'application/json'})
+        return self._opener.open(request, timeout=timeout)
+
+    def request(self, method: str, path: str, body: Any = None, timeout: float = 15) -> Any:
+        try:
+            with self._open(method, path, body, timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as e:
+            detail = ''
+            try:
+                detail = json.loads(e.read() or b'{}').get('message', '')
+            except Exception:
+                pass
+            raise OpenCodeError(f'OpenCode 回應 {e.code}' + (f'：{detail}' if detail else '')) from e
+        except (OSError, ValueError) as e:
+            raise OpenCodeError(f'無法連線 OpenCode：{e}') from e
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError as e:
+            raise OpenCodeError('OpenCode 回應格式不正確。') from e
+
+    def events(self, timeout: float = 60) -> Iterator[dict]:
+        """Server-sent events; the server sends a heartbeat, so a silent socket means it is gone."""
+        try:
+            response = self._open('GET', '/api/event', timeout=timeout)
+        except urllib.error.HTTPError as e:
+            raise OpenCodeError(f'OpenCode 回應 {e.code}') from e
+        except OSError as e:
+            raise OpenCodeError(f'無法連線 OpenCode：{e}') from e
+        with response:
+            data: list[str] = []
+            for raw in response:
+                line = raw.decode('utf-8', 'replace').rstrip('\r\n')
+                if line.startswith('data:'):
+                    data.append(line[5:].lstrip())
+                elif not line and data:
+                    try:
+                        yield json.loads('\n'.join(data))
+                    except ValueError:
+                        pass
+                    data = []
+
+    # -- API used by AgentDock -----------------------------------------------
+    def create_session(self, directory: str, title: str) -> dict:
+        return self.request('POST', '/api/session', {'title': title, 'location': {'directory': directory}})['data']
+
+    def prompt(self, session_id: str, text: str) -> dict:
+        return self.request('POST', f'/api/session/{_q(session_id)}/prompt', {'text': text})['data']
+
+    def interrupt(self, session_id: str) -> bool:
+        return bool((self.request('POST', f'/api/session/{_q(session_id)}/interrupt') or {}).get('interrupted'))
+
+    def reply_permission(self, session_id: str, request_id: str, decision: str) -> None:
+        if decision not in ('once', 'always', 'reject'):
+            raise ValueError(decision)
+        self.request('POST', f'/api/session/{_q(session_id)}/permission/{_q(request_id)}/reply', {'decision': decision})
+
+    def reply_form(self, session_id: str, form_id: str, answer: dict) -> None:
+        self.request('POST', f'/api/session/{_q(session_id)}/form/{_q(form_id)}/reply', {'answer': answer})
+
+    def cancel_form(self, session_id: str, form_id: str) -> None:
+        self.request('DELETE', f'/api/session/{_q(session_id)}/form/{_q(form_id)}')
+
+    def session(self, session_id: str) -> dict:
+        return self.request('GET', f'/api/session/{_q(session_id)}')['data']
+
+    def active(self) -> set[str]:
+        return set((self.request('GET', '/api/session/active') or {}).get('data', {}))
+
+    def permissions(self, session_id: str) -> list[dict]:
+        return (self.request('GET', f'/api/session/{_q(session_id)}/permission') or {}).get('data', [])
+
+    def forms(self, session_id: str) -> list[dict]:
+        return (self.request('GET', f'/api/session/{_q(session_id)}/form') or {}).get('data', [])
+
+    def messages(self, session_id: str, limit: int = 20) -> list[dict]:
+        """Newest first."""
+        query = urllib.parse.urlencode({'limit': limit, 'order': 'desc'})
+        return (self.request('GET', f'/api/session/{_q(session_id)}/message?{query}') or {}).get('data', [])
+
+
+def _q(value: str) -> str:
+    return urllib.parse.quote(value, safe='')
+
+
+def message_text(message: dict) -> str:
+    """Plain text of a V2 user or assistant message."""
+    if message.get('type') == 'user':
+        return str(message.get('text') or (message.get('payload') or {}).get('text') or '')
+    parts = [c.get('text', '') for c in message.get('content', []) if c.get('type') == 'text']
+    return '\n\n'.join(p for p in parts if p)

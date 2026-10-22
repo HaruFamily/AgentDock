@@ -5,6 +5,7 @@ from datetime import datetime
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
+from agentdock.ui.dispatch_view import Composer, DispatchPanel, status_text
 from agentdock.ui.qa_view import QaView, button, label
 from agentdock.ui.widgets import icon_button
 
@@ -88,14 +89,40 @@ class TaskRow(QFrame):
         self.body.addLayout(head)
         self.status = label('', muted=True)
         self.body.addWidget(self.status)
+        self.adopt_button = None
+        self.panel = None
         self.read_id = None
+        self.read_extra = []
 
     def remove(self):
-        # A pending question cannot be discarded by removing its task card.
-        if self.foldouts:
+        # A pending question, approval or typed reply cannot be discarded by removing its task card.
+        if self.foldouts or (self.panel and self.panel.busy()):
             return
         self.inbox.store.remove_conversation(*self.key)
         self.inbox.refresh()
+
+    def _sent(self, latest):
+        if self.panel is None:
+            self.panel = DispatchPanel(self.inbox, latest['key'])
+            self.body.insertWidget(self.body.indexOf(self.status) + 1, self.panel)
+        self.panel.key = latest['key']
+        self.panel.update_row(latest)
+
+    def _adoptable(self, latest):
+        dispatcher = self.inbox.dispatcher
+        wanted = (latest['kind'] == 'native' and dispatcher is not None
+                  and latest.get('client') in dispatcher.clients)
+        if wanted and self.adopt_button is None:
+            self.adopt_button = button('接手', flat=True)
+            self.adopt_button.clicked.connect(self.adopt)
+            self.body.addWidget(self.adopt_button, 0, Qt.AlignmentFlag.AlignRight)
+        if self.adopt_button is not None:
+            self.adopt_button.setVisible(wanted)
+        self._native = latest
+
+    def adopt(self):
+        latest = self._native
+        self.inbox.dispatcher.adopt(latest['client'], latest['session_id'], latest['owner'], latest['title'])
 
     def update_task(self, task):
         self.title.setText(task['work_title'])
@@ -115,8 +142,19 @@ class TaskRow(QFrame):
                 self.body.addWidget(fold)
         latest = task['latest']
         self.read_id = None
+        self.read_extra = []
         self.status.setVisible(not units)
-        if units:
+        self._adoptable(latest)
+        if latest['kind'] == 'dispatch':
+            self._sent(latest)
+            if not latest['read']:
+                self.read_id = latest['id']
+            if latest.get('also_read'):
+                self.read_id = self.read_id or latest['also_read']
+                self.read_extra = [latest['also_read']]
+            self.status.setVisible(True)
+            self.status.setText('待回答' if units else status_text(latest))
+        elif units:
             self.status.setText('待回答')
         elif latest['kind'] == 'native':
             state = latest['state']
@@ -138,7 +176,7 @@ class TaskRow(QFrame):
                                  'cancelled': '已取消'}[latest['kind']])
             if not latest['read']:
                 self.read_id = latest['id']
-        self.remove_button.setEnabled(not units)
+        self.remove_button.setEnabled(not units and not latest.get('permissions') and not latest.get('forms'))
 
 
 class InboxView(QWidget):
@@ -147,15 +185,30 @@ class InboxView(QWidget):
     answered = Signal()
     read_finished = Signal()
 
-    def __init__(self, store):
+    def __init__(self, store, dispatcher=None, targets=None):
         super().__init__()
         self.store = store
+        self.dispatcher = dispatcher
+        self.targets = targets or (lambda: [])
         self.rows = {}
         self.groups = {}
         self._limit = 60
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(label('Inbox · 問答與任務結果'))
+        head = QHBoxLayout()
+        head.addWidget(label('Inbox'), 1)
+        self.composer = None
+        if dispatcher is not None:
+            self.new_button = icon_button('＋', '新任務')
+            self.new_button.setCheckable(True)
+            self.new_button.toggled.connect(self.show_composer)
+            head.addWidget(self.new_button)
+            self.composer = Composer(self)
+            self.composer.sent.connect(lambda: self.new_button.setChecked(False))
+            self.composer.hide()
+        layout.addLayout(head)
+        if self.composer is not None:
+            layout.addWidget(self.composer)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -170,16 +223,22 @@ class InboxView(QWidget):
         self.items.addWidget(self.more)
         self.items.addStretch()
         self.scroll.setWidget(self.body)
-        layout.addWidget(self.scroll)
+        layout.addWidget(self.scroll, 1)
         self.read_finished.connect(self.refresh)
         self.scroll.verticalScrollBar().valueChanged.connect(self._mark_read)
         self.refresh()
+
+    def show_composer(self, shown):
+        if shown:
+            self.composer.prepare()
+        self.composer.setVisible(shown)
 
     def refresh(self):
         tasks = self.store.inbox_tasks()
         pending = [q for task in tasks for q in task['pending']]
         units = QaView._units(pending)
-        self.pending_changed.emit(len(units))
+        forms = sum(len(t['latest'].get('forms', {})) for t in tasks if t['latest']['kind'] == 'dispatch')
+        self.pending_changed.emit(len(units) + forms)
         self.pending_items.emit([{'id': u[0]['id'], 'source': u[0]['source'], 'question': u[0]['question']} for u in units])
         shown = [t for i, t in enumerate(tasks) if i < self._limit or t['pending'] or t['state'] == 'approval']
         wanted = {(t['owner'], t['work_id']) for t in shown}
@@ -295,7 +354,7 @@ class InboxView(QWidget):
             QTimer.singleShot(0, row, lambda r=row: self.scroll.ensureWidgetVisible(r))
 
     def tick(self):
-        if self.store.activity.rows:
+        if self.store.activity.rows or self.store.dispatch.rows:
             self.refresh()
         for row in self.rows.values():
             for fold in row.foldouts.values():
@@ -311,7 +370,8 @@ class InboxView(QWidget):
         for row in self.rows.values():
             if row.read_id and row.status.isVisible() and viewport.rect().intersects(
                     row.status.rect().translated(row.status.mapTo(viewport, row.status.rect().topLeft()))):
-                self.store.queue_mark_read(*row.key, [row.read_id], self.read_finished.emit)
+                self.store.queue_mark_read(*row.key, list(dict.fromkeys([row.read_id, *row.read_extra])),
+                                           self.read_finished.emit)
 
     def showEvent(self, event):
         super().showEvent(event)

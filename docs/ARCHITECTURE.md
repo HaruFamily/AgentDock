@@ -1,5 +1,9 @@
 # 架構
 
+## 收發（2026-10-22）
+
+Inbox 可送任務給 OpenCode 2.x 並在卡片上授權、回答、接續與停止。`dispatch/` 套件（不匯入 PySide6）：`opencode.py` 連共用背景服務、`runner.py` 的 Dispatcher 在 App 行程背景執行緒處理 HTTP 與 SSE、`store.py` 存 `data/dispatch.json`。卡片 owner／work_id 與 Inbox MCP、活動 hook 相同（`session:opencode:<id>`），三者合併為一張；broker 沒有新增路由。細節、API 對照與驗證見 [DISPATCH.md](DISPATCH.md)。
+
 ## Grok CLI 接入（2026-10-18）
 
 `grok-cli` 使用共用 TOML MCP 管理，另同步全域停用清單，移除時阻止相容設定同名項目回退。擴充寫入設定旁 `hooks/agentdock.json`，沿用合併交易。活動 adapter 解析 camelCase、排除子代理與截斷工具參數；Claude adapter 忽略 Grok 匯入事件。額度原始 provider 分開快取，`display_results` 統一品牌名稱並優先使用有效的 GrokBot 共用訂閱來源。範圍與驗證見 [GROK_CLI.md](GROK_CLI.md)。

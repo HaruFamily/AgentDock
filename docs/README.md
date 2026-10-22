@@ -2,6 +2,7 @@
 
 - [STATUS](STATUS.md)：目前完成項目與限制。
 - [ARCHITECTURE](ARCHITECTURE.md)：程式結構與資料邊界。
+- [DISPATCH](DISPATCH.md)：Inbox 收發（送任務、授權、回答、接續）。
 - [DEVELOPMENT](DEVELOPMENT.md)：執行、測試、加入外部工具。
 - [VERIFICATION](VERIFICATION.md)：已完成的驗證與尚待實機確認的項目。
 - [CHANGELOG](history/CHANGELOG.md)：版本歷史。
