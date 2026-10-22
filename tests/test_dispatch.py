@@ -141,6 +141,9 @@ class FakeOpenCode:
                     return
                 parts = self.path.split('?')[0].strip('/').split('/')
                 fake.calls.append((self.command, '/'.join(parts), None))
+                if len(parts) == 3:   # api/session/{id}: delete the session
+                    fake.sessions.pop(parts[2], None)
+                    return self._json(200, {'data': True})
                 sid, fid = parts[2], parts[4]
                 fake.forms[sid].pop(fid)
                 fake.emit('form.cancelled', {'id': fid, 'sessionID': sid})

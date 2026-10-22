@@ -66,6 +66,10 @@ class Adapter:
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         raise NotImplementedError
 
+    def delete(self, row: dict) -> None:
+        """Delete the session in the client itself (its saved history)."""
+        raise ClientError(f'{self.name} 不支援刪除。')
+
     def running(self, sid: str) -> bool:
         return False
 

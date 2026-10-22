@@ -139,6 +139,10 @@ while True:
         for entry in sessions.get(sid, []):
             out({'method': 'session/update', 'params': {'sessionId': sid, 'update': entry['update'], '_meta': entry['meta']}})
         out({'id': mid, 'result': {}})
+    elif method == '_x.ai/session/delete':
+        sessions.pop(params['sessionId'], None)
+        save()
+        out({'id': mid, 'result': {'success': True}})
     elif method == 'session/prompt':
         prompt(mid, params['sessionId'], params['prompt'][0]['text'])
     else:

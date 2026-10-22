@@ -456,8 +456,21 @@ class CodexClient(Adapter):
 
     def prompt(self, row: dict, text: str) -> None:
         self._load(row)
-        self.call('turn/start', {'threadId': row['session_id'],
-                                 'input': [{'type': 'text', 'text': text, 'text_elements': []}]})
+        thread = row['session_id']
+        message = [{'type': 'text', 'text': text, 'text_elements': []}]
+        with self._lock:
+            turn = self._turns.get(thread)
+        if turn:
+            # A message while Codex works joins the running turn, as typing in the Codex app does.
+            try:
+                self.call('turn/steer', {'threadId': thread, 'expectedTurnId': turn, 'input': message})
+                return
+            except ClientError:
+                with self._lock:
+                    if self._turns.get(thread) == turn:
+                        raise
+                # The turn ended in between: start a new one.
+        self.call('turn/start', {'threadId': thread, 'input': message})
 
     def running(self, sid: str) -> bool:
         with self._lock:
@@ -471,6 +484,13 @@ class CodexClient(Adapter):
             self.event(thread, 'session.execution.interrupted', f'end:{uuid.uuid4().hex}')
             return
         self.call('turn/interrupt', {'threadId': thread, 'turnId': turn})
+
+    def delete(self, row: dict) -> None:
+        if self.running(row['session_id']):
+            raise ClientError('這個對話還在執行。')
+        self.call('thread/delete', {'threadId': row['session_id']})
+        with self._lock:
+            self._loaded.discard(row['session_id'])
 
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         result = self.call('thread/read', {'threadId': row['session_id'], 'includeTurns': True})

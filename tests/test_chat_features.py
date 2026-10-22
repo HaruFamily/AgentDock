@@ -1,0 +1,331 @@
+"""Chat window conveniences: list menu actions, delete, rename, keys, copy, retry, queued messages."""
+import json
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from agentdock.dispatch.claude import ClaudeClient
+from agentdock.dispatch.codex import CodexClient
+from agentdock.dispatch.grok import GrokClient
+from agentdock.dispatch.opencode import OpenCodeService
+from agentdock.dispatch.projects import ProjectStore
+from agentdock.dispatch.runner import Dispatcher
+from agentdock.dispatch.store import owner_for
+from agentdock.qa.store import QuestionStore
+from test_dispatch import PASSWORD, FakeOpenCode  # noqa: F401  (fixture class)
+
+FAKES = Path(__file__).parent / 'fakes'
+OWNER = owner_for('p', 'claude-code')
+
+
+def wait(condition, timeout=15.0, app=None):
+    end = time.time() + timeout
+    while time.time() < end:
+        if app is not None:
+            app.processEvents()
+        if condition():
+            return
+        time.sleep(0.02)
+    raise AssertionError('timed out')
+
+
+def lines(path: Path) -> list[dict]:
+    return [json.loads(l) for l in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
+
+
+# --------------------------------------------------------------------------- pure helpers
+def test_split_code_keeps_text_and_fences_apart():
+    from agentdock.ui.chat_window import split_code
+    text = 'Intro\n\n```python\nprint(1)\n\nprint(2)\n```\nAfter\n~~~\nraw ``` inside\n~~~'
+    assert split_code(text) == [('text', 'Intro\n'), ('code', 'python', 'print(1)\n\nprint(2)'), ('text', 'After'),
+                                ('code', '', 'raw ``` inside')]
+    # While streaming, an unclosed fence is already a code block.
+    assert split_code('x\n```sh\nnpm te') == [('text', 'x'), ('code', 'sh', 'npm te')]
+    assert split_code('plain') == [('text', 'plain')] and split_code('') == []
+
+
+def test_when_is_short_and_local():
+    from agentdock.ui.chat_window import when
+    now = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
+    stamp = lambda delta: (now - delta).isoformat().replace('+00:00', 'Z')
+    assert when(stamp(timedelta(seconds=20)), now) == '剛剛'
+    assert when(stamp(timedelta(minutes=5)), now) == '5 分'
+    assert when(stamp(timedelta(days=400)), now).count('/') == 2
+    assert when('nonsense', now) == ''
+
+
+# --------------------------------------------------------------------------- store / dispatcher
+def test_rename_survives_the_client_title(tmp_path):
+    fake = FakeOpenCode()
+    store = QuestionStore(tmp_path)
+    sender = Dispatcher(store.dispatch, connect=lambda start: OpenCodeService(fake.url, PASSWORD, fake.version),
+                        adapters=[])
+    fake.sessions['ses_r'] = {'id': 'ses_r', 'title': 'from opencode', 'outcome': 'succeeded'}
+    store.dispatch.track('opencode', 'ses_r', owner=OWNER, title='first', state='done')
+    store.dispatch.rename('opencode:ses_r', '  我的   名字 ')
+    sender._reconcile(OpenCodeService(fake.url, PASSWORD, fake.version), 'opencode:ses_r')
+    row = QuestionStore(tmp_path).dispatch.get('opencode:ses_r')
+    assert row['title'] == '我的 名字' and row['custom_title'] is True
+
+
+@pytest.fixture
+def clients(tmp_path, monkeypatch):
+    monkeypatch.setenv('FAKE_CLAUDE_LOG', str(tmp_path / 'claude.log'))
+    monkeypatch.setenv('FAKE_CODEX_LOG', str(tmp_path / 'codex.log'))
+    monkeypatch.setenv('FAKE_GROK_LOG', str(tmp_path / 'grok.log'))
+    monkeypatch.setenv('FAKE_GROK_STORE', str(tmp_path / 'grok-sessions.json'))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'claude-config'))
+    work = tmp_path / 'work'
+    work.mkdir()
+    fake = FakeOpenCode()
+    store = QuestionStore(tmp_path / 'data')
+    notes, events = [], []
+    sender = Dispatcher(store.dispatch, notify=notes.append,
+                        connect=lambda start: OpenCodeService(fake.url, PASSWORD, fake.version), adapters=[
+                            ClaudeClient(find=lambda: [sys.executable, str(FAKES / 'fake_claude.py')]),
+                            CodexClient(find=lambda: [sys.executable, str(FAKES / 'fake_codex.py')]),
+                            GrokClient(find=lambda: [sys.executable, str(FAKES / 'fake_grok.py')])])
+    sender.listeners.append(lambda key, event: events.append((key, event)))
+    yield store, sender, notes, events, work, tmp_path, fake
+    sender.close()
+
+
+def start(sender, work, client, text):
+    started = []
+    sender.start_task(str(work), text, OWNER, started=started.append, client=client)
+    wait(lambda: started)
+    return started[0]
+
+
+def done(store, key):
+    return lambda: store.dispatch.get(key)['state'] in ('done', 'failed', 'interrupted')
+
+
+@pytest.mark.parametrize('client', ['opencode', 'claude-code', 'codex', 'grok-cli'])
+def test_delete_in_the_client_then_from_the_list(clients, client):
+    store, sender, notes, events, work, tmp, fake = clients
+    key = start(sender, work, client, 'hello')
+    if client == 'opencode':
+        fake.reply(key.split(':', 1)[1], 'ok')
+    wait(done(store, key))
+    sid = key.split(':', 1)[1]
+    if client == 'claude-code':
+        transcript = tmp / 'claude-config' / 'projects' / 'x' / f'{sid}.jsonl'
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text('{}\n', encoding='utf-8')
+        (transcript.parent / sid).mkdir()
+    removed = []
+    sender.delete(key, True, done=lambda: removed.append(key))
+    wait(lambda: removed or notes)
+    assert removed == [key] and notes == []
+    if client == 'opencode':
+        assert ('DELETE', f'api/session/{sid}', None) in fake.calls
+    elif client == 'claude-code':
+        assert not transcript.exists() and not (transcript.parent / sid).exists()
+    elif client == 'codex':
+        assert any(l.get('method') == 'thread/delete' for l in lines(tmp / 'codex.log'))
+    else:
+        assert any(l.get('method') == '_x.ai/session/delete' for l in lines(tmp / 'grok.log'))
+        assert sid not in json.loads((tmp / 'grok-sessions.json').read_text(encoding='utf-8'))
+
+
+def test_delete_refuses_a_running_conversation(clients):
+    store, sender, notes, events, work, tmp, fake = clients
+    key = start(sender, work, 'claude-code', 'SLOW')
+    removed = []
+    sender.delete(key, True, done=lambda: removed.append(key))
+    wait(lambda: notes)
+    assert '還在執行' in notes[0] and removed == []
+    sender.interrupt(key)
+    wait(done(store, key))
+
+
+@pytest.mark.parametrize('client', ['claude-code', 'grok-cli'])
+def test_messages_sent_while_running_queue_up(clients, client):
+    store, sender, notes, events, work, tmp, fake = clients
+    key = start(sender, work, client, 'hello')
+    sender.send(key, 'again')   # before the first reply has finished
+    wait(lambda: sum(e['type'] == 'session.execution.succeeded' for k, e in events) == 2)
+    kinds = [e['type'] for _k, e in events if e['type'].startswith('session.execution')]
+    # The second turn is reported as running again after the first one ends.
+    assert kinds == ['session.execution.started', 'session.execution.succeeded',
+                     'session.execution.started', 'session.execution.succeeded']
+    wait(lambda: store.dispatch.get(key)['state'] == 'done')
+    assert notes == []
+
+
+def test_codex_message_while_running_steers_the_turn(clients):
+    store, sender, notes, events, work, tmp, fake = clients
+    key = start(sender, work, 'codex', 'SLOW')
+    wait(lambda: any(e['type'] == 'session.execution.started' for _k, e in events))
+    sender.send(key, 'use tabs')
+    wait(done(store, key))
+    row = store.dispatch.get(key)
+    assert row['state'] == 'done' and row['reply'] == 'steered use tabs' and notes == []
+    log = lines(tmp / 'codex.log')
+    assert [l['method'] for l in log if l.get('method') in ('turn/start', 'turn/steer')] == ['turn/start', 'turn/steer']
+    assert {'steer_expected': True} in log
+    users = [e['data']['item']['payload']['text'] for _k, e in events if e['type'] == 'session.inbox.enqueued']
+    assert users == ['SLOW', 'use tabs']
+
+
+# --------------------------------------------------------------------------- window
+@pytest.fixture
+def window(clients, ui_app, monkeypatch):
+    from PySide6.QtCore import QObject, Signal
+    from agentdock.ui.chat_window import ChatWindow
+    store, sender, notes, events, work, tmp, fake = clients
+
+    class Bus(QObject):
+        changed = Signal()
+    bus = Bus()
+    projects = ProjectStore(tmp, emit=bus.changed.emit)
+    state, saved = {}, []
+
+    def make(ui=None):
+        win = ChatWindow(store, sender, projects, lambda: [], notify=notes.append, ui_state=state if ui is None else ui,
+                         save_state=lambda: saved.append(1))
+        bus.changed.connect(win.schedule_refresh)
+        store.subscribe(lambda _e, _q: bus.changed.emit())
+        win.resize(1100, 720)
+        return win
+    win = make()
+    win.show()
+    yield win, make, store, sender, notes, work, projects, state, ui_app
+    win.hide()
+    win.deleteLater()
+
+
+def test_list_actions_rename_move_delete(window, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from agentdock.ui import chat_window as cw
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'claude-code', 'hello')
+    wait(done(store, key), app=app)
+    win.open_conversation(key)
+    wait(lambda: not win.conversation.loading, app=app)
+    # F2 renames.
+    monkeypatch.setattr(cw.RenameDialog, 'exec', lambda self: (self.name.setText('新名字'), cw.QDialog.DialogCode.Accepted)[1])
+    win.sidebar.refresh()
+    item = next(win.sidebar.tree.topLevelItem(0).child(i) for i in range(win.sidebar.tree.topLevelItem(0).childCount()))
+    win.sidebar.tree.setCurrentItem(item)
+    QTest.keyClick(win.sidebar.tree, Qt.Key.Key_F2)
+    assert store.dispatch.get(key)['title'] == '新名字'
+    wait(lambda: win.conversation.title.text() == '新名字', app=app)
+    # Moving through the menu's action is the same as dropping.
+    project = projects.add('Repo', str(work.parent))
+    win.move_conversation(key, '')
+    assert store.dispatch.get(key)['project'] == ''
+    win.move_conversation(key, project['id'])
+    assert projects.project_of(store.dispatch.get(key)) == project['id']
+    # Delete: a cancelled dialog keeps it; deleting only from AgentDock leaves Claude Code's history.
+    monkeypatch.setattr(cw.DeleteDialog, 'exec', lambda self: cw.QDialog.DialogCode.Rejected)
+    win.delete_conversation(key)
+    assert store.dispatch.get(key) is not None
+    monkeypatch.setattr(cw.DeleteDialog, 'exec', lambda self: cw.QDialog.DialogCode.Accepted)
+    win.delete_conversation(key)
+    assert store.dispatch.get(key) is None and win.pages.currentWidget() is win.new_view
+    assert 'last_conversation' not in state and notes == []
+
+
+def test_delete_with_client_history_waits_for_the_client(window, monkeypatch):
+    from agentdock.ui import chat_window as cw
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'codex', 'hello')
+    wait(done(store, key), app=app)
+
+    def accept(self):
+        self.remote.setChecked(True)
+        return cw.QDialog.DialogCode.Accepted
+    monkeypatch.setattr(cw.DeleteDialog, 'exec', accept)
+    win.delete_conversation(key)
+    wait(lambda: store.dispatch.get(key) is None, app=app)
+    assert notes == []
+
+
+def test_keyboard_new_step_stop_search(window):
+    win, make, store, sender, notes, work, projects, state, app = window
+    first = start(sender, work, 'grok-cli', 'hello')
+    wait(done(store, first), app=app)
+    second = start(sender, work, 'codex', 'SLOW')
+    wait(lambda: store.dispatch.get(second)['state'] == 'running', app=app)
+    win.open_conversation(second)
+    # Esc stops the open conversation.
+    win.escape()
+    wait(done(store, second), app=app)
+    assert store.dispatch.get(second)['state'] == 'interrupted'
+    # Alt+Up/Down follow the list order (newest first).
+    win.sidebar.refresh()
+    order = win.sidebar.keys()
+    assert set(order) == {first, second}
+    win.open_conversation(order[0])
+    win.step_conversation(1)
+    assert win.current_key == order[1]
+    win.step_conversation(1)
+    assert win.current_key == order[1]   # stays at the end
+    # Ctrl+N starts next to the open conversation: same folder, same agent.
+    win.open_conversation(first)
+    win.new_like_current()
+    assert win.pages.currentWidget() is win.new_view and win.new_view.agent == 'grok-cli'
+    assert win.new_view.folder.text() == str(work)
+    win.focus_search()
+    win.sidebar.search.setText('zzz')
+    win.escape()
+    assert win.sidebar.search.text() == ''
+
+
+def test_reopening_returns_to_the_last_conversation(window):
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'grok-cli', 'hello')
+    wait(done(store, key), app=app)
+    win.open_conversation(key)
+    assert state['last_conversation'] == key
+    again = make()
+    assert again.pages.currentWidget() is again.new_view   # nothing loads while hidden (tray start)
+    again.show()
+    assert again.current_key == key and again.pages.currentWidget() is again.conversation
+    again.hide()
+    again.deleteLater()
+
+
+def test_copy_edit_and_retry(window):
+    from PySide6.QtWidgets import QApplication, QPushButton
+    from agentdock.ui.chat_window import CodeBlock
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'claude-code', 'FAIL now')
+    win.open_conversation(key)
+    wait(lambda: store.dispatch.get(key)['state'] == 'failed', app=app)
+    wait(lambda: any(w.retry is not None and w.retry.isVisibleTo(win) for w in win.conversation.widgets.values()),
+         app=app)
+    user = next(w for w in win.conversation.widgets.values() if w.item['kind'] == 'user')
+    buttons = {b.text(): b for b in user.actions.findChildren(QPushButton)}
+    buttons['複製'].click()
+    assert QApplication.clipboard().text() == 'FAIL now'
+    buttons['編輯'].click()
+    assert win.conversation.composer.text.toPlainText() == 'FAIL now'
+    # Retry sends the last message again.
+    retry = next(w.retry for w in win.conversation.widgets.values() if w.retry is not None and w.retry.isVisibleTo(win))
+    retry.click()
+    wait(lambda: sum(1 for l in lines(Path(store.dispatch.file).parent.parent / 'claude.log')
+                     if l.get('type') == 'user') == 2, app=app)
+    wait(lambda: store.dispatch.get(key)['state'] == 'failed', app=app)
+    # Code in a reply has its own copy button.
+    key2 = start(sender, work, 'claude-code', 'hello')
+    win.open_conversation(key2)
+    wait(done(store, key2), app=app)
+    wait(lambda: any(w.item['kind'] == 'assistant' and w.parts for w in win.conversation.widgets.values()), app=app)
+    assistant = next(w for w in win.conversation.widgets.values() if w.item['kind'] == 'assistant')
+    part = next(iter(assistant.parts.values()))
+    part.set_text('Run:\n```sh\nnpm test\n```')
+    block = part.findChild(CodeBlock)
+    assert block is not None and block.language.text() == 'sh'
+    block.copy.click()
+    assert QApplication.clipboard().text() == 'npm test' and block.copy.text() == '已複製'
+    part.set_text('Run:\n```sh\nnpm test --watch\n```')
+    assert part.findChild(CodeBlock) is block and block.code == 'npm test --watch'   # updated in place
+    assistant_buttons = {b.text(): b for b in assistant.actions.findChildren(QPushButton)}
+    assert set(assistant_buttons) == {'複製'}

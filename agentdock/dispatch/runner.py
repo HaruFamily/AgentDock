@@ -170,6 +170,21 @@ class Dispatcher:
         if row is not None:
             self.store.update(key, **{field: {k: v for k, v in row.get(field, {}).items() if k != request_id}})
 
+    def delete(self, key: str, remote: bool, done: Callable[[], None] = lambda: None) -> None:
+        """Remove a conversation; with `remote`, delete it in the client first (then only on success)."""
+        def run():
+            row = self._row(key)
+            if row['state'] == 'running':
+                raise ValueError('這個對話還在執行，請先停止。')
+            if remote:
+                adapter = self._adapter(row)
+                if adapter is not None:
+                    adapter.delete(row)
+                else:
+                    self._service_for(True).delete_session(row['session_id'])
+            done()
+        self._work(run, '無法刪除對話', key)
+
     def adopt(self, client: str, session_id: str, owner: str, title: str) -> None:
         """Take over a session that was started in the client, so the Inbox can continue it."""
         if client != CLIENT:
@@ -343,7 +358,7 @@ class Dispatcher:
                 self.store.update(key, state='failed', error='OpenCode 找不到這個工作階段。', permissions={}, forms={})
                 return
             raise
-        changes = {'title': session.get('title') or row['title'],
+        changes = {'title': row['title'] if row.get('custom_title') else session.get('title') or row['title'],
                    'directory': (session.get('location') or {}).get('directory') or row['directory'],
                    'permissions': {p['id']: _permission(p) for p in service.permissions(sid)},
                    'forms': {f['id']: f for f in service.forms(sid)}}

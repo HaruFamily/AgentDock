@@ -211,7 +211,7 @@ class GrokClient(Adapter):
         self._loaded: dict[str, threading.Event] = {}   # session -> finished loading in this process
         self._records: dict[str, Record] = {}
         self._loading: set[str] = set()                 # replay in progress: updates build history only
-        self._running: dict[str, str] = {}              # session -> assistant message of the running prompt
+        self._running: dict[str, int] = {}              # session -> prompts sent and not finished (Grok queues them)
         self._requests: dict[str, dict] = {}            # our id -> {'id', 'method', 'params', 'session'}
         self._closed = False
 
@@ -464,29 +464,39 @@ class GrokClient(Adapter):
         process = self._ensure()
         mid = uuid.uuid4().hex
         record.user(mid, text)
-        record.current = ''
         with self._lock:
-            self._running[sid] = mid
+            busy = self._running.get(sid, 0) > 0
+            self._running[sid] = self._running.get(sid, 0) + 1
+        if not busy:
+            record.current = ''
         self.event(sid, 'session.inbox.enqueued', inboxID=mid, item={'type': 'user', 'payload': {'text': text}})
-        self.event(sid, 'session.execution.started')
+        if not busy:
+            self.event(sid, 'session.execution.started')
         try:
             waiter = self._send_request(process, 'session/prompt',
                                         {'sessionId': sid, 'prompt': [{'type': 'text', 'text': text}]})
         except ClientError:
             with self._lock:
-                self._running.pop(sid, None)
+                self._running[sid] = max(0, self._running.get(sid, 1) - 1)
+                if not self._running[sid]:
+                    del self._running[sid]
             raise
         waiter['callback'] = lambda w: self._finished(sid, record, w)
         if waiter['done'].is_set():   # answered before the callback was attached
             self._finished(sid, record, waiter)
 
     def _finished(self, sid: str, record: Record, waiter: dict) -> None:
+        left = 0
         with self._lock:
             if waiter.get('finished'):
                 return
             waiter['finished'] = True
             self._calls.pop(waiter.get('id'), None)
-            self._running.pop(sid, None)
+            left = max(0, self._running.get(sid, 1) - 1)
+            if left:
+                self._running[sid] = left
+            else:
+                self._running.pop(sid, None)
         mid = record.current or uuid.uuid4().hex
         record.close_text(mid, lambda kind, **data: self.event(sid, kind, **data))
         self._drop_requests(sid, answer=False)
@@ -495,6 +505,8 @@ class GrokClient(Adapter):
             error = _error_text(waiter['error'])
             record.end(mid, 'failed', error)
             self.event(sid, 'session.execution.failed', f'end:{mid}', error={'message': error})
+            if left:
+                self.event(sid, 'session.execution.started')
             return
         reason = str((waiter.get('result') or {}).get('stopReason') or 'end_turn')
         if reason == 'cancelled':
@@ -505,6 +517,8 @@ class GrokClient(Adapter):
             self.event(sid, 'session.execution.failed', f'end:{mid}', error={'message': 'Grok 拒絕回答。'})
         else:
             self.event(sid, 'session.execution.succeeded', f'end:{mid}')
+        if left:
+            self.event(sid, 'session.execution.started')   # Grok runs the next queued prompt
 
     def running(self, sid: str) -> bool:
         with self._lock:
@@ -542,6 +556,15 @@ class GrokClient(Adapter):
 
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         return page(self._load(row).visible(), cursor)
+
+    def delete(self, row: dict) -> None:
+        sid = row['session_id']
+        if self.running(sid):
+            raise ClientError('這個對話還在執行。')
+        self._call(self._ensure(), '_x.ai/session/delete', {'sessionId': sid})
+        with self._lock:
+            self._loaded.pop(sid, None)
+            self._records.pop(sid, None)
 
     def close(self) -> None:
         with self._lock:

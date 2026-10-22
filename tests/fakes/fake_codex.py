@@ -109,13 +109,23 @@ def run_turn(thread, turn, text):
                            'options': [{'label': 'Red', 'description': 'warm'}, {'label': 'Blue', 'description': 'cool'}]}]})
         agent_message(thread, turn, f"answers {json.dumps(answer.get('answers'), ensure_ascii=False)}", items)
     elif text.startswith('SLOW'):
+        status = 'interrupted'
         while True:
             message = read()
             if message.get('method') == 'turn/interrupt':
                 out({'id': message['id'], 'result': {}})
                 break
+            if message.get('method') == 'turn/steer':
+                steer = message['params']
+                log({'steer_expected': steer['expectedTurnId'] == turn})
+                out({'id': message['id'], 'result': {'turnId': turn}})
+                extra = {'type': 'userMessage', 'id': new_id('user'), 'content': steer['input']}
+                note('item/started', threadId=thread, turnId=turn, item=extra)
+                items.append(extra)
+                agent_message(thread, turn, f"steered {steer['input'][0]['text']}", items)
+                status = 'completed'
+                break
             side(message)
-        status = 'interrupted'
     elif text.startswith('FAIL'):
         note('error', threadId=thread, turnId=turn, willRetry=False, error={'message': 'quota exceeded'})
         status, error = 'failed', {'message': 'quota exceeded'}
@@ -144,6 +154,9 @@ while True:
         out({'id': mid, 'result': {'thread': {'id': params['threadId']}}})
     elif method == 'thread/read':
         out({'id': mid, 'result': {'thread': {'id': params['threadId'], 'turns': threads.get(params['threadId'], [])}}})
+    elif method == 'thread/delete':
+        threads.pop(params['threadId'], None)
+        out({'id': mid, 'result': {}})
     elif method == 'turn/start':
         turn = new_id('turn')
         out({'id': mid, 'result': {'turn': {'id': turn, 'status': 'inProgress', 'items': []}}})

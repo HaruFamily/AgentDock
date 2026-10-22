@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-22：對話視窗第一批補強。清單右鍵選單與 F2／Delete、刪除對話框（預設只移除卡片，可勾選連 Agent 端一起刪：OpenCode DELETE session、Claude Code 刪紀錄、Codex thread/delete、Grok _x.ai/session/delete）、改名（custom_title 不被對帳覆蓋）、清單時間；訊息複製／編輯、程式碼區塊（CodeBlock，串流中原地更新）與複製、重試；Claude Code、Grok 排隊計數，Codex turn/steer；快捷鍵 Ctrl+N／Ctrl+K／Esc／Alt+↑↓；重開回到上次對話（首次顯示才載入）。新增 16 項測試，完整 276 項通過。
+
 - 2026-10-22：收發加入 Grok。新增 `dispatch/grok.py`（ACP：initialize、session/new／load／prompt／cancel、session/update 轉事件與紀錄（依 promptId 對齊重播與即時）、request_permission、`_x.ai/ask_user_question`、錯誤與 stopReason）。子行程改由常駐執行緒啟動（grok 會隨啟動它的執行緒結束）。新對話與專案可選 Grok。新增 13 項測試（含假 grok agent），完整 260 項通過。
 
 - 2026-10-22：收發加入 Claude Code 與 Codex。新增 `dispatch/adapter.py`（轉接器介面、無視窗子行程、JSON lines）、`dispatch/claude.py`（stream-json 控制協定：initialize、can_use_tool 授權／AskUserQuestion 表單、interrupt、--session-id／--resume、閒置關閉、jsonl 紀錄解析）、`dispatch/codex.py`（app-server JSON-RPC：thread／turn、指令／檔案／權限授權、request_user_input、serverRequest/resolved、thread/read 紀錄、程序換代保護）。Dispatcher 依 key 前綴分派，`start_task(client=)`；重啟時其他兩家未完成的卡片標中斷，不連 OpenCode；失效授權自動移除。新對話記住上次的 Agent；沒有設定檔時 owner 用該 Agent 自己的；OpenCode 離線提示只出現在 OpenCode 對話。新增 29 項測試（含假 CLI），完整 247 項通過。

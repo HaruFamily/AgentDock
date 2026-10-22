@@ -1,5 +1,7 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-22：對話視窗第一批補強。清單右鍵選單（改名、移到專案、複製工作階段 ID、在終端機接續、刪除；F2／Delete），刪除可選擇連 Agent 端紀錄一起刪；清單顯示最後更新時間；訊息與程式碼區塊複製、編輯後重送、失敗或停止後重試；執行中可繼續送（Codex 用 turn/steer）；Ctrl+N、Ctrl+K、Esc、Alt+↑↓；重開回到上次的對話。完整 276 項測試通過，另以真實 Claude Code、Codex、Grok 實測排隊／插話與刪除。
+
 2026-10-22：Grok 接上收發。透過 `grok agent stdio`（ACP 標準協定）一個子行程服務全部 Grok 對話；授權用 session/request_permission、問題用 Grok 的 ask_user_question 擴充、停止用 session/cancel，紀錄由 session/load 重播；不開 yolo，沿用 Grok 自己的權限模式。完整 260 項測試通過，另以真實 Grok 1.0.67 搭配假模型實測；尚待使用者以真實帳號驗收。
 
 2026-10-22：Claude Code 與 Codex 接上收發，對話視窗三家都能用。Claude Code 直接講 SDK 的 stream-json 協定（不另裝 SDK），每個使用中的對話一個子行程、閒置 10 分鐘關閉、下次以 --resume 接續，紀錄讀 ~/.claude/projects 的 jsonl；Codex 用一個 codex app-server（JSON-RPC），thread/start／resume、turn/start／interrupt，紀錄用 thread/read。授權（允許／一律允許／拒絕）、問題（AskUserQuestion／request_user_input）、停止、失敗原因與子行程當掉都顯示在對話裡；權限規則沿用各工具自己的設定。關掉 AgentDock 時這兩家的進行中回合會中斷（OpenCode 不受影響）。完整 247 項測試通過，另以真實 Claude Code 2.1.288、Codex 0.163.0 搭配假模型實測；尚待使用者以真實帳號驗收。詳見 [DISPATCH.md](DISPATCH.md)。

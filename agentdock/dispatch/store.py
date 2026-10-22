@@ -108,6 +108,17 @@ class DispatchStore:
         self.emit('dispatch-attention' if asked or questioned else 'change', copy.deepcopy(row))
         return copy.deepcopy(row)
 
+    def rename(self, key: str, title: str) -> None:
+        """A name the user gave; clients no longer overwrite it."""
+        title = ' '.join(title.split())[:160]
+        with self.lock:
+            row = self.rows.get(key)
+            if row is None or not title:
+                return
+            self.rows = {**self.rows, key: {**row, 'title': title, 'custom_title': True}}
+            self._save()
+        self.emit('change', None)
+
     def set_project(self, key: str, project: str) -> None:
         """An explicit move; '' means unsorted. Only organises the list, the session's folder stays."""
         with self.lock:

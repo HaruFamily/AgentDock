@@ -6,14 +6,20 @@ and continued. Approvals, answers, sends and stops only happen on a click, as in
 from __future__ import annotations
 
 import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                               QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
-                               QSizePolicy, QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                               QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from agentdock.dispatch.projects import UNSORTED
-from agentdock.dispatch.store import owner_for
+from agentdock.dispatch.store import owner_for, work_id
 from agentdock.dispatch.transcript import Transcript, tool_summary
 from agentdock.ui import theme
 from agentdock.ui.dispatch_view import FormBox, status_text, text_box
@@ -25,6 +31,76 @@ ROLE = Qt.ItemDataRole.UserRole
 AGENTS = (('opencode', 'OpenCode'), ('claude-code', 'Claude Code'), ('codex', 'Codex'), ('grok-cli', 'Grok'))
 RAIL = 56
 RAIL_OPEN = 188
+FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
+
+
+def split_code(text: str) -> list[tuple]:
+    """Markdown split into ('text', body) and ('code', language, body); an unclosed fence runs to the end."""
+    out: list[tuple] = []
+    lines: list[str] = []
+    code: list | None = None   # [fence char, fence length, language, lines]
+    for line in text.split('\n'):
+        marker = FENCE.match(line)
+        if code is None:
+            if marker:
+                if '\n'.join(lines).strip():
+                    out.append(('text', '\n'.join(lines)))
+                lines = []
+                info = marker.group(2).strip()
+                code = [marker.group(1)[0], len(marker.group(1)), info.split()[0] if info else '', []]
+            else:
+                lines.append(line)
+        elif marker and marker.group(1)[0] == code[0] and len(marker.group(1)) >= code[1] and not marker.group(2).strip():
+            out.append(('code', code[2], '\n'.join(code[3])))
+            code = None
+        else:
+            code[3].append(line)
+    if code is not None:
+        out.append(('code', code[2], '\n'.join(code[3])))
+    elif '\n'.join(lines).strip():
+        out.append(('text', '\n'.join(lines)))
+    return out
+
+
+def when(stamp: str, now: datetime | None = None) -> str:
+    """A short local time for the list: 剛剛, 5 分, 14:03, 昨天, 10/20, 2025/12/31."""
+    try:
+        moment = datetime.fromisoformat(stamp.replace('Z', '+00:00')).astimezone()
+    except (ValueError, AttributeError):
+        return ''
+    now = (now or datetime.now(timezone.utc)).astimezone()
+    seconds = (now - moment).total_seconds()
+    if seconds < 60:
+        return '剛剛'
+    if seconds < 3600:
+        return f'{int(seconds // 60)} 分'
+    days = (now.date() - moment.date()).days
+    if days == 0:
+        return moment.strftime('%H:%M')
+    if days == 1:
+        return '昨天'
+    if moment.year == now.year:
+        return f'{moment.month}/{moment.day}'
+    return f'{moment.year}/{moment.month}/{moment.day}'
+
+
+def resume_command(row: dict) -> list[str] | None:
+    """The client's own command that continues this session in a terminal."""
+    client, sid = row['client'], row['session_id']
+    if client == 'claude-code':
+        from agentdock.dispatch.claude import find_executable
+        args = ['--resume', sid]
+    elif client == 'codex':
+        from agentdock.dispatch.codex import find_executable
+        args = ['resume', sid]
+    elif client == 'grok-cli':
+        from agentdock.dispatch.grok import find_executable
+        args = ['--resume', sid]
+    else:
+        from agentdock.dispatch.opencode import find_executable
+        args = ['-s', sid]
+    exe = find_executable()
+    return [exe, *args] if exe else None
 
 
 def _style() -> str:
@@ -52,6 +128,11 @@ def _style() -> str:
 #ChatChip {{ border: 1px solid {t.LINE}; border-radius: 11px; padding: 2px 10px; color: {t.MUTED}; font-size: 12px; background: transparent; }}
 #EndLine {{ color: {t.MUTED}; font-size: 12px; }}
 #EndLine[failed="true"] {{ color: {t.DANGER}; }}
+#CodeBlock {{ background: {t.ACCENT_SOFT}; border: 1px solid {t.LINE}; border-radius: 10px; }}
+#CodeBlock QScrollArea, #CodeBlock QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
+#CodeLang {{ color: {t.MUTED}; font-size: 11px; }}
+QPushButton#MiniButton {{ border: none; background: transparent; color: {t.MUTED}; padding: 2px 8px; font-size: 12px; border-radius: 6px; }}
+QPushButton#MiniButton:hover {{ background: {t.HOVER}; color: {t.INK}; }}
 QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
 #SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
 #SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 14px; }}
@@ -65,6 +146,7 @@ class Bridge(QObject):
     history_failed = Signal(str, str)
     live = Signal(str, dict)
     started = Signal(str)
+    deleted = Signal(str)
 
 
 ICONS = {
@@ -150,9 +232,11 @@ class Rail(QFrame):
 class ConversationTree(QTreeWidget):
     """Projects with their conversations. Dropping a conversation on a project moves it there."""
     moved = Signal(str, str)
+    key_action = Signal(str, str)   # ('delete' | 'rename', conversation key)
 
     def __init__(self):
         super().__init__()
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.setHeaderHidden(True)
         self.setColumnCount(2)
         self.setIndentation(14)
@@ -175,6 +259,15 @@ class ConversationTree(QTreeWidget):
                 return value
             item = item.parent()
         return None
+
+    def keyPressEvent(self, event):  # noqa: N802
+        item = self.currentItem()
+        kind, value = (item.data(0, ROLE) or ('', '')) if item else ('', '')
+        action = {Qt.Key.Key_Delete: 'delete', Qt.Key.Key_F2: 'rename'}.get(event.key())
+        if kind == 'conv' and action:
+            self.key_action.emit(action, value)
+            return
+        super().keyPressEvent(event)
 
     def startDrag(self, actions):  # noqa: N802
         item = self.currentItem()
@@ -225,7 +318,50 @@ class Sidebar(QFrame):
         self.tree = ConversationTree()
         self.tree.itemClicked.connect(self._clicked)
         self.tree.moved.connect(window.move_conversation)
+        self.tree.customContextMenuRequested.connect(self._menu)
+        self.tree.key_action.connect(lambda action, key: (window.delete_conversation(key) if action == 'delete'
+                                                          else window.rename_conversation(key)))
         layout.addWidget(self.tree, 1)
+
+    def keys(self) -> list[str]:
+        """Conversation keys in the order shown."""
+        found = []
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            found += [top.child(j).data(0, ROLE)[1] for j in range(top.childCount())]
+        return found
+
+    def _menu(self, pos) -> None:
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        kind, value = item.data(0, ROLE) or ('', '')
+        w = self.window_
+        menu = QMenu(self)
+        if kind == 'conv':
+            row = w.store.dispatch.get(value)
+            if row is None:
+                return
+            menu.addAction('改名', lambda: w.rename_conversation(value))
+            move = menu.addMenu('移到專案')
+            current = w.projects.project_of(row)
+            for pid, name in [(p['id'], p['name']) for p in w.projects.list()] + [(UNSORTED, '未分類')]:
+                action = move.addAction(name, lambda p=pid: w.move_conversation(value, p))
+                action.setCheckable(True)
+                action.setChecked(pid == current)
+            menu.addAction('複製工作階段 ID', lambda: QApplication.clipboard().setText(row['session_id']))
+            if sys.platform == 'win32':
+                action = menu.addAction('在終端機接續', lambda: w.resume_in_terminal(value))
+                action.setEnabled(row['state'] != 'running')
+            menu.addSeparator()
+            action = menu.addAction('刪除…', lambda: w.delete_conversation(value))
+            action.setEnabled(row['state'] != 'running')
+        elif kind == 'project' and value:
+            menu.addAction('在此專案開新對話', lambda: w.show_new(value))
+            menu.addAction('專案設定', lambda: w.show_project(value))
+        else:
+            return
+        menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _clicked(self, item, _column):
         kind, value = item.data(0, ROLE) or ('', '')
@@ -262,7 +398,7 @@ class Sidebar(QFrame):
             self.tree.addTopLevelItem(top)
             for key, row in convs:
                 badge = self._badge(row)
-                child = QTreeWidgetItem([row['title'], badge])
+                child = QTreeWidgetItem([row['title'], badge or when(row.get('updated_at', ''))])
                 child.setData(0, ROLE, ('conv', key))
                 child.setToolTip(0, row['title'])
                 child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled)
@@ -270,6 +406,7 @@ class Sidebar(QFrame):
                     child.setForeground(1, theme_color('ALERT'))
                 elif badge == '●':
                     child.setForeground(1, theme_color('ACCENT'))
+                    child.setText(1, f"● {when(row.get('updated_at', ''))}")
                 else:
                     child.setForeground(1, theme_color('MUTED'))
                 top.addChild(child)
@@ -338,8 +475,111 @@ class ToolRow(QWidget):
         self.update_part(self.part)
 
 
+def mini_button(text: str) -> QPushButton:
+    b = QPushButton(text)
+    b.setObjectName('MiniButton')
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    return b
+
+
+def copy_to_clipboard(text: str, b: QPushButton | None = None) -> None:
+    QApplication.clipboard().setText(text)
+    if b is not None:
+        old = b.text()
+        b.setText('已複製')
+        QTimer.singleShot(1200, lambda: b.setText(old) if b.text() == '已複製' else None)
+
+
+class CodeBlock(QFrame):
+    """A fenced code block: monospace, unwrapped (scrolls sideways), with its own copy button."""
+
+    def __init__(self, language: str, code: str):
+        super().__init__()
+        self.setObjectName('CodeBlock')
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 6)
+        layout.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(10, 2, 4, 0)
+        self.language = QLabel()
+        self.language.setObjectName('CodeLang')
+        head.addWidget(self.language, 1)
+        self.copy = mini_button('複製')
+        self.copy.clicked.connect(lambda: copy_to_clipboard(self.code, self.copy))
+        head.addWidget(self.copy)
+        layout.addLayout(head)
+        self.text = QLabel()
+        self.text.setTextFormat(Qt.TextFormat.PlainText)
+        self.text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.text.setContentsMargins(10, 2, 10, 2)
+        self.area = QScrollArea()
+        self.area.setWidget(self.text)
+        self.area.setFrameShape(QFrame.Shape.NoFrame)
+        self.area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        layout.addWidget(self.area)
+        self.code = ''
+        self.set_code(language, code)
+
+    def set_code(self, language: str, code: str) -> None:
+        self.code = code
+        self.language.setText(language)
+        self.text.setText(code)
+        self.text.adjustSize()
+        self._fit()
+
+    def _fit(self) -> None:
+        wide = self.text.sizeHint().width() > self.area.viewport().width()
+        bar = self.area.horizontalScrollBar().sizeHint().height() if wide else 0
+        self.area.setFixedHeight(self.text.sizeHint().height() + bar + 2)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
+
+
+class RichText(QWidget):
+    """Assistant Markdown, with fenced code split out into CodeBlocks. Updated in place while streaming."""
+
+    def __init__(self, text: str):
+        super().__init__()
+        self.layout_ = QVBoxLayout(self)
+        self.layout_.setContentsMargins(0, 0, 0, 0)
+        self.layout_.setSpacing(8)
+        self.blocks: list[tuple[str, QWidget]] = []
+        self.source: str | None = None
+        self.set_text(text)
+
+    def set_text(self, text: str) -> None:
+        if text == self.source:
+            return
+        self.source = text
+        segments = split_code(text)
+        if [s[0] for s in segments] != [kind for kind, _ in self.blocks]:
+            for _kind, widget in self.blocks:
+                self.layout_.removeWidget(widget)
+                widget.hide()
+                widget.deleteLater()
+            self.blocks = []
+            for segment in segments:
+                widget = QuestionText(segment[1]) if segment[0] == 'text' else CodeBlock(segment[1], segment[2])
+                self.layout_.addWidget(widget)
+                self.blocks.append((segment[0], widget))
+            return
+        for segment, (_kind, widget) in zip(segments, self.blocks):
+            if segment[0] == 'text':
+                if widget.source != segment[1]:
+                    widget.source = segment[1]
+                    widget.refresh_theme()
+            elif widget.code != segment[2] or widget.language.text() != segment[1]:
+                widget.set_code(segment[1], segment[2])
+
+
 class MessageWidget(QWidget):
     """One transcript item; rebuilt in place when its item changes."""
+    edit_requested = Signal(str)
+    retry_requested = Signal()
 
     def __init__(self, item: dict):
         super().__init__()
@@ -348,6 +588,8 @@ class MessageWidget(QWidget):
         self.layout_.setSpacing(6)
         self.parts: dict[str, QWidget] = {}
         self.item = item
+        self.actions: QWidget | None = None
+        self.retry: QPushButton | None = None
         if item['kind'] == 'user':
             row = QHBoxLayout()
             row.addStretch(1)
@@ -369,15 +611,69 @@ class MessageWidget(QWidget):
             inner.addWidget(self.user_text)
             row.addWidget(bubble, 0)
             self.layout_.addLayout(row)
+            self._add_actions(right=True, edit=True)
         elif item['kind'] == 'end':
             text = {'failed': '失敗' + (f"：{item['error']}" if item.get('error') else ''),
                     'interrupted': '已停止'}.get(item['outcome'], '')
+            row = QHBoxLayout()
+            row.setSpacing(6)
             line = label(text, name='EndLine')
             line.setProperty('failed', item['outcome'] == 'failed')
-            self.layout_.addWidget(line)
+            row.addWidget(line, 1)
+            self.retry = mini_button('重試')
+            self.retry.clicked.connect(self.retry_requested.emit)
+            self.retry.hide()
+            row.addWidget(self.retry, 0, Qt.AlignmentFlag.AlignTop)
+            self.layout_.addLayout(row)
             self.setVisible(bool(text))   # a normal finish needs no line, nor its spacing
         else:
+            self._add_actions(right=False, edit=False)
             self.update_item(item)
+
+    def _add_actions(self, right: bool, edit: bool) -> None:
+        """Copy (and edit) under a message, shown while the pointer is over it; the space stays reserved."""
+        self.actions = QWidget()
+        row = QHBoxLayout(self.actions)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        if right:
+            row.addStretch(1)
+        copy = mini_button('複製')
+        copy.clicked.connect(lambda: copy_to_clipboard(self.plain_text(), copy))
+        row.addWidget(copy)
+        if edit:
+            change = mini_button('編輯')
+            change.clicked.connect(lambda: self.edit_requested.emit(self.item.get('text', '')))
+            row.addWidget(change)
+        if not right:
+            row.addStretch(1)
+        policy = self.actions.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.actions.setSizePolicy(policy)
+        self.actions.hide()
+        self.layout_.addWidget(self.actions)
+
+    def plain_text(self) -> str:
+        if self.item['kind'] == 'user':
+            return self.item.get('text', '')
+        return '\n\n'.join(p['text'] for p in self.item.get('parts', []) if p['type'] == 'text' and p['text'])
+
+    def enterEvent(self, event):  # noqa: N802
+        if self.actions is not None:
+            self.actions.show()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802
+        if self.actions is not None:
+            self.actions.hide()
+        super().leaveEvent(event)
+
+    def _insert(self, widget: QWidget) -> None:
+        index = self.layout_.indexOf(self.actions) if self.actions is not None else -1
+        if index < 0:
+            self.layout_.addWidget(widget)
+        else:
+            self.layout_.insertWidget(index, widget)
 
     def update_item(self, item: dict) -> None:
         self.item = item
@@ -385,24 +681,23 @@ class MessageWidget(QWidget):
             widget = self.parts.get(part['key'])
             if part['type'] == 'text':
                 if widget is None:
-                    widget = QuestionText(part['text'])
+                    widget = RichText(part['text'])
                     self.parts[part['key']] = widget
-                    self.layout_.addWidget(widget)
-                elif widget.source != part['text']:
-                    widget.source = part['text']
-                    widget.refresh_theme()
+                    self._insert(widget)
+                else:
+                    widget.set_text(part['text'])
             else:
                 if widget is None:
                     widget = ToolRow(part)
                     self.parts[part['key']] = widget
-                    self.layout_.addWidget(widget)
+                    self._insert(widget)
                 else:
                     widget.update_part(part)
         if item.get('error') and 'error' not in self.parts:
             err = label('失敗：' + item['error'], name='EndLine')
             err.setProperty('failed', True)
             self.parts['error'] = err
-            self.layout_.addWidget(err)
+            self._insert(err)
 
 
 # --------------------------------------------------------------------------- conversation page
@@ -531,8 +826,7 @@ class ConversationView(QWidget):
         added = self.transcript.prepend(messages)
         index = self.items.indexOf(self.more) + 1
         for offset, item in enumerate(added):
-            widget = MessageWidget(item)
-            self.widgets[item['id']] = widget
+            widget = self._widget(item)
             self.items.insertWidget(index + offset, widget)
         self.older = older
         self.loading = False
@@ -548,6 +842,7 @@ class ConversationView(QWidget):
         else:
             # Keep the reader's place when older messages appear above.
             QTimer.singleShot(0, lambda: bar.setValue(bar.maximum() - from_bottom))
+        self._sync_retry()
 
     def live_event(self, key: str, event: dict) -> None:
         if key != self.key:
@@ -559,13 +854,47 @@ class ConversationView(QWidget):
         if item is None:
             return
         if item['id'] not in self.widgets:
-            widget = MessageWidget(item)
-            self.widgets[item['id']] = widget
+            widget = self._widget(item)
             self.items.insertWidget(self.items.indexOf(self.status), widget)
+            self._sync_retry()
         else:
             self._pending_items.add(item['id'])
             if not self._flush.isActive():
                 self._flush.start()
+
+    def _widget(self, item: dict) -> MessageWidget:
+        widget = MessageWidget(item)
+        widget.edit_requested.connect(self.edit_text)
+        widget.retry_requested.connect(self.retry)
+        self.widgets[item['id']] = widget
+        return widget
+
+    def _sync_retry(self) -> None:
+        """Only the newest ending, when it failed or was stopped, offers to run the last message again."""
+        row = self.window_.store.dispatch.get(self.key) if self.key else None
+        last = self.transcript.items[-1]['id'] if self.transcript.items else ''
+        idle = row is not None and row['state'] != 'running'
+        for item_id, widget in self.widgets.items():
+            if widget.retry is not None:
+                widget.retry.setVisible(idle and item_id == last and self._last_user_text() != '')
+
+    def _last_user_text(self) -> str:
+        return next((i['text'] for i in reversed(self.transcript.items) if i['kind'] == 'user'), '')
+
+    def retry(self) -> None:
+        text = self._last_user_text()
+        if text and self.key:
+            self.window_.dispatcher.send(self.key, text)
+            self._stick = True
+
+    def edit_text(self, text: str) -> None:
+        """Put an earlier message back in the box to change and send it again."""
+        box = self.composer.text
+        box.setPlainText(text)
+        box.setFocus()
+        cursor = box.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        box.setTextCursor(cursor)
 
     def _flush_items(self) -> None:
         for item_id in self._pending_items:
@@ -595,6 +924,7 @@ class ConversationView(QWidget):
             show = running or row['state'] in ('unknown',) or bool(offline and row['state'] != 'done')
             self.status.setText(text if show else '')
             self.status.setVisible(show)
+        self._sync_retry()
         ids = (tuple(row.get('permissions', {})), tuple(row.get('forms', {})))
         if ids != self.request_ids:
             self._rebuild_requests(row, ids)
@@ -974,6 +1304,52 @@ class ProjectDialog(QDialog):
                 self.name.setText(os.path.basename(os.path.normpath(chosen)))
 
 
+class RenameDialog(QDialog):
+    def __init__(self, parent, title: str):
+        super().__init__(parent)
+        self.setWindowTitle('改名')
+        layout = QVBoxLayout(self)
+        self.name = QLineEdit(title)
+        self.name.selectAll()
+        layout.addWidget(self.name)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = button('取消', flat=True)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = button('儲存', primary=True)
+        save.setDefault(True)
+        save.clicked.connect(self.accept)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+        self.resize(420, 0)
+
+
+class DeleteDialog(QDialog):
+    """Removing from AgentDock is the default; deleting the client's own history is a separate choice."""
+
+    def __init__(self, parent, title: str, source: str):
+        super().__init__(parent)
+        self.setWindowTitle('刪除對話')
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        text = label(f'刪除「{title}」？')
+        layout.addWidget(text)
+        self.remote = QCheckBox(f'同時刪除 {source} 裡的紀錄')
+        layout.addWidget(self.remote)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = button('取消', flat=True)
+        cancel.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        delete = button('刪除', danger=True)
+        delete.clicked.connect(self.accept)
+        buttons.addWidget(delete)
+        layout.addLayout(buttons)
+        self.resize(420, 0)
+
+
 # --------------------------------------------------------------------------- window
 class ChatWindow(QWidget):
     closed = Signal()
@@ -1011,6 +1387,7 @@ class ChatWindow(QWidget):
         self.bridge.history_failed.connect(self.conversation.history_failed)
         self.bridge.live.connect(self.conversation.live_event)
         self.bridge.started.connect(self.open_conversation)
+        self.bridge.deleted.connect(self._deleted)
         dispatcher.listeners.append(self.bridge.live.emit)
         self._refresh = QTimer(self, singleShot=True, interval=120)
         self._refresh.timeout.connect(self.refresh)
@@ -1020,7 +1397,14 @@ class ChatWindow(QWidget):
             self.setGeometry(*geometry)
         else:
             self.resize(1180, 780)
+        self._restored = False
         self.show_new()
+        for keys, action in (('Ctrl+N', self.new_like_current), ('Ctrl+K', self.focus_search),
+                             ('Escape', self.escape), ('Alt+Up', lambda: self.step_conversation(-1)),
+                             ('Alt+Down', lambda: self.step_conversation(1))):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(action)
 
     # -- navigation --------------------------------------------------------------
     def add_page(self, name: str, widget: QWidget) -> None:
@@ -1034,10 +1418,14 @@ class ChatWindow(QWidget):
             self.rail.set_current('chat')
             self.page_changed.emit('chat')
 
-    def show_new(self, project: str | None = None) -> None:
+    def show_new(self, project: str | None = None, agent: str | None = None, folder: str | None = None) -> None:
         self._chat_mode()
         self.current_key = ''
+        if folder:
+            self.new_view.folder.setText(folder)
         self.new_view.prepare(project)
+        if agent:
+            self.new_view.pick_agent(agent)
         self.pages.setCurrentWidget(self.new_view)
         self.sidebar.refresh()
 
@@ -1046,6 +1434,7 @@ class ChatWindow(QWidget):
             return
         self._chat_mode()
         self.current_key = key
+        self.ui_state['last_conversation'] = key
         self.pages.setCurrentWidget(self.conversation)
         self.conversation.open(key)
         self.sidebar.refresh()
@@ -1092,6 +1481,91 @@ class ChatWindow(QWidget):
         self.store.dispatch.set_project(key, project)
         self.refresh()
 
+    def rename_conversation(self, key: str) -> None:
+        row = self.store.dispatch.get(key)
+        if row is None:
+            return
+        dialog = RenameDialog(self, row['title'])
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.name.text().strip():
+            self.store.dispatch.rename(key, dialog.name.text())
+            self.refresh()
+
+    def delete_conversation(self, key: str) -> None:
+        row = self.store.dispatch.get(key)
+        if row is None:
+            return
+        if row['state'] == 'running':
+            self.notify('這個對話還在執行，請先停止。')
+            return
+        dialog = DeleteDialog(self, row['title'], row['source'])
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.remote.isChecked():
+            # Removed from the list only after the client has deleted it.
+            self.dispatcher.delete(key, True, done=lambda: self.bridge.deleted.emit(key))
+        else:
+            self._deleted(key)
+
+    def _deleted(self, key: str) -> None:
+        row = self.store.dispatch.get(key)
+        if row is None:
+            return
+        self.store.remove_conversation(row['owner'], work_id(row))
+        if self.ui_state.get('last_conversation') == key:
+            self.ui_state.pop('last_conversation', None)
+        if self.current_key == key:
+            self.conversation.key = ''
+            self.show_new()
+        self.refresh()
+
+    def resume_in_terminal(self, key: str) -> None:
+        """Continue the session in the client's own terminal UI. The one place a window is wanted."""
+        row = self.store.dispatch.get(key)
+        command = resume_command(row) if row else None
+        if not command:
+            self.notify(f"找不到 {row['source'] if row else ''} 的執行檔。")
+            return
+        folder = row.get('directory') if os.path.isdir(row.get('directory') or '') else None
+        try:
+            subprocess.Popen(command, cwd=folder, creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0))
+        except OSError as e:
+            self.notify(f'無法開啟終端機：{e}')
+
+    # -- keyboard ------------------------------------------------------------------
+    def new_like_current(self) -> None:
+        """Ctrl+N: a new conversation where the open one is (same project or folder, same agent)."""
+        row = self.store.dispatch.get(self.current_key) if self.pages.currentWidget() is self.conversation else None
+        if row is None:
+            self.show_new()
+        else:
+            pid = self.projects.project_of(row)
+            self.show_new(pid, agent=row['client'], folder=None if pid else row.get('directory'))
+        self.new_view.composer.text.setFocus()
+
+    def focus_search(self) -> None:
+        if self.sidebar.isHidden():
+            self.show_page('chat')
+        self.sidebar.search.setFocus()
+        self.sidebar.search.selectAll()
+
+    def escape(self) -> None:
+        if self.sidebar.search.hasFocus() and self.sidebar.search.text():
+            self.sidebar.search.clear()
+            return
+        row = self.store.dispatch.get(self.current_key) if self.pages.currentWidget() is self.conversation else None
+        if row and row['state'] == 'running':
+            self.dispatcher.interrupt(self.current_key)
+
+    def step_conversation(self, step: int) -> None:
+        keys = self.sidebar.keys()
+        if not keys:
+            return
+        if self.current_key in keys:
+            index = max(0, min(len(keys) - 1, keys.index(self.current_key) + step))
+        else:
+            index = 0 if step > 0 else len(keys) - 1
+        self.open_conversation(keys[index])
+
     def target_for(self, kind: str) -> dict:
         # Without a registered profile the owner still matches what the client's hooks would use.
         return next((t for t in self.targets() if t['client'] == kind),
@@ -1127,6 +1601,16 @@ class ChatWindow(QWidget):
         super().resizeEvent(event)
         self.rail.setGeometry(0, 0, self.rail.width(), self.height())
         self.rail.raise_()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        # Back to the conversation that was open last time; only when the window is first shown, so a
+        # start in the tray never loads anything.
+        if not self._restored:
+            self._restored = True
+            last = self.ui_state.get('last_conversation')
+            if last and self.pages.currentWidget() is self.new_view and self.store.dispatch.get(last):
+                self.open_conversation(last)
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)

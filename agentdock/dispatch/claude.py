@@ -162,6 +162,7 @@ class Session:
         self.owner, self.sid = owner, sid
         self.pending: dict[str, dict] = {}       # control request id -> can_use_tool request
         self.busy = False
+        self.queued = 0                          # messages sent and not finished; Claude Code runs them in turn
         self.interrupting = False
         self._blocks: dict[int, dict] = {}
         self._mid = ''
@@ -192,15 +193,18 @@ class Session:
     def prompt(self, text: str) -> None:
         self._cancel_timer()
         message_id = str(uuid.uuid4())
-        self.busy, self.interrupting = True, False
+        self.queued += 1
         self.owner.event(self.sid, 'session.inbox.enqueued', inboxID=message_id,
                          item={'type': 'user', 'payload': {'text': text}})
-        self.owner.event(self.sid, 'session.execution.started')
+        if not self.busy:
+            self.busy, self.interrupting = True, False
+            self.owner.event(self.sid, 'session.execution.started')
         self.process.send({'type': 'user', 'message': {'role': 'user', 'content': text},
                            'parent_tool_use_id': None, 'session_id': self.sid, 'uuid': message_id})
 
     def interrupt(self) -> None:
         self.interrupting = True
+        self.queued = min(self.queued, 1)   # Claude Code drops queued messages on interrupt
         self._control({'subtype': 'interrupt'})
 
     def close(self) -> None:
@@ -337,7 +341,12 @@ class Session:
             text = str(message.get('result') or '') if message.get('is_error') else ''
             self.owner.event(self.sid, 'session.execution.failed', end,
                              error={'message': text or '；'.join(errors) or 'Claude Code 執行失敗'})
-        self.busy = self.interrupting = False
+        self.queued = max(0, self.queued - 1)
+        self.interrupting = False
+        if self.queued:
+            self.owner.event(self.sid, 'session.execution.started')   # the next queued message runs now
+            return
+        self.busy = False
         self._timer = threading.Timer(IDLE_SECONDS, lambda: self.owner.retire(self))
         self._timer.daemon = True
         self._timer.start()
@@ -379,7 +388,7 @@ class Session:
         self.owner.forget(self)
         if self.busy:
             self._clear_pending()
-            self.busy = False
+            self.busy, self.queued = False, 0
             if self.interrupting:
                 self.owner.event(self.sid, 'session.execution.interrupted', f'end:exit:{uuid.uuid4().hex}')
             else:
@@ -496,6 +505,26 @@ class ClaudeClient(Adapter):
 
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         return page(read_history(transcript_file(row.get('directory', ''), row['session_id'])), cursor)
+
+    def delete(self, row: dict) -> None:
+        """Claude Code keeps a session as its transcript (plus a folder for subagents and tool output)."""
+        sid = row['session_id']
+        session = self._live(sid)
+        if session is not None:
+            if session.busy:
+                raise ClientError('這個對話還在執行。')
+            self.forget(session)
+            session.close()
+        path = transcript_file(row.get('directory', ''), sid)
+        if path is None:
+            return
+        try:
+            path.unlink()
+            extra = path.with_suffix('')
+            if extra.is_dir():
+                shutil.rmtree(extra, ignore_errors=True)
+        except OSError as e:
+            raise ClientError(f'無法刪除 Claude Code 的紀錄：{e}') from e
 
     def close(self) -> None:
         with self._lock:
