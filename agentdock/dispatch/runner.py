@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Callable
 
+from agentdock.dispatch.adapter import Adapter, ClientError
 from agentdock.dispatch.opencode import CLIENT, OpenCodeError, OpenCodeService, message_text
 from agentdock.dispatch.store import FINAL, DispatchStore, key_for
 
@@ -23,9 +24,18 @@ def title_for(text: str) -> str:
     return line[:60] + ('…' if len(line) > 60 else '')
 
 
+def default_adapters() -> list[Adapter]:
+    from agentdock.dispatch.claude import ClaudeClient
+    from agentdock.dispatch.codex import CodexClient
+    return [ClaudeClient(), CodexClient()]
+
+
 class Dispatcher:
+    """OpenCode through its shared service; Claude Code and Codex through adapters (child processes)."""
+
     def __init__(self, store: DispatchStore, notify: Callable[[str], None] = lambda _m: None,
-                 connect: Callable[[bool], OpenCodeService] = OpenCodeService.connect):
+                 connect: Callable[[bool], OpenCodeService] = OpenCodeService.connect,
+                 adapters: list[Adapter] | None = None):
         self.store, self.notify, self._connect = store, notify, connect
         self._service: OpenCodeService | None = None
         self._lock = threading.Lock()
@@ -33,24 +43,52 @@ class Dispatcher:
         self._closed = threading.Event()
         self._ready = threading.Event()   # subscribed and caught up
         self._holds = 0                   # sends in progress keep the listener alive
-        self.clients = (CLIENT,)
+        self.adapters: dict[str, Adapter] = {}
+        for adapter in adapters if adapters is not None else default_adapters():
+            adapter.emit = lambda sid, event, client=adapter.client: self.handle(event, client)
+            self.adapters[adapter.client] = adapter
+        self.clients = (CLIENT, *self.adapters)
         self.listeners: list[Callable[[str, dict], None]] = []   # live events of tracked sessions
 
     # -- public, called from the UI thread -----------------------------------
     def resume(self) -> None:
-        """At start-up: ask the client about cards that were not finished, without starting it."""
-        if any(r['state'] not in FINAL or r.get('permissions') or r.get('forms') for r in self.store.rows.values()):
+        """At start-up: ask OpenCode about cards that were not finished, without starting it.
+
+        Claude Code and Codex ran as children of the previous AgentDock, so their unfinished turns
+        ended with it.
+        """
+        for key, row in list(self.store.rows.items()):
+            if row.get('client') in self.adapters and (row['state'] not in FINAL or row.get('permissions')
+                                                       or row.get('forms')):
+                self.store.update(key, state='interrupted', permissions={}, forms={},
+                                  error='AgentDock 結束時中斷。' if row['state'] not in FINAL else row.get('error', ''))
+        if self._needs_watch():
             self._ensure_listener()
 
     def start_task(self, directory: str, text: str, owner: str, project: str | None = None,
-                   started: Callable[[str], None] | None = None) -> None:
-        self._work(lambda: self._start(directory, text, owner, project, started), '無法送出任務')
+                   started: Callable[[str], None] | None = None, client: str = CLIENT) -> None:
+        if client in self.adapters:
+            self._work(lambda: self._start_adapter(self.adapters[client], directory, text, owner, project, started),
+                       '無法送出任務')
+        else:
+            self._work(lambda: self._start(directory, text, owner, project, started), '無法送出任務')
 
     def history(self, key: str, cursor: str | None, done: Callable[[list[dict], str | None], None],
                 failed: Callable[[str], None] | None = None) -> None:
         """Load a page of stored messages (oldest first in the callback) on a worker thread."""
         def run():
             row = self._row(key)
+            adapter = self._adapter(row)
+            if adapter is not None:
+                try:
+                    messages, older = adapter.history(row, cursor)
+                except ClientError as e:
+                    if failed:
+                        failed(str(e))
+                        return
+                    raise
+                done(messages, older)
+                return
             try:
                 messages, older = self._service_for(start=True).message_page(row['session_id'], 60, cursor)
             except OpenCodeError as e:
@@ -65,6 +103,15 @@ class Dispatcher:
     def send(self, key: str, text: str) -> None:
         def run():
             row = self._row(key)
+            adapter = self._adapter(row)
+            if adapter is not None:
+                self.store.update(key, state='running', prompt=text, error='')
+                try:
+                    adapter.prompt(row, text)
+                except ClientError as e:
+                    self.store.update(key, state='failed', error=str(e))
+                    raise
+                return
             service = self._service_for(start=True)
             with self._listening():
                 self.store.update(key, state='running', prompt=text, error='')
@@ -76,26 +123,51 @@ class Dispatcher:
         self._work(run, '無法送出訊息', key)
 
     def interrupt(self, key: str) -> None:
-        self._work(lambda: self._service_for(True).interrupt(self._row(key)['session_id']), '無法停止', key)
+        def run():
+            row = self._row(key)
+            adapter = self._adapter(row)
+            if adapter is not None:
+                adapter.interrupt(row)
+            else:
+                self._service_for(True).interrupt(row['session_id'])
+        self._work(run, '無法停止', key)
 
     def reply_permission(self, key: str, request_id: str, decision: str) -> None:
         def run():
             row = self._row(key)
-            self._service_for(True).reply_permission(row['session_id'], request_id, decision)
-            permissions = {k: v for k, v in row.get('permissions', {}).items() if k != request_id}
-            self.store.update(key, permissions=permissions)
+            adapter = self._adapter(row)
+            try:
+                if adapter is not None:
+                    adapter.reply_permission(row, request_id, decision)
+                else:
+                    self._service_for(True).reply_permission(row['session_id'], request_id, decision)
+            except ClientError:
+                self._drop_request(key, 'permissions', request_id)   # it no longer waits; do not keep asking
+                raise
+            self._drop_request(key, 'permissions', request_id)
         self._work(run, '無法回覆授權', key)
 
     def reply_form(self, key: str, form_id: str, answer: dict | None) -> None:
         def run():
             row = self._row(key)
-            service = self._service_for(True)
-            if answer is None:
-                service.cancel_form(row['session_id'], form_id)
-            else:
-                service.reply_form(row['session_id'], form_id, answer)
-            self.store.update(key, forms={k: v for k, v in row.get('forms', {}).items() if k != form_id})
+            adapter = self._adapter(row)
+            try:
+                if adapter is not None:
+                    adapter.reply_form(row, form_id, answer)
+                elif answer is None:
+                    self._service_for(True).cancel_form(row['session_id'], form_id)
+                else:
+                    self._service_for(True).reply_form(row['session_id'], form_id, answer)
+            except ClientError:
+                self._drop_request(key, 'forms', form_id)
+                raise
+            self._drop_request(key, 'forms', form_id)
         self._work(run, '無法回覆問題', key)
+
+    def _drop_request(self, key: str, field: str, request_id: str) -> None:
+        row = self.store.get(key)
+        if row is not None:
+            self.store.update(key, **{field: {k: v for k, v in row.get(field, {}).items() if k != request_id}})
 
     def adopt(self, client: str, session_id: str, owner: str, title: str) -> None:
         """Take over a session that was started in the client, so the Inbox can continue it."""
@@ -111,13 +183,18 @@ class Dispatcher:
 
     def close(self) -> None:
         self._closed.set()
+        for adapter in self.adapters.values():
+            try:
+                adapter.close()
+            except Exception:
+                logging.exception('dispatch close')
 
     # -- internals ------------------------------------------------------------
     def _work(self, job: Callable[[], None], failure: str, key: str | None = None) -> None:
         def run():
             try:
                 job()
-            except (OpenCodeError, KeyError, ValueError) as e:
+            except (OpenCodeError, ClientError, KeyError, ValueError) as e:
                 self.notify(f'{failure}：{e}')
             except Exception as e:  # never let a worker kill the app
                 logging.exception('dispatch')
@@ -129,6 +206,25 @@ class Dispatcher:
         if row is None:
             raise KeyError('這張卡片已移除。')
         return row
+
+    def _adapter(self, row: dict) -> Adapter | None:
+        return self.adapters.get(row.get('client', CLIENT))
+
+    def _start_adapter(self, adapter: Adapter, directory: str, text: str, owner: str, project: str | None,
+                       started: Callable[[str], None] | None) -> None:
+        if not text.strip():
+            raise ValueError('內容是空的。')
+        session_id = adapter.new_session(directory)
+        key = key_for(adapter.client, session_id)
+        self.store.track(adapter.client, session_id, owner=owner, title=title_for(text), directory=directory,
+                         prompt=text, project=project)
+        if started:
+            started(key)
+        try:
+            adapter.prompt(self._row(key), text)
+        except ClientError as e:
+            self.store.update(key, state='failed', error=str(e))
+            raise
 
     def _service_for(self, start: bool) -> OpenCodeService:
         with self._lock:
@@ -268,13 +364,13 @@ class Dispatcher:
             changes['reply'], changes['reply_message'] = message_text(reply), reply['id']
         self.store.update(key, **changes)
 
-    def handle(self, event: dict) -> None:
+    def handle(self, event: dict, client: str = CLIENT) -> None:
         kind = event.get('type', '')
         data = event.get('data') or {}
         sid = data.get('sessionID') or (data.get('form') or {}).get('sessionID')
         if not sid:
             return
-        key = key_for(CLIENT, sid)
+        key = key_for(client, sid)
         row = self.store.get(key)
         if row is None:
             return

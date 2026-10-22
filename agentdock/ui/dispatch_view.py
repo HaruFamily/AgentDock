@@ -141,7 +141,8 @@ class Composer(QWidget):
             self.error.setText(problem)
             self.error.show()
             return
-        self.inbox.dispatcher.start_task(os.path.normpath(folder), text, target['owner'])
+        self.inbox.dispatcher.start_task(os.path.normpath(folder), text, target['owner'],
+                                         client=target.get('client', 'opencode'))
         self.text.clear()
         self.error.hide()
         self.sent.emit()

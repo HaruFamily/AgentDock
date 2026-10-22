@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogBut
                                QSizePolicy, QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from agentdock.dispatch.projects import UNSORTED
+from agentdock.dispatch.store import owner_for
 from agentdock.dispatch.transcript import Transcript, tool_summary
 from agentdock.ui import theme
 from agentdock.ui.dispatch_view import FormBox, status_text, text_box
@@ -588,8 +589,10 @@ class ConversationView(QWidget):
         running = row['state'] == 'running' and not row.get('permissions') and not row.get('forms')
         self.composer.set_running(row['state'] == 'running')
         if not self.loading:
-            text = status_text({**row, 'offline': self.window_.store.dispatch.offline})
-            show = running or row['state'] in ('unknown',) or bool(self.window_.store.dispatch.offline and row['state'] != 'done')
+            # Only OpenCode goes through a shared service that can be offline.
+            offline = self.window_.store.dispatch.offline if row['client'] == 'opencode' else ''
+            text = status_text({**row, 'offline': offline})
+            show = running or row['state'] in ('unknown',) or bool(offline and row['state'] != 'done')
             self.status.setText(text if show else '')
             self.status.setVisible(show)
         ids = (tuple(row.get('permissions', {})), tuple(row.get('forms', {})))
@@ -757,7 +760,7 @@ class NewConversationView(QWidget):
         row.addStretch(1)
         outer.addLayout(row)
         outer.addStretch(3)
-        self.agent = 'opencode'
+        self.agent = self.window_.ui_state.get('last_agent') or 'opencode'
 
     def prepare(self, project: str | None = None) -> None:
         self.project.blockSignals(True)
@@ -823,7 +826,10 @@ class NewConversationView(QWidget):
         target = self.window_.target_for(self.agent)
         self.window_.dispatcher.start_task(os.path.normpath(folder), text, target['owner'],
                                            project=pid if project else None,
-                                           started=self.window_.bridge.started.emit)
+                                           started=self.window_.bridge.started.emit, client=self.agent)
+        if not project and self.window_.ui_state.get('last_agent') != self.agent:
+            self.window_.ui_state['last_agent'] = self.agent   # the next unsorted conversation starts with it
+            self.window_.save_state()
         self.composer.clear()
 
 
@@ -1087,7 +1093,9 @@ class ChatWindow(QWidget):
         self.refresh()
 
     def target_for(self, kind: str) -> dict:
-        return next((t for t in self.targets() if t['client'] == kind), self.targets()[0])
+        # Without a registered profile the owner still matches what the client's hooks would use.
+        return next((t for t in self.targets() if t['client'] == kind),
+                    {'label': dict(AGENTS).get(kind, kind), 'client': kind, 'owner': owner_for(None, kind)})
 
     # -- updates -----------------------------------------------------------------
     def schedule_refresh(self) -> None:

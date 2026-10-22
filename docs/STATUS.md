@@ -1,5 +1,7 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-22：Claude Code 與 Codex 接上收發，對話視窗三家都能用。Claude Code 直接講 SDK 的 stream-json 協定（不另裝 SDK），每個使用中的對話一個子行程、閒置 10 分鐘關閉、下次以 --resume 接續，紀錄讀 ~/.claude/projects 的 jsonl；Codex 用一個 codex app-server（JSON-RPC），thread/start／resume、turn/start／interrupt，紀錄用 thread/read。授權（允許／一律允許／拒絕）、問題（AskUserQuestion／request_user_input）、停止、失敗原因與子行程當掉都顯示在對話裡；權限規則沿用各工具自己的設定。關掉 AgentDock 時這兩家的進行中回合會中斷（OpenCode 不受影響）。完整 247 項測試通過，另以真實 Claude Code 2.1.288、Codex 0.163.0 搭配假模型實測；尚待使用者以真實帳號驗收。詳見 [DISPATCH.md](DISPATCH.md)。
+
 2026-10-22：改為系統匣 App，浮動卡片退場、Inbox 停用。啟動後常駐系統匣（AgentDock.exe 直接開啟會顯示對話視窗；開機自動啟動只在系統匣），關閉視窗收回系統匣。設定（Agent／MCP／擴充）與工具（額度、額度浮動視窗開關）移入對話視窗。系統匣角標與「待授權／待回答」Windows 通知（可關）。broker 對 ask_user 回停用錯誤、丟棄 report 與活動事件；設定「全部更新」改為移除 Inbox MCP 與 inbox-activity 擴充。舊浮動卡片以 `"shell": "card"` 保留一版。完整 217 項測試通過。
 
 2026-10-22：新增對話視窗（第一版）。像 Claude Desktop 的獨立視窗：可展開的窄邊欄（聊天、工具、設定置底）、依專案分組的對話清單（拖曳換專案、搜尋、未分類）、完整對話紀錄與即時出字、工具動作收合、對話內授權與問題、Enter 送出；專案有根目錄與預設 Agent。只接 OpenCode；Git、工具頁、附件、模型選擇留待下一版。完整 212 項測試通過，並以真實 opencode 2.0.32 服務搭配假模型在極簡與私人主題下實測。詳見 [DISPATCH.md](DISPATCH.md)。

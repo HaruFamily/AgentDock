@@ -17,7 +17,9 @@ class Recorder:
         self.calls = []
 
     def __getattr__(self, name):
-        return lambda *args: self.calls.append((name, *args))
+        # Keyword arguments are kept only when they differ from the OpenCode default.
+        return lambda *args, **kw: self.calls.append((name, *args, *(
+            [kw] if {k: v for k, v in kw.items() if not (k == 'client' and v == 'opencode')} else [])))
 
 
 def view(tmp_path, ui_app):

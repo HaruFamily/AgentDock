@@ -9,7 +9,7 @@
 - UI 不加常識性操作教學、重複標籤或括號贅述，例如「選一項（再點一次可取消）」、「可換行」、「在下方輸入」。新增功能及調整介面也須遵守；不要把移除的說明換成 tooltip 或 placeholder 加回來。只保留辨識用途所需的名稱、實際錯誤與會影響決策的必要資訊。
 - `mcp_server.py` 與它匯入的模組不可匯入 PySide6，也不可寫入 stdout（那是 MCP 通道）。
 - 預設是系統匣 App（`ui/tray_app.py`）：沒有浮動卡片，對話視窗為主介面，額度浮動視窗是唯一浮動視窗。Inbox 已停用（broker `inbox=False`、Library `inbox_retired`）；舊浮動卡片與 Inbox 只在 `ui.json` 的 `"shell": "card"` 保留一版，不再加功能。
-- 收發（`agentdock/dispatch/`）只在 App 行程執行：broker 不得新增送出、授權或回答路由；授權、回答、停止只能來自 UI 點擊，不得自動決定；呼叫外部程式一律 CREATE_NO_WINDOW；App 啟動時不主動啟動客戶端服務。見 [docs/DISPATCH.md](docs/DISPATCH.md)。
+- 收發（`agentdock/dispatch/`）只在 App 行程執行：broker 不得新增送出、授權或回答路由；授權、回答、停止只能來自 UI 點擊，不得自動決定；呼叫外部程式一律 CREATE_NO_WINDOW；App 啟動時不主動啟動客戶端服務；Claude Code、Codex 的子行程只在送出時啟動、結束 App 時關閉；各家協定都轉成 OpenCode V2 形狀的事件與訊息，UI 不分家處理。見 [docs/DISPATCH.md](docs/DISPATCH.md)。
 - 設定管理先預覽，確認後備份及套用。測試只用暫存目錄，不寫真實客戶端設定。
 - 外部工具放在 `agentdock/tools/<名稱>.py` 並定義 `TOOL = ToolSpec(...)`；載入失敗不得影響主程式。
 - 修改後執行測試：Windows 上 `Test AgentDock.cmd`（或 `uv run pytest -q`）。只有使用者授權時才推送。
