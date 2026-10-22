@@ -83,6 +83,10 @@ class TaskRow(QFrame):
         head = QHBoxLayout()
         self.title = label('')
         head.addWidget(self.title, 1)
+        self.open_button = icon_button('↗', '在對話視窗開啟')
+        self.open_button.clicked.connect(lambda: self.inbox.open_chat(self.panel.key) if self.panel else None)
+        self.open_button.hide()
+        head.addWidget(self.open_button)
         self.remove_button = remove = icon_button('×', '移除此任務（不取消 Agent 任務）', danger=True)
         remove.clicked.connect(self.remove)
         head.addWidget(remove)
@@ -147,6 +151,7 @@ class TaskRow(QFrame):
         self._adoptable(latest)
         if latest['kind'] == 'dispatch':
             self._sent(latest)
+            self.open_button.setVisible(self.inbox.open_chat is not None)
             if not latest['read']:
                 self.read_id = latest['id']
             if latest.get('also_read'):
@@ -185,10 +190,11 @@ class InboxView(QWidget):
     answered = Signal()
     read_finished = Signal()
 
-    def __init__(self, store, dispatcher=None, targets=None):
+    def __init__(self, store, dispatcher=None, targets=None, open_chat=None):
         super().__init__()
         self.store = store
         self.dispatcher = dispatcher
+        self.open_chat = open_chat
         self.targets = targets or (lambda: [])
         self.rows = {}
         self.groups = {}
@@ -201,9 +207,12 @@ class InboxView(QWidget):
             head.addWidget(label('Inbox · 問答與任務結果'), 1)
         else:
             head.addStretch(1)  # the window already shows the page name
-            self.new_button = icon_button('＋', '新任務')
-            self.new_button.setCheckable(True)
-            self.new_button.toggled.connect(self.show_composer)
+            self.new_button = icon_button('＋', '新對話')
+            if open_chat is None:
+                self.new_button.setCheckable(True)
+                self.new_button.toggled.connect(self.show_composer)
+            else:
+                self.new_button.clicked.connect(lambda: open_chat(''))
             head.addWidget(self.new_button)
             self.composer = Composer(self)
             self.composer.sent.connect(lambda: self.new_button.setChecked(False))

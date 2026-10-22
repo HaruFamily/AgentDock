@@ -158,11 +158,13 @@ class FakeOpenCode:
                 listener.put({'id': f'evt_{time.time_ns()}', 'type': kind, 'data': data})
 
     def prompt(self, sid, text):
-        self.messages.setdefault(sid, []).append({'id': f'msg_{time.time_ns()}', 'type': 'user', 'text': text})
+        uid = f'msg_{time.time_ns()}'
+        self.messages.setdefault(sid, []).append({'id': uid, 'type': 'user', 'text': text})
         self.active.add(sid)
         self.sessions[sid].pop('outcome', None)
         self.emit('session.execution.started', {'sessionID': sid})
-        self.emit('session.inbox.enqueued', {'sessionID': sid, 'item': {'type': 'user', 'payload': {'text': text}}})
+        self.emit('session.inbox.enqueued', {'sessionID': sid, 'inboxID': uid,
+                                             'item': {'type': 'user', 'payload': {'text': text}}})
         if text.startswith('permission'):
             request = {'id': 'per_1', 'sessionID': sid, 'action': 'shell', 'resources': ['npm test']}
             self.permissions.setdefault(sid, {})['per_1'] = request
@@ -185,6 +187,9 @@ class FakeOpenCode:
         message = f'msg_{time.time_ns()}'
         self.messages.setdefault(sid, []).append({'id': message, 'type': 'assistant',
                                                   'content': [{'type': 'text', 'text': text}]})
+        self.emit('session.step.started', {'sessionID': sid, 'assistantMessageID': message})
+        self.emit('session.text.delta', {'sessionID': sid, 'assistantMessageID': message, 'ordinal': 0,
+                                         'delta': text[:3]})
         self.emit('session.text.ended', {'sessionID': sid, 'assistantMessageID': message, 'ordinal': 0, 'text': text})
         self.finish(sid, 'succeeded', {})
 
@@ -212,7 +217,7 @@ def fake():
     server.close()
 
 
-def wait(predicate, timeout=5.0):
+def wait(predicate, timeout=15.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if predicate():

@@ -34,6 +34,7 @@ class Dispatcher:
         self._ready = threading.Event()   # subscribed and caught up
         self._holds = 0                   # sends in progress keep the listener alive
         self.clients = (CLIENT,)
+        self.listeners: list[Callable[[str, dict], None]] = []   # live events of tracked sessions
 
     # -- public, called from the UI thread -----------------------------------
     def resume(self) -> None:
@@ -41,8 +42,25 @@ class Dispatcher:
         if any(r['state'] not in FINAL or r.get('permissions') or r.get('forms') for r in self.store.rows.values()):
             self._ensure_listener()
 
-    def start_task(self, directory: str, text: str, owner: str) -> None:
-        self._work(lambda: self._start(directory, text, owner), '無法送出任務')
+    def start_task(self, directory: str, text: str, owner: str, project: str | None = None,
+                   started: Callable[[str], None] | None = None) -> None:
+        self._work(lambda: self._start(directory, text, owner, project, started), '無法送出任務')
+
+    def history(self, key: str, cursor: str | None, done: Callable[[list[dict], str | None], None],
+                failed: Callable[[str], None] | None = None) -> None:
+        """Load a page of stored messages (oldest first in the callback) on a worker thread."""
+        def run():
+            row = self._row(key)
+            try:
+                messages, older = self._service_for(start=True).message_page(row['session_id'], 60, cursor)
+            except OpenCodeError as e:
+                self._drop_service()
+                if failed:
+                    failed(str(e))
+                    return
+                raise
+            done(list(reversed(messages)), older)
+        self._work(run, '無法讀取對話紀錄', key)
 
     def send(self, key: str, text: str) -> None:
         def run():
@@ -122,7 +140,8 @@ class Dispatcher:
         with self._lock:
             self._service = None
 
-    def _start(self, directory: str, text: str, owner: str) -> None:
+    def _start(self, directory: str, text: str, owner: str, project: str | None = None,
+               started: Callable[[str], None] | None = None) -> None:
         if not text.strip():
             raise ValueError('內容是空的。')
         service = self._service_for(start=True)
@@ -130,7 +149,10 @@ class Dispatcher:
         with self._listening():
             session = service.create_session(directory, title)
             key = key_for(CLIENT, session['id'])
-            self.store.track(CLIENT, session['id'], owner=owner, title=title, directory=directory, prompt=text)
+            self.store.track(CLIENT, session['id'], owner=owner, title=title, directory=directory, prompt=text,
+                             project=project)
+            if started:
+                started(key)
             try:
                 service.prompt(session['id'], text)
             except OpenCodeError as e:
@@ -256,6 +278,11 @@ class Dispatcher:
         row = self.store.get(key)
         if row is None:
             return
+        for listener in list(self.listeners):
+            try:
+                listener(key, event)
+            except Exception:  # a closed view must not stop the event stream
+                logging.exception('dispatch listener')
         if kind == 'session.execution.started':
             self.store.update(key, state='running', error='')
         elif kind == 'session.inbox.enqueued' and (data.get('item') or {}).get('type') == 'user':

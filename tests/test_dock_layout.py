@@ -283,11 +283,19 @@ def test_dock_starts_with_only_icon_and_restores_selected_tab(tmp_path, monkeypa
     assert not dock.ball.isVisible() and dock.icon.isVisible()
     dock.icon.set_mode('card')
     assert dock.ball.isVisible() and dock.ball.page == 'settings'
+    dock.open_chat()
+    assert dock.chat.isVisible() and dock.chat.pages.currentWidget() is dock.chat.new_view
+    dock.chat.rail.picked.emit('settings')
+    assert dock.ball.isVisible() and dock.ball.page == 'settings'
+    dock.open_chat('missing')   # a removed card leaves the window as it is
+    assert dock.chat.isVisible()
     QTimer.singleShot(0, dock.quit)
     app.exec()
     for timer in dock.findChildren(QTimer):
         timer.stop()
     dock.store.flush_reads()
+    assert not dock.chat.isVisible() and 'chat_geometry' in dock.ui
+    dock.chat.deleteLater()
     clean(dock.icon, dock.ball, dock.layout_controller)
     dock.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

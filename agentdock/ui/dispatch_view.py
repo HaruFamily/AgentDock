@@ -9,8 +9,8 @@ import weakref
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QHBoxLayout, QSizePolicy, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QHBoxLayout, QPlainTextEdit, QSizePolicy,
+                               QVBoxLayout, QWidget)
 
 from agentdock.ui.qa_view import AutoGrowText, FullRowCheckBox, FullRowRadioButton, button, label
 from agentdock.ui.question_text import QuestionText
@@ -19,11 +19,34 @@ from agentdock.ui.widgets import ElidedLabel, icon_button
 STATUS = {'running': '進行中', 'unknown': '狀態未知', 'done': '已完成', 'failed': '失敗', 'interrupted': '已停止'}
 
 
-def text_box(max_lines: int) -> AutoGrowText:
-    # A fixed-height box must not make its card soak up the list's spare space.
-    box = AutoGrowText(max_lines=max_lines)
-    box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    return box
+class ChatInput(AutoGrowText):
+    """Pasted files become their paths (the Agent reads them); Enter can send, Shift+Enter breaks a line."""
+    submitted = Signal()
+
+    def __init__(self, max_lines: int, enter_sends: bool = False):
+        super().__init__(max_lines=max_lines)
+        self.enter_sends = enter_sends
+        # A fixed-height box must not make its card soak up the list's spare space.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def insertFromMimeData(self, source) -> None:  # noqa: N802
+        if source.hasUrls() and all(u.isLocalFile() for u in source.urls()):
+            self.insertPlainText(' '.join(f'"{os.path.normpath(u.toLocalFile())}"' for u in source.urls()))
+            return
+        if source.hasImage():
+            return  # attachments are not supported yet
+        QPlainTextEdit.insertFromMimeData(self, source)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        if self.enter_sends and enter and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.submitted.emit()
+            return
+        super().keyPressEvent(event)
+
+
+def text_box(max_lines: int, enter_sends: bool = False) -> ChatInput:
+    return ChatInput(max_lines, enter_sends)
 
 
 def submit_shortcut(widget: QWidget, action) -> None:

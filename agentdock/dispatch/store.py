@@ -60,7 +60,7 @@ class DispatchStore:
 
     # -- writes ---------------------------------------------------------------
     def track(self, client: str, session_id: str, *, owner: str, title: str, directory: str = '',
-              prompt: str = '', state: str = 'running') -> dict:
+              prompt: str = '', state: str = 'running', project: str | None = None) -> dict:
         key = key_for(client, session_id)
         with self.lock:
             old = self.rows.get(key, {})
@@ -71,6 +71,8 @@ class DispatchStore:
                    'reply': old.get('reply', ''), 'reply_message': old.get('reply_message', ''), 'doing': '',
                    'error': '', 'permissions': old.get('permissions', {}), 'forms': old.get('forms', {}),
                    'read': True, 'id': str(uuid.uuid4())}
+            if project is not None or 'project' in old:
+                row['project'] = project if project is not None else old['project']
             self.rows = {**self.rows, key: row}
             if directory:
                 self.recent = [directory, *[d for d in self.recent if d.lower() != directory.lower()]][:MAX_RECENT]
@@ -105,6 +107,16 @@ class DispatchStore:
             self._save()
         self.emit('dispatch-attention' if asked or questioned else 'change', copy.deepcopy(row))
         return copy.deepcopy(row)
+
+    def set_project(self, key: str, project: str) -> None:
+        """An explicit move; '' means unsorted. Only organises the list, the session's folder stays."""
+        with self.lock:
+            row = self.rows.get(key)
+            if row is None or row.get('project') == project:
+                return
+            self.rows = {**self.rows, key: {**row, 'project': project}}
+            self._save()
+        self.emit('change', None)
 
     def mark_read(self, key: str, row_id: str) -> bool:
         with self.lock:

@@ -75,9 +75,12 @@ class Dock(QObject):
         self.icon.moved.connect(lambda _p: self._save_ui())
         self.icon.quit_requested.connect(self.quit)
         self.icon.theme_requested.connect(self.apply_theme)
+        from agentdock.dispatch.projects import ProjectStore
         from agentdock.dispatch.runner import Dispatcher
         self.dispatcher = Dispatcher(self.store.dispatch, notify=self.bus.notice.emit)
-        self.qa = InboxView(self.store, self.dispatcher, self._dispatch_targets)
+        self.projects = ProjectStore(self.data, emit=self.bus.changed.emit)
+        self.chat = None
+        self.qa = InboxView(self.store, self.dispatcher, self._dispatch_targets, open_chat=self.open_chat)
         self.agents = AgentsView(self.manager, self.library, ui_state=self.ui, save_state=self._save_ui)
         self.ball.set_qa(self.qa)
         self.ball.set_settings(self.agents)
@@ -175,6 +178,8 @@ class Dock(QObject):
             if hasattr(self, 'layout_controller'):
                 self.layout_controller.restyle()
             self.qa.refresh()
+            if getattr(self, 'chat', None) is not None:
+                self.chat.refresh_theme()
             if hasattr(self, 'notifications'):
                 self.notifications.render()
         if save:
@@ -335,6 +340,32 @@ class Dock(QObject):
     def refresh_agents(self) -> None:
         self.agents.refresh()
 
+    def open_chat(self, key: str | None = None) -> None:
+        """The conversation window: created on first use, then only shown and hidden."""
+        if self.chat is None:
+            from agentdock.ui.chat_window import ChatWindow
+            self.chat = ChatWindow(self.store, self.dispatcher, self.projects, self._dispatch_targets,
+                                   notify=self.notify, open_page=self._open_card_page,
+                                   ui_state=self.ui, save_state=self._save_ui)
+            self.bus.changed.connect(self.chat.schedule_refresh)
+            self.bus.new_message.connect(lambda _m: self.chat.schedule_refresh())
+        if key:
+            self.chat.open_conversation(key)
+        elif self.chat.isHidden() or key is not None:
+            self.chat.show_new()
+        self.chat.show()
+        self.chat.showNormal() if self.chat.isMinimized() else None
+        self.chat.raise_()
+        self.chat.activateWindow()
+
+    def _open_card_page(self, name: str) -> None:
+        page = {'tools': 'quota', 'settings': 'settings'}.get(name, 'qa')
+        if hasattr(self, 'layout_controller'):
+            self.layout_controller.select(page, force=True)
+        else:
+            self.summon()
+            self.ball.set_page(page)
+
     def _dispatch_targets(self) -> list[dict]:
         """Agents that can receive a task from AgentDock, with the same owner as their Inbox MCP."""
         from agentdock.dispatch.store import owner_for
@@ -433,6 +464,7 @@ class Dock(QObject):
         self.app.setWindowIcon(icon)
         self.tray = QSystemTrayIcon(icon)
         menu = QMenu()
+        menu.addAction(QAction("對話視窗", menu, triggered=lambda: self.open_chat()))
         menu.addAction(QAction("展開浮動視窗", menu, triggered=self.summon))
         menu.addAction(QAction("找回浮動視窗（Ctrl+Alt+Q）", menu, triggered=self.summon))
         menu.addAction(QAction("切換極簡外觀（Ctrl+Alt+H）", menu, triggered=lambda: self.apply_theme("clean")))
@@ -564,6 +596,9 @@ class Dock(QObject):
             self.layout_controller.animation.stop()
             self.layout_controller.strip.close()
         self.qa._flush()
+        if self.chat is not None:
+            self.chat.remember()
+            self.chat.hide()
         self.dispatcher.close()
         self.store.flush_reads()
         if getattr(self, "hotkey", None):

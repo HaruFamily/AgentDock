@@ -177,8 +177,16 @@ class OpenCodeService:
 
     def messages(self, session_id: str, limit: int = 20) -> list[dict]:
         """Newest first."""
-        query = urllib.parse.urlencode({'limit': limit, 'order': 'desc'})
-        return (self.request('GET', f'/api/session/{_q(session_id)}/message?{query}') or {}).get('data', [])
+        return self.message_page(session_id, limit)[0]
+
+    def message_page(self, session_id: str, limit: int = 50, cursor: str | None = None) -> tuple[list[dict], str | None]:
+        """Newest first, and the cursor for the next (older) page, or None at the start."""
+        # The cursor already carries the order; OpenCode rejects both together.
+        params = {'limit': limit, 'cursor': cursor} if cursor else {'limit': limit, 'order': 'desc'}
+        page = self.request('GET', f'/api/session/{_q(session_id)}/message?{urllib.parse.urlencode(params)}') or {}
+        data = page.get('data', [])
+        older = (page.get('cursor') or {}).get('next') if len(data) >= limit else None
+        return data, older
 
 
 def _q(value: str) -> str:

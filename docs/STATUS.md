@@ -1,5 +1,7 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-22：新增對話視窗（第一版）。像 Claude Desktop 的獨立視窗：可展開的窄邊欄（聊天、工具、設定置底）、依專案分組的對話清單（拖曳換專案、搜尋、未分類）、完整對話紀錄與即時出字、工具動作收合、對話內授權與問題、Enter 送出；專案有根目錄與預設 Agent。只接 OpenCode；Git、工具頁、附件、模型選擇留待下一版。完整 212 項測試通過，並以真實 opencode 2.0.32 服務搭配假模型在極簡與私人主題下實測。詳見 [DISPATCH.md](DISPATCH.md)。
+
 2026-10-22：Inbox 從只收改為收發。「＋」送任務給 OpenCode 2.x（共用背景服務，關掉 AgentDock 任務仍繼續），卡片顯示最新回覆，可批准／拒絕授權、回答 question、接續、停止；原生 OpenCode 卡片可「接手」。重啟後先顯示狀態未知，連上後對帳。broker 未新增路由，批准只來自點擊。完整 201 項測試通過（含 24 項新測試），另以真實 opencode 2.0.32 服務搭配假模型實測往返；尚待使用者以真實模型驗收。Claude Code、Codex 尚未接上。詳見 [DISPATCH.md](DISPATCH.md)。
 
 2026-10-18：新增 Grok CLI Agent，支援原生 config.toml MCP 與 hooks/agentdock.json 擴充管理，包含 Inbox 活動／授權提醒範本。MCP 停用／移除同步處理相容設定回退；匯入 Claude hooks 的 Grok 事件不重複回報。額度卡改為 Claude／Grok，GrokBot 明確共用訂閱作為個人額度主要來源，失敗時回退既有 xAI 來源。完整 178 項測試通過（45.11 秒），包含暫存設定預覽、備份、衝突及合併交易復原；未套用真實 CLI 設定。重啟後可從設定新增 Grok CLI，套用仍需預覽確認；CLI 載入與 hooks 實機驗收待套用。詳見 [GROK_CLI.md](GROK_CLI.md)。

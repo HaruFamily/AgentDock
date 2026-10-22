@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-22：新增對話視窗與專案。系統匣、Inbox「＋」與送出卡片「↗」開啟；窄邊欄滑鼠移上展開；清單依專案分組並可拖曳換專案；從 OpenCode 分頁讀取完整紀錄、即時事件出字（節流重繪）、工具動作收合、對話內授權／question、Enter 送出與停止；新增 `projects.json`、transcript 模型、歷史分頁與事件轉送。修正貼上檔案時的錯誤（改為插入路徑）。新增 11 項測試並擴充 App 測試，完整 212 項通過。
+
 - 2026-10-22：新增收發。Inbox「＋」送任務給 OpenCode 2.x，卡片顯示最新回覆、授權（允許／一律允許／拒絕）、question 表單、接續輸入與停止；原生 OpenCode 卡片可接手。透過 service.json 連共用背景服務，必要時以無視窗方式 `opencode service start`；SSE 先訂閱再對帳，送出前等候訂閱避免漏接；重啟後為狀態未知直到確認。與 Inbox MCP／活動 hook 共用 owner 與 session work_id 合併卡片；通知角標納入授權、問題與結果。新增 24 項測試，完整 201 項通過。
 
 - 2026-10-18：加入 Grok CLI 原生 TOML MCP 與 command hooks 管理、Inbox Grok 事件 adapter，避免 Claude 相容 hooks 重複回報。Grok MCP 停用／移除同步全域停用清單，設定沿用預覽、備份、衝突檢查及失敗復原。額度卡顯示 Claude／Grok；有效的 GrokBot 共用訂閱優先，避免預設 xAI 來源重複顯示。完整 178 項測試通過（45.11 秒），未寫入真實客戶端設定；實機載入待使用者套用後驗收。
