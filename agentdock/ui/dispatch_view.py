@@ -63,6 +63,7 @@ class Composer(QWidget):
         top.addWidget(self.target)
         self.folder = QComboBox()
         self.folder.setEditable(True)
+        self.folder.lineEdit().setPlaceholderText('資料夾')
         self.folder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         top.addWidget(self.folder, 1)
         browse = icon_button('…', '選擇資料夾')
@@ -98,16 +99,19 @@ class Composer(QWidget):
         self.error.hide()
         self.text.setFocus()
 
-    def browse(self) -> None:
+    def browse(self) -> bool:
         start = self.folder.currentText() if os.path.isdir(self.folder.currentText()) else os.path.expanduser('~')
         chosen = QFileDialog.getExistingDirectory(self, '選擇資料夾', start)
         if chosen:
             self.folder.setCurrentText(os.path.normpath(chosen))
+        return bool(chosen)
 
     def send(self) -> None:
         target = self.target.currentData()
-        folder = self.folder.currentText().strip().strip('"')
         text = self.text.toPlainText().strip()
+        if text and not self.folder.currentText().strip() and not self.browse():
+            return  # no folder yet: pick one instead of failing
+        folder = self.folder.currentText().strip().strip('"')
         problem = ('沒有可用的 Agent。' if not target else '找不到這個資料夾。' if not os.path.isdir(folder)
                    else '' if text else '內容是空的。')
         if problem:

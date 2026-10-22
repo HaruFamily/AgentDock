@@ -196,9 +196,11 @@ class InboxView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
-        head.addWidget(label('Inbox'), 1)
         self.composer = None
-        if dispatcher is not None:
+        if dispatcher is None:
+            head.addWidget(label('Inbox · 問答與任務結果'), 1)
+        else:
+            head.addStretch(1)  # the window already shows the page name
             self.new_button = icon_button('＋', '新任務')
             self.new_button.setCheckable(True)
             self.new_button.toggled.connect(self.show_composer)

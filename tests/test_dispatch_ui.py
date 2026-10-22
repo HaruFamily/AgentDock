@@ -158,3 +158,20 @@ def test_targets_use_the_registered_agent_identity(ui_app):
     assert Dock._dispatch_targets(fake) == [{'label': '我的 OpenCode', 'client': 'opencode', 'owner': OWNER}]
     fake.manager = SimpleNamespace(list=lambda: [])
     assert Dock._dispatch_targets(fake)[0]['owner'] == owner_for(None, 'opencode')
+
+
+def test_empty_folder_opens_the_picker_then_sends(tmp_path, ui_app, monkeypatch):
+    from agentdock.ui import dispatch_view
+    store, sender, inbox = view(tmp_path, ui_app)
+    inbox.new_button.setChecked(True)
+    composer = inbox.composer
+    assert composer.folder.currentText() == '' and composer.folder.lineEdit().placeholderText() == '資料夾'
+    picked = []
+    monkeypatch.setattr(dispatch_view.QFileDialog, 'getExistingDirectory',
+                        staticmethod(lambda *a: picked.append(a) or ''))
+    composer.text.setPlainText('測試')
+    composer.send()
+    assert picked and sender.calls == [] and composer.error.isHidden()  # cancelled: nothing sent, no error
+    monkeypatch.setattr(dispatch_view.QFileDialog, 'getExistingDirectory', staticmethod(lambda *a: str(tmp_path)))
+    composer.send()
+    assert sender.calls == [('start_task', str(tmp_path), '測試', OWNER)]
