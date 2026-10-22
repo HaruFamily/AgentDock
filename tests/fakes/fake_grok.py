@@ -47,7 +47,7 @@ def read(queued=True):
 
 def update(sid, body, prompt_id=None, record=True):
     counter[0] += 1
-    meta = {'eventId': f'{sid}-{counter[0]}', **({'promptId': prompt_id} if prompt_id else {})}
+    meta = {'eventId': f'{sid}-{counter[0]}', **({'promptId': prompt_id} if prompt_id else {}), 'totalTokens': 500}
     out({'method': 'session/update', 'params': {'sessionId': sid, 'update': body, '_meta': meta}})
     if record:
         sessions.setdefault(sid, []).append({'update': body, 'meta': meta})
@@ -141,11 +141,28 @@ while True:
         out({'id': mid, 'result': {}})
     elif method == '_x.ai/models/list':
         out({'id': mid, 'result': {'result': {'currentModelId': 'grok-a', 'availableModels': [
-            {'modelId': 'grok-a', 'name': 'Grok A', '_meta': {'reasoningEfforts': [{'value': 'low'}, {'value': 'high'}]}},
+            {'modelId': 'grok-a', 'name': 'Grok A', '_meta': {'reasoningEfforts': [{'value': 'low'}, {'value': 'high'}],
+                                                              'totalContextTokens': 2000}},
             {'modelId': 'grok-b', 'name': 'Grok B'}]}}})
     elif method == 'session/set_config_option':
         log({'config': params})
         out({'id': mid, 'result': {'configOptions': []}})
+    elif method == '_x.ai/session/fork':
+        log({'fork': params})
+        sid = str(uuid.uuid4())
+        kept, prompts = [], -1
+        for entry in sessions.get(params['sourceSessionId'], []):
+            if entry['update'].get('sessionUpdate') == 'user_message_chunk':
+                prompts += 1
+                if prompts > params.get('targetPromptIndex', 10 ** 9):
+                    break
+            kept.append(entry)
+        sessions[sid] = kept
+        save()
+        out({'id': mid, 'result': {'newSessionId': sid, 'sourceSessionId': params['sourceSessionId']}})
+    elif method == 'session/list':
+        out({'id': mid, 'result': {'sessions': [{'sessionId': s, 'cwd': '/w', 'title': f'title {s[:4]}',
+                                                 'updatedAt': '2026-10-01T10:00:00.000Z'} for s in sessions]}})
     elif method == '_x.ai/session/delete':
         sessions.pop(params['sessionId'], None)
         save()

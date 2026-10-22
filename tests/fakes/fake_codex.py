@@ -133,6 +133,9 @@ def run_turn(thread, turn, text):
         agent_message(thread, turn, 'Hello there', items)
     turn_record = {'id': turn, 'items': items, 'status': status, 'error': error}
     threads.setdefault(thread, []).append(turn_record)
+    note('thread/tokenUsage/updated', threadId=thread, turnId=turn, tokenUsage={
+        'last': {'totalTokens': 1200 * len(threads[thread]), 'inputTokens': 1000}, 'total': {'totalTokens': 9999},
+        'modelContextWindow': 10000})
     note('turn/completed', threadId=thread, turn={**turn_record, 'items': []})
 
 
@@ -165,6 +168,18 @@ while True:
              'supportedReasoningEfforts': [{'reasoningEffort': 'low', 'description': ''},
                                            {'reasoningEffort': 'high', 'description': ''}]},
             {'id': 'old', 'model': 'old', 'displayName': 'Old', 'hidden': True, 'supportedReasoningEfforts': []}]}})
+    elif method == 'thread/fork':
+        thread = new_id('thr')
+        threads[thread] = list(threads.get(params['threadId'], []))  # excludeTurns only trims the reply
+        out({'id': mid, 'result': {'thread': {'id': thread}}})
+    elif method == 'thread/revert':
+        turns = threads[params['threadId']]
+        cut = next(i for i, t in enumerate(turns) if t['id'] == params['beforeTurnId'])
+        threads[params['threadId']] = turns[:cut]
+        out({'id': mid, 'result': {}})
+    elif method == 'thread/list':
+        out({'id': mid, 'result': {'data': [{'id': t, 'preview': f'preview {t}', 'name': None, 'cwd': '/w',
+                                             'updatedAt': 1700000000} for t in threads]}})
     elif method == 'thread/delete':
         threads.pop(params['threadId'], None)
         out({'id': mid, 'result': {}})

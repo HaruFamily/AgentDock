@@ -1,5 +1,6 @@
 """Chat window conveniences: list menu actions, delete, rename, keys, copy, retry, queued messages."""
 import json
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -328,7 +329,7 @@ def test_copy_edit_and_retry(window):
     part.set_text('Run:\n```sh\nnpm test --watch\n```')
     assert part.findChild(CodeBlock) is block and block.code == 'npm test --watch'   # updated in place
     assistant_buttons = {b.text(): b for b in assistant.actions.findChildren(QPushButton)}
-    assert set(assistant_buttons) == {'複製'}
+    assert set(assistant_buttons) == {'複製', '分叉'}
 
 
 # --------------------------------------------------------------------------- batch 2
@@ -444,7 +445,7 @@ def test_grok_settings_at_start(clients):
     got = []
     sender.options('grok-cli', None, str(work), got.append)
     wait(lambda: got)
-    assert got[-1]['models'][0] == {'id': 'grok-a', 'label': 'Grok A', 'efforts': ['low', 'high']}
+    assert got[-1]['models'][0] == {'id': 'grok-a', 'label': 'Grok A', 'efforts': ['low', 'high'], 'context': 2000}
     assert got[-1]['mode_fixed'] is True
 
 
@@ -495,3 +496,40 @@ def test_pasted_image_is_saved_and_attached(window, tmp_path):
     assert Path(composer.files[0]).parent == Path(store.dispatch.file).parent / 'attachments' / 'chat'
     composer.remove_file(composer.files[0])
     assert composer.files == [] and composer.chips.isHidden()
+
+
+def test_fork_context_git_and_import_in_the_window(window, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+    from agentdock.ui import chat_window as cw
+    win, make, store, sender, notes, work, projects, state, app = window
+    subprocess.run(['git', '-C', str(work), 'init', '-q', '-b', 'main'], check=True)
+    (work / 'x.txt').write_text('x')
+    key = start(sender, work, 'codex', 'hello')
+    wait(done(store, key), app=app)
+    win.open_conversation(key)
+    view = win.conversation
+    wait(lambda: not view.loading and view.context_chip.isVisibleTo(win), app=app)
+    assert view.context_chip.text() == '上下文 12%'
+    wait(lambda: view.git_chip.isVisibleTo(win), app=app)
+    assert view.git_chip.text() == 'main · 1 個變更'
+    # Fork from the reply: the new conversation opens.
+    reply = next(w for w in view.widgets.values() if w.item['kind'] == 'assistant')
+    buttons = {b.text(): b for b in reply.actions.findChildren(QPushButton)}
+    buttons['分叉'].click()
+    wait(lambda: win.current_key not in ('', key), app=app)
+    assert store.dispatch.get(win.current_key)['title'].endswith('（分叉）')
+    wait(lambda: not view.loading and any(w.item['kind'] == 'user' for w in view.widgets.values()), app=app)
+    # Import lists the agent's sessions; tracked ones cannot be picked again.
+    dialog = cw.ImportDialog(win, None, 'codex')
+    wait(lambda: dialog.list.topLevelItemCount() == 2, app=app)
+    assert {dialog.list.topLevelItem(i).text(2) for i in range(2)} == {'已在 AgentDock'}
+    store.dispatch.remove(key)
+    dialog.load()
+    wait(lambda: any(dialog.list.topLevelItem(i).text(2) != '已在 AgentDock'
+                     for i in range(dialog.list.topLevelItemCount())), app=app)
+    item = next(dialog.list.topLevelItem(i) for i in range(dialog.list.topLevelItemCount())
+                if dialog.list.topLevelItem(i).text(2) != '已在 AgentDock')
+    item.setSelected(True)
+    dialog.adopt()
+    wait(lambda: win.current_key == key and store.dispatch.get(key) is not None, app=app)
+    assert notes == []

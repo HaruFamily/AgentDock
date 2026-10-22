@@ -81,6 +81,14 @@ class Adapter:
     def compact(self, row: dict) -> None:
         raise ClientError(f'{self.name} 不支援壓縮。')
 
+    def fork(self, row: dict, message_id: str) -> str:
+        """A new session holding the conversation up to and including `message_id`; returns its id."""
+        raise ClientError(f'{self.name} 不支援分叉。')
+
+    def sessions(self) -> list[dict]:
+        """Sessions kept by the client, newest first: {'id', 'title', 'directory', 'updated' (epoch seconds)}."""
+        return []
+
     def running(self, sid: str) -> bool:
         return False
 

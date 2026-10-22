@@ -18,6 +18,10 @@
 - 思考過程：模型的推理（Claude Code thinking、Codex reasoning 摘要、Grok thought、OpenCode reasoning）收成「思考過程」一行，點開才看。
 - 檔案修改：編輯類工具點開會顯示上色的差異（Codex、Grok 由 Agent 給，Claude Code、OpenCode 由舊／新文字算出）。
 - 壓縮對話：標題列「⋯」→「壓縮對話」，或直接送出 `/compact`。OpenCode `/compact`、Codex `thread/compact/start`、Claude Code 與 Grok 送 `/compact` 指令。
+- 分叉：回覆上的「分叉」把對話到那一輪為止複製成新對話（標題加「（分叉）」，同資料夾、專案與設定），原對話不變。以一輪為單位，避免停在工具呼叫與結果之間。Claude Code 複製紀錄檔（新 uuid、保留 parentUuid 鏈、`forkedFrom`、custom-title，與 Claude Code 自己的分叉相同）；Codex `thread/fork` 後以 `thread/revert` 拿掉之後的回合；Grok `_x.ai/session/fork` 的 `targetPromptIndex`；OpenCode `POST /api/session/{id}/fork`，`before` 為下一則使用者訊息。執行中的對話不能分叉。
+- 匯入對話：專案標題旁「⇩」、專案右鍵「匯入對話到此專案…」或專案頁「匯入對話」。列出 Agent 自己存的工作階段（Claude Code 掃 `~/.claude/projects/*/*.jsonl`；Codex `thread/list`；Grok `session/list`；OpenCode `GET /api/session`，不含子工作階段），可搜尋；從專案開時預設只列專案資料夾內的。已在 AgentDock 的不能再選。匯入後狀態為完成、直接打開，之後像一般對話接續。
+- 上下文：標題列「上下文 N%」為 Agent 最後回報的上下文用量（80% 以上變紅；滑鼠停留看 token 數）。Claude Code 每輪結束送 `get_context_usage`（與 `/context` 同）；Codex `thread/tokenUsage/updated` 的 `last.totalTokens`／`modelContextWindow`；Grok `session/update` 的 `_meta.totalTokens`，上限取模型清單的 `totalContextTokens`；OpenCode 每輪結束讀最後一則回覆的 tokens（input＋output＋reasoning＋cache），上限取模型的 `limit.context`。不知道上限時只顯示 token 數。
+- Git：對話資料夾是 Git 儲存庫時，標題列顯示「分支 · N 個變更 · ↑↓」，Agent 每輪結束後更新；點下去（或專案頁「Git」）開 Git 視窗：變更分「已暫存」「變更」，點檔案看差異，雙擊或右鍵暫存／取消暫存，右鍵「捨棄變更…」（確認後才做），提交、推送（沒有上游時 `push -u origin <分支>`）、拉取（只快轉）、切換或新增分支。都是一般 `git` 指令（`agentdock/gitops.py`），只在點擊時執行。
 - 搜尋：左側搜尋也比對對話最後一則訊息、回覆、Agent 與資料夾；對話內 Ctrl+F 在已載入的訊息裡找，Enter／↓ 下一個，Esc 關閉。
 - 快捷鍵：Ctrl+N 在目前對話的專案（或資料夾）用同一個 Agent 開新對話；Ctrl+K 搜尋；Esc 停止目前對話（搜尋框有字時先清搜尋）；Alt+↑／↓ 切換上一個／下一個對話。
 - 重開視窗回到上次開著的對話（只在視窗第一次顯示時；開機只在系統匣時什麼都不載入）。
@@ -88,4 +92,5 @@ ChatWindow ──點擊──> Dispatcher(App 行程, 背景執行緒)
 - `tests/test_dispatch_clients.py`：以 `tests/fakes/` 的假 claude、假 codex app-server（照兩家協定）測送出、接續、即時事件與紀錄一致不重複、授權（允許／一律允許／拒絕，等點擊）、檔案修改授權、問題（回答／略過）、停止、失敗原因、子行程當掉後重啟並接續、找不到執行檔、重啟後標中斷且不碰 OpenCode、失效授權移除、紀錄檔解析、Codex 項目轉換、執行檔搜尋，以及對話視窗用 Claude Code／Codex 送出、在對話內按允許。
 - `tests/test_dispatch.py`、`test_dispatch_ui.py`、`test_chat_window.py`：OpenCode 與對話視窗。
 - Grok 另有假 `grok agent stdio`（`tests/fakes/fake_grok.py`），涵蓋上述項目與重開後以 session/load 重播紀錄、文字與工具分段編號。
-- 開發時另以真實 Claude Code 2.1.288、Codex 0.163.0、Grok 1.0.67 搭配本機假模型 API（Anthropic Messages／OpenAI Responses 串流；Grok 用 `[model.*]` 自訂模型指到假伺服器）實測：建立、即時出字、指令授權（含「一律允許」）、問題、停止、重開後接續與讀紀錄。尚未在使用者電腦上以真實模型驗收。
+- `tests/test_batch3.py`：Claude Code 分叉紀錄檔（整輪、新 id、鏈結）、列出紀錄、Grok 提示序號、Codex／Grok 分叉後各自接續、上下文用量、匯入清單與接手、OpenCode 分叉與列出（假服務）、`gitops` 與 Git 視窗提交；`test_chat_features.py` 另測對話視窗的分叉按鈕、上下文與 Git 標籤、匯入視窗。
+- 開發時另以真實 Claude Code 2.1.288、Codex 0.163.0、Grok 1.0.67 搭配本機假模型 API（Anthropic Messages／OpenAI Responses 串流；Grok 用 `[model.*]` 自訂模型指到假伺服器）實測：建立、即時出字、指令授權（含「一律允許」）、問題、停止、重開後接續與讀紀錄；分叉後新對話只含到該輪且可接續、原對話不變、列出工作階段、上下文用量（另以真實 OpenCode serve 測分叉、列出）。尚未在使用者電腦上以真實模型驗收。

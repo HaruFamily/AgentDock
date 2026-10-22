@@ -13,7 +13,7 @@ from typing import Callable
 
 from agentdock.dispatch.adapter import Adapter, ClientError
 from agentdock.dispatch.opencode import CLIENT, OpenCodeError, OpenCodeService, message_text
-from agentdock.dispatch.store import FINAL, DispatchStore, key_for
+from agentdock.dispatch.store import FINAL, SETTINGS, DispatchStore, key_for
 
 OUTCOMES = {'succeeded': 'done', 'failed': 'failed', 'interrupted': 'interrupted'}
 RETRY_SECONDS = (1, 2, 5, 10)
@@ -252,17 +252,88 @@ class Dispatcher:
             done()
         self._work(run, '無法刪除對話', key)
 
-    def adopt(self, client: str, session_id: str, owner: str, title: str) -> None:
-        """Take over a session that was started in the client, so the Inbox can continue it."""
-        if client != CLIENT:
-            self.notify('這個 Agent 還不能從 AgentDock 接手。')
-            return
+    def adopt(self, client: str, session_id: str, owner: str, title: str, directory: str = '',
+              project: str | None = None, done: Callable[[str], None] = lambda _k: None) -> None:
+        """Take over a session that was started in the client, so AgentDock can continue it."""
         def run():
             key = key_for(client, session_id)
-            self.store.track(client, session_id, owner=owner, title=title, state='unknown')
-            self._reconcile(self._service_for(True), key)
-            self._ensure_listener()
+            if client in self.adapters:
+                self.store.track(client, session_id, owner=owner, title=title, directory=directory,
+                                 state='done', project=project)
+            else:
+                self.store.track(client, session_id, owner=owner, title=title, directory=directory,
+                                 state='unknown', project=project)
+                self._reconcile(self._service_for(True), key)
+                self._ensure_listener()
+            done(key)
         self._work(run, '無法接手')
+
+    def sessions(self, client: str, done: Callable[[list[dict]], None]) -> None:
+        """The client's own saved sessions (newest first), marked with whether AgentDock tracks them."""
+        def run():
+            adapter = self.adapters.get(client)
+            found = adapter.sessions() if adapter is not None else self._service_for(True).sessions()
+            unique = {s['id']: s for s in reversed(found) if s.get('id')}   # first listing of an id wins
+            ordered = sorted(unique.values(), key=lambda s: s.get('updated') or 0, reverse=True)
+            done([{**s, 'tracked': self.store.find(client, s['id']) is not None} for s in ordered])
+        self._work(run, '無法列出對話')
+
+    def fork(self, key: str, message_id: str, done: Callable[[str], None] = lambda _k: None) -> None:
+        """A new conversation holding this one up to `message_id`."""
+        def run():
+            row = self._row(key)
+            if row['state'] == 'running':
+                raise ValueError('這個對話還在執行，請等它完成。')
+            adapter = self._adapter(row)
+            title = f"{row.get('title', '')}（分叉）"
+            if adapter is not None:
+                new = adapter.fork(row, message_id)
+            else:
+                service = self._service_for(True)
+                new = service.fork(row['session_id'], self._opencode_next(service, row['session_id'], message_id))
+            client = row.get('client', CLIENT)
+            settings = {name: row[name] for name in SETTINGS if row.get(name)}
+            new_key = key_for(client, new)
+            self.store.track(client, new, owner=row.get('owner', ''), title=title, directory=row.get('directory', ''),
+                             state='done', project=row.get('project'), settings=settings)
+            self.store.rename(new_key, title)
+            done(new_key)
+        self._work(run, '無法分叉', key)
+
+    @staticmethod
+    def _opencode_next(service: OpenCodeService, session_id: str, message_id: str) -> str | None:
+        """OpenCode forks *before* a message: the user message after `message_id`'s turn (None keeps all)."""
+        later = None
+        cursor = None
+        for _ in range(50):
+            page, cursor = service.message_page(session_id, 50, cursor)   # newest first
+            for message in page:
+                if message.get('id') == message_id:
+                    return later
+                if message.get('type') == 'user':
+                    later = message.get('id')
+            if not cursor:
+                break
+        raise ValueError('找不到要分叉的那則訊息。')
+
+    def _opencode_context(self, key: str) -> None:
+        def run():
+            row = self.store.get(key)
+            if row is None:
+                return
+            usage = self._service_for(False).context(row['session_id'])
+            if not usage.get('used'):
+                return
+            models = self.store.options.get(CLIENT, {}).get('models', [])
+            limit = next((m.get('context', 0) for m in models if m.get('id') == usage.get('model')), 0)
+            self.store.update(key, context={'used': usage['used'], 'limit': limit})
+
+        def quietly():
+            try:
+                run()
+            except Exception as e:
+                logging.info('context of %s: %s', key, e)
+        threading.Thread(target=quietly, name='AgentDock context', daemon=True).start()
 
     def close(self) -> None:
         self._closed.set()
@@ -487,8 +558,12 @@ class Dispatcher:
             self.store.update(key, forms={**row.get('forms', {}), data['form']['id']: data['form']})
         elif kind.startswith('form.') and data.get('id'):
             self.store.update(key, forms={k: v for k, v in row.get('forms', {}).items() if k != data['id']})
+        elif kind == 'session.context' and data.get('used'):
+            self.store.update(key, context={'used': int(data['used']), 'limit': int(data.get('limit') or 0)})
         elif kind == 'session.execution.succeeded':
             self.store.update(key, state='done', permissions={}, forms={})
+            if client == CLIENT:
+                self._opencode_context(key)
         elif kind == 'session.execution.failed':
             error = (data.get('error') or {}).get('message') or '執行失敗'
             self.store.update(key, state='failed', error=str(error), permissions={}, forms={})

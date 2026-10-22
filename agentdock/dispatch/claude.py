@@ -165,6 +165,99 @@ def read_history(path: Path | None) -> list[dict]:
     return messages
 
 
+def _prompt_entry(entry: dict) -> bool:
+    """A user's own message (not a tool result or an injected note): where the next turn starts."""
+    if entry.get('type') != 'user' or entry.get('isMeta') or entry.get('isCompactSummary'):
+        return False
+    content = (entry.get('message') or {}).get('content')
+    if isinstance(content, list):
+        return any(isinstance(b, dict) and b.get('type') != 'tool_result' for b in content)
+    return isinstance(content, str)
+
+
+def fork_transcript(path: Path, message_id: str, title: str) -> str:
+    """Copy a transcript up to `message_id` (an entry uuid or an assistant message id) as a new session,
+    with fresh uuids and the parent chain kept, the way Claude Code's own fork does. Returns the new id."""
+    kinds = {'user', 'assistant', 'attachment', 'system'}
+    entries = []
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict) and entry.get('type') in kinds and isinstance(entry.get('uuid'), str) \
+                        and not entry.get('isSidechain'):
+                    entries.append(entry)
+    except OSError as e:
+        raise ClientError(f'無法讀取 Claude Code 對話紀錄：{e}') from e
+    cut = -1
+    for index, entry in enumerate(entries):
+        if entry['uuid'] == message_id or (entry.get('message') or {}).get('id') == message_id:
+            cut = index   # an assistant message spans several entries: keep through its last one
+    if cut < 0:
+        raise ClientError('找不到要分叉的那則訊息。')
+    # Keep the whole turn: a reply cut between a tool call and its result cannot be continued.
+    while cut + 1 < len(entries) and not _prompt_entry(entries[cut + 1]):
+        cut += 1
+    entries = entries[:cut + 1]
+    new_id = str(uuid.uuid4())
+    mapping = {e['uuid']: str(uuid.uuid4()) for e in entries}
+    lines = []
+    for entry in entries:
+        forked = {**entry, 'uuid': mapping[entry['uuid']], 'parentUuid': mapping.get(entry.get('parentUuid') or ''),
+                  'sessionId': new_id, 'forkedFrom': {'sessionId': entry.get('sessionId'), 'messageUuid': entry['uuid']}}
+        if entry.get('logicalParentUuid'):
+            forked['logicalParentUuid'] = mapping.get(entry['logicalParentUuid'])
+        for key in ('teamName', 'agentName', 'slug', 'sourceToolAssistantUUID'):
+            forked.pop(key, None)
+        lines.append(json.dumps(forked, ensure_ascii=False, separators=(',', ':')))
+    lines.append(json.dumps({'type': 'custom-title', 'sessionId': new_id, 'customTitle': title,
+                             'uuid': str(uuid.uuid4())}, ensure_ascii=False))
+    (path.parent / f'{new_id}.jsonl').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return new_id
+
+
+def list_transcripts(limit: int = 200) -> list[dict]:
+    """Claude Code's saved sessions: title (custom, AI or first prompt), folder and time."""
+    files = []
+    for path in projects_dir().glob('*/*.jsonl'):
+        try:
+            files.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    out = []
+    for mtime, path in sorted(files, reverse=True)[:limit]:
+        title = cwd = prompt = ''
+        try:
+            with open(path, encoding='utf-8', errors='replace') as f:
+                for number, line in enumerate(f):
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get('type') == 'custom-title' and entry.get('customTitle'):
+                        title = str(entry['customTitle'])
+                    elif entry.get('type') == 'ai-title' and entry.get('aiTitle') and not title:
+                        title = str(entry['aiTitle'])
+                    cwd = cwd or str(entry.get('cwd') or '')
+                    if not prompt and entry.get('type') == 'user' and not entry.get('isMeta') and \
+                            not entry.get('isSidechain'):
+                        text = _user_text((entry.get('message') or {}).get('content')).strip()
+                        if text and not SKIP_USER.match(text) and not text.startswith(INTERRUPTED):
+                            prompt = ' '.join(text.split())[:80]
+                    if number > 2000 and cwd and prompt:
+                        break
+        except OSError:
+            continue
+        if title or prompt:
+            out.append({'id': path.stem, 'title': title or prompt, 'directory': cwd, 'updated': mtime})
+    return out
+
+
 class Session:
     """One running claude process for one conversation."""
 
@@ -194,6 +287,7 @@ class Session:
             raise ClientError(f'找不到資料夾：{directory}')
         self.process = ChildProcess(args, directory, env, self._line, self._exit, 'Claude Code')
         self._init = self._control({'subtype': 'initialize', 'hooks': None})
+        self._usage = ''
 
     # -- requests -------------------------------------------------------------
     def _control(self, request: dict) -> str:
@@ -269,6 +363,11 @@ class Session:
             response = message.get('response') or {}
             if response.get('request_id') == self._init and isinstance(response.get('response'), dict):
                 self.owner.learned(response['response'])
+            elif response.get('request_id') == self._usage and isinstance(response.get('response'), dict):
+                usage = response['response']
+                if usage.get('totalTokens'):
+                    self.owner.event(self.sid, 'session.context', used=int(usage['totalTokens']),
+                                     limit=int(usage.get('maxTokens') or usage.get('rawMaxTokens') or 0))
         elif kind == 'control_cancel_request':
             rid = message.get('request_id', '')
             request = self.pending.pop(rid, None)
@@ -391,6 +490,10 @@ class Session:
                              error={'message': text or '；'.join(errors) or 'Claude Code 執行失敗'})
         self.queued = max(0, self.queued - 1)
         self.interrupting = False
+        try:
+            self._usage = self._control({'subtype': 'get_context_usage'})   # as /context shows it
+        except ClientError:
+            pass
         if self.queued:
             self.owner.event(self.sid, 'session.execution.started')   # the next queued message runs now
             return
@@ -531,6 +634,16 @@ class ClaudeClient(Adapter):
 
     def compact(self, row: dict) -> None:
         self._session(row).prompt('/compact')
+
+    def fork(self, row: dict, message_id: str) -> str:
+        path = transcript_file(row.get('directory', ''), row['session_id'])
+        if path is None:
+            raise ClientError('找不到 Claude Code 的對話紀錄。')
+        new_id = fork_transcript(path, message_id, f"{row.get('title', '')}（分叉）")
+        return new_id
+
+    def sessions(self) -> list[dict]:
+        return list_transcripts()
 
     def interrupt(self, row: dict) -> None:
         session = self._live(row['session_id'])

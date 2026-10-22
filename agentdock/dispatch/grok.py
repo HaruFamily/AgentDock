@@ -16,6 +16,7 @@ The user's Grok permission mode and rules decide what needs asking; AgentDock ne
 from __future__ import annotations
 
 import os
+from datetime import datetime
 import shutil
 import threading
 import uuid
@@ -110,6 +111,8 @@ class Record:
         self._segment: dict[str, dict | None] = {}     # message -> the text / reasoning part being written
         self._ordinal: dict[tuple[str, str], int] = {}
         self.current = ''                              # the assistant message of the running prompt
+        self.tokens = 0                                # context size reported with the latest update
+        self.model = ''
 
     def user(self, mid: str, text: str, files: list[str] | None = None) -> None:
         if mid not in self._by_id:
@@ -135,8 +138,20 @@ class Record:
                 kind = 'session.reasoning.ended' if part['type'] == 'reasoning' else 'session.text.ended'
                 emit(kind, assistantMessageID=mid, ordinal=part['ordinal'], text=part['text'])
 
+    def prompt_index(self, message_id: str) -> int:
+        """Which user prompt (0-based) `message_id` belongs to: Grok forks by prompt."""
+        index = -1
+        for message in self.messages:
+            if message['type'] == 'user':
+                index += 1
+            if message['id'] == message_id:
+                return max(index, 0)
+        raise ClientError('找不到要分叉的那則訊息。')
+
     def apply(self, update: dict, meta: dict, emit: Callable[..., None] | None = None) -> None:
         kind = update.get('sessionUpdate')
+        if isinstance(meta.get('totalTokens'), int) and meta['totalTokens'] > 0:
+            self.tokens = meta['totalTokens']
         if kind == 'user_message_chunk':
             content = update.get('content') or {}
             previous = self.messages[-1] if self.messages else None
@@ -240,6 +255,8 @@ class GrokClient(Adapter):
         self._loading: set[str] = set()                 # replay in progress: updates build history only
         self._running: dict[str, int] = {}              # session -> prompts sent and not finished (Grok queues them)
         self._requests: dict[str, dict] = {}            # our id -> {'id', 'method', 'params', 'session'}
+        self._models: list[dict] = []
+        self._default = ''
         self._closed = False
 
     # -- process and JSON-RPC ---------------------------------------------------
@@ -443,7 +460,9 @@ class GrokClient(Adapter):
         for m in listing.get('availableModels') or []:
             efforts = ((m.get('_meta') or {}).get('reasoningEfforts') or []) if isinstance(m, dict) else []
             models.append({'id': str(m.get('modelId')), 'label': str(m.get('name') or m.get('modelId')),
-                           'efforts': [str(e.get('value')) for e in efforts if isinstance(e, dict) and e.get('value')]})
+                           'efforts': [str(e.get('value')) for e in efforts if isinstance(e, dict) and e.get('value')],
+                           'context': int(((m.get('_meta') or {}).get('totalContextTokens')) or 0)})
+        self._models, self._default = models, str(listing.get('currentModelId') or '')
         options = {'models': models, 'modes': MODES, 'mode_fixed': True}
         self.remember(options)
         return options
@@ -453,6 +472,9 @@ class GrokClient(Adapter):
             if settings.get(name):
                 self._call(process, 'session/set_config_option',
                            {'sessionId': sid, 'configId': config, 'value': settings[name]})
+        if settings.get('model'):
+            with self._lock:
+                self._records.setdefault(sid, Record()).model = settings['model']
 
     def new_session(self, directory: str, settings: dict | None = None) -> str:
         if not os.path.isdir(directory):
@@ -509,6 +531,7 @@ class GrokClient(Adapter):
         with self._lock:
             record = self._records[sid]
             record.current = ''
+            record.model = record.model or row.get('model', '')
         return record
 
     def configure(self, row: dict, changes: dict) -> None:
@@ -517,6 +540,28 @@ class GrokClient(Adapter):
 
     def compact(self, row: dict) -> None:
         self.prompt(row, '/compact')
+
+    def fork(self, row: dict, message_id: str) -> str:
+        record = self._load(row)
+        directory = row.get('directory') or os.path.expanduser('~')
+        result = self._call(self._ensure(), '_x.ai/session/fork', {
+            'sourceSessionId': row['session_id'], 'sourceCwd': directory, 'newCwd': directory,
+            'targetPromptIndex': record.prompt_index(message_id)})
+        new = str(result.get('newSessionId') or '')
+        if not new:
+            raise ClientError('Grok 沒有建立分叉。')
+        return new
+
+    def sessions(self) -> list[dict]:
+        out = []
+        for s in self._call(self._ensure(), 'session/list', {}).get('sessions') or []:
+            try:
+                updated = datetime.fromisoformat(str(s.get('updatedAt')).replace('Z', '+00:00')).timestamp()
+            except ValueError:
+                updated = 0.0
+            out.append({'id': str(s.get('sessionId')), 'title': str(s.get('title') or s.get('sessionId'))[:80],
+                        'directory': str(s.get('cwd') or ''), 'updated': updated})
+        return out
 
     def prompt(self, row: dict, text: str, files: list[str] | None = None) -> None:
         sid = row['session_id']
@@ -567,6 +612,10 @@ class GrokClient(Adapter):
                 self._running.pop(sid, None)
         mid = record.current or uuid.uuid4().hex
         record.close_text(mid, lambda kind, **data: self.event(sid, kind, **data))
+        if record.tokens:
+            model = record.model or self._default
+            limit = next((m.get('context', 0) for m in self._models if m.get('id') == model), 0)
+            self.event(sid, 'session.context', used=record.tokens, limit=limit)
         self._drop_requests(sid, answer=False)
         record.current = ''
         if 'error' in waiter:

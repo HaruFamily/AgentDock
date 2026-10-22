@@ -152,6 +152,34 @@ class OpenCodeService:
             body['files'] = [{'uri': Path(f).resolve().as_uri(), 'name': Path(f).name} for f in files]
         return self.request('POST', f'/api/session/{_q(session_id)}/prompt', body)['data']
 
+    def fork(self, session_id: str, before: str | None) -> str:
+        body = {'before': before} if before else {}
+        return self.request('POST', f'/api/session/{_q(session_id)}/fork', body)['data']['id']
+
+    def sessions(self, limit: int = 100) -> list[dict]:
+        page = self.request('GET', f"/api/session?{urllib.parse.urlencode({'limit': limit, 'order': 'desc'})}") or {}
+        out = []
+        for s in page.get('data', []):
+            if s.get('parentID'):
+                continue   # subagent sessions live inside their parent
+            updated = (s.get('time') or {}).get('updated') or (s.get('time') or {}).get('created') or 0
+            out.append({'id': s['id'], 'title': str(s.get('title') or s['id']),
+                        'directory': str((s.get('location') or {}).get('directory') or ''),
+                        'updated': float(updated) / 1000 if updated > 1e11 else float(updated)})
+        return out
+
+    def context(self, session_id: str) -> dict:
+        """Tokens in the last reply's context: {'used', 'model'}."""
+        for message in self.messages(session_id, 10):
+            tokens = message.get('tokens') if message.get('type') == 'assistant' else None
+            if isinstance(tokens, dict):
+                cache = tokens.get('cache') or {}
+                used = sum(int(tokens.get(k) or 0) for k in ('input', 'output', 'reasoning')) + \
+                    int(cache.get('read') or 0) + int(cache.get('write') or 0)
+                model = message.get('model') or {}
+                return {'used': used, 'model': f"{model.get('providerID')}/{model.get('id')}" if model else ''}
+        return {}
+
     def compact(self, session_id: str) -> None:
         self.request('POST', f'/api/session/{_q(session_id)}/compact', {})
 
@@ -170,7 +198,8 @@ class OpenCodeService:
         for m in (self.request('GET', '/api/model' + query) or {}).get('data', []):
             if m.get('enabled', True) and m.get('status') != 'deprecated':
                 models.append({'id': f"{m.get('providerID')}/{m.get('id')}", 'label': str(m.get('name') or m.get('id')),
-                               'efforts': [str(v.get('id')) for v in m.get('variants') or [] if v.get('id')]})
+                               'efforts': [str(v.get('id')) for v in m.get('variants') or [] if v.get('id')],
+                               'context': int((m.get('limit') or {}).get('context') or 0)})
         agents = [{'id': str(a['id']), 'label': str(a.get('name') or a['id'])}
                   for a in (self.request('GET', '/api/agent' + query) or {}).get('data', [])
                   if a.get('mode') in ('primary', 'all') and not a.get('hidden')]

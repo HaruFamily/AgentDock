@@ -403,6 +403,12 @@ class CodexClient(Adapter):
         elif method == 'item/agentMessage/delta':
             self.event(thread, 'session.text.delta', assistantMessageID=str(params.get('itemId', '')), ordinal=0,
                        delta=str(params.get('delta', '')))
+        elif method == 'thread/tokenUsage/updated':
+            usage = params.get('tokenUsage') or {}
+            last = usage.get('last') or {}
+            if last.get('totalTokens'):
+                self.event(thread, 'session.context', used=int(last['totalTokens']),
+                           limit=int(usage.get('modelContextWindow') or 0))
         elif method == 'error' and not params.get('willRetry'):
             error = params.get('error') or {}
             with self._lock:
@@ -544,6 +550,32 @@ class CodexClient(Adapter):
         options = {'models': models, 'modes': MODES}
         self.remember(options)
         return options
+
+    def fork(self, row: dict, message_id: str) -> str:
+        """thread/fork, then drop the turns after the one holding `message_id` (thread/revert)."""
+        thread = row['session_id']
+        turns = (self.call('thread/read', {'threadId': thread, 'includeTurns': True}).get('thread') or {}).get('turns') or []
+        index = next((i for i, turn in enumerate(turns)
+                      if any(isinstance(it, dict) and it.get('id') == message_id for it in turn.get('items') or [])
+                      or f"end:{turn.get('id')}" == message_id), None)
+        if index is None:
+            raise ClientError('找不到要分叉的那則訊息。')
+        new = str(((self.call('thread/fork', {'threadId': thread, 'excludeTurns': True}).get('thread') or {}).get('id')) or '')
+        if not new:
+            raise ClientError('Codex 沒有建立分叉。')
+        with self._lock:
+            self._loaded.add(new)
+        if index + 1 < len(turns):
+            self.call('thread/revert', {'threadId': new, 'beforeTurnId': turns[index + 1]['id']})
+        return new
+
+    def sessions(self) -> list[dict]:
+        out = []
+        for t in self.call('thread/list', {'limit': 100}).get('data') or []:
+            if isinstance(t, dict) and t.get('id') and not t.get('parentThreadId'):
+                out.append({'id': str(t['id']), 'title': str(t.get('name') or t.get('preview') or t['id'])[:80],
+                            'directory': str(t.get('cwd') or ''), 'updated': float(t.get('updatedAt') or 0)})
+        return out
 
     def compact(self, row: dict) -> None:
         self._load(row)

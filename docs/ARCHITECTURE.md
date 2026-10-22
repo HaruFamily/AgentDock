@@ -8,6 +8,8 @@
 
 `ui/chat_window.py` 的 ChatWindow 由 App 延遲建立，關閉只隱藏。資料：`dispatch/projects.py`（`data/projects.json`）、`dispatch/transcript.py`（訊息與即時事件 → 對話項目）、`Dispatcher.history()`／`listeners`。所有背景結果經 Bridge 的 Qt 信號回到 UI 執行緒；store 變更經 App 的 bus 節流刷新。細節見 [DISPATCH.md](DISPATCH.md)。
 
+對話功能第三批：`Adapter.fork()`／`sessions()` 與 `session.context` 事件（存成列的 `context`）；`Dispatcher.fork()`、`sessions()`、`adopt()`（四家皆可接手）。Git 為 `agentdock/gitops.py`（純 `git` 指令，不匯入 Qt）與 `ui/git_view.py` 的 GitDialog，git 指令在背景執行緒跑、經信號回 UI。
+
 ## 收發（2026-10-22）
 
 Inbox 可送任務給 OpenCode 2.x 並在卡片上授權、回答、接續與停止。`dispatch/` 套件（不匯入 PySide6）：`opencode.py` 連共用背景服務、`runner.py` 的 Dispatcher 在 App 行程背景執行緒處理 HTTP 與 SSE、`store.py` 存 `data/dispatch.json`。卡片 owner／work_id 與 Inbox MCP、活動 hook 相同（`session:opencode:<id>`），三者合併為一張；broker 沒有新增路由。細節、API 對照與驗證見 [DISPATCH.md](DISPATCH.md)。

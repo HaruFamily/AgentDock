@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-22：對話視窗第三批。分叉（Adapter.fork：Claude Code 複製紀錄檔並重編 uuid、Codex thread/fork＋thread/revert、Grok _x.ai/session/fork、OpenCode POST fork；以整輪為單位）；匯入外部工作階段（Adapter.sessions、Dispatcher.sessions／adopt 四家皆可，ImportDialog）；上下文用量（session.context 事件存成 context：Claude get_context_usage、Codex tokenUsage/updated、Grok _meta.totalTokens、OpenCode 回覆 tokens）；Git（gitops.py、GitDialog、標題列分支與變更數）。新增 14 項測試，完整 297 項通過。
+
 - 2026-10-22：對話視窗第二批。Composer 附件（ChatInput attachments 模式、截圖存檔、標籤）、SettingsBar（模型／推理／權限，選項依模型）、FindBar（Ctrl+F）、ReasoningRow、ToolRow 差異（diff_of／diff_html）、標題列 ⋯ 選單。轉接器加 options／configure／compact、圖片與檔案、推理事件（session.reasoning.*）、工具 diff；DispatchStore 記 options 與每列 model／effort／mode；Dispatcher.options（失敗不打擾）、configure、compact，start_task／send 帶 settings 與 files。OpenCode：prompt files、model／agent／compact／清單。Grok set_config_option 值用純字串（實測）。新增 7 項測試，完整 283 項通過。
 
 - 2026-10-22：對話視窗第一批補強。清單右鍵選單與 F2／Delete、刪除對話框（預設只移除卡片，可勾選連 Agent 端一起刪：OpenCode DELETE session、Claude Code 刪紀錄、Codex thread/delete、Grok _x.ai/session/delete）、改名（custom_title 不被對帳覆蓋）、清單時間；訊息複製／編輯、程式碼區塊（CodeBlock，串流中原地更新）與複製、重試；Claude Code、Grok 排隊計數，Codex turn/steer；快捷鍵 Ctrl+N／Ctrl+K／Esc／Alt+↑↓；重開回到上次對話（首次顯示才載入）。新增 16 項測試，完整 276 項通過。

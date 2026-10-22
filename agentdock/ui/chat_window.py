@@ -108,6 +108,24 @@ def resume_command(row: dict) -> list[str] | None:
     return [exe, *args] if exe else None
 
 
+def tokens(count: int) -> str:
+    if count >= 1_000_000:
+        return f'{count / 1_000_000:.1f}M'
+    if count >= 1000:
+        return f'{count / 1000:.0f}k' if count >= 10_000 else f'{count / 1000:.1f}k'
+    return str(count)
+
+
+def context_text(usage: dict | None) -> str:
+    """How full the model's context is, as the client last reported it."""
+    if not usage or not usage.get('used'):
+        return ''
+    used, limit = int(usage['used']), int(usage.get('limit') or 0)
+    if limit:
+        return f'上下文 {min(100, round(used * 100 / limit))}%'
+    return f'上下文 {tokens(used)}'
+
+
 def _style() -> str:
     t = theme
     return f"""
@@ -140,6 +158,13 @@ QPushButton#MiniButton {{ border: none; background: transparent; color: {t.MUTED
 QPushButton#MiniButton:hover {{ background: {t.HOVER}; color: {t.INK}; }}
 QPushButton#FileChip {{ border: 1px solid {t.LINE}; border-radius: 10px; padding: 2px 10px; background: {t.CANVAS}; color: {t.INK}; font-size: 12px; }}
 #FileNote {{ color: {t.MUTED}; font-size: 12px; }}
+#ErrorText {{ color: {t.DANGER}; }}
+QDialog {{ background: {t.CANVAS}; }}
+QDialog QTreeWidget, QDialog QTextBrowser {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 10px; outline: none; }}
+QDialog QTreeWidget::item {{ min-height: 26px; }}
+QDialog QTreeWidget::item:selected {{ background: {t.ACCENT_SOFT}; color: {t.INK}; }}
+QDialog QHeaderView::section {{ background: {t.CARD}; color: {t.MUTED}; border: none; border-bottom: 1px solid {t.LINE}; padding: 4px 6px; }}
+#ChatChip[high="true"] {{ color: {t.DANGER}; border-color: {t.DANGER}; }}
 #Composer QComboBox {{ border: none; background: transparent; color: {t.MUTED}; padding: 2px 4px; }}
 #Composer QComboBox:hover {{ background: {t.HOVER}; border-radius: 6px; }}
 #DiffView {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 8px; padding: 8px; }}
@@ -160,6 +185,8 @@ class Bridge(QObject):
     started = Signal(str)
     deleted = Signal(str)
     options = Signal(str, str, dict)   # client, conversation key ('' for a new one), choices
+    git = Signal(str, str, str)        # conversation key, repository root ('' when none), status summary
+    sessions = Signal(str, list)       # client, its saved sessions
 
 
 ICONS = {
@@ -326,6 +353,9 @@ class Sidebar(QFrame):
         section = QLabel('專案')
         section.setObjectName('SectionLabel')
         head.addWidget(section, 1)
+        adopt = icon_button('⇩', '匯入對話')
+        adopt.clicked.connect(lambda: window.import_conversations())
+        head.addWidget(adopt)
         add = icon_button('＋', '新增專案')
         add.clicked.connect(window.add_project)
         head.addWidget(add)
@@ -373,6 +403,7 @@ class Sidebar(QFrame):
             action.setEnabled(row['state'] != 'running')
         elif kind == 'project' and value:
             menu.addAction('在此專案開新對話', lambda: w.show_new(value))
+            menu.addAction('匯入對話到此專案…', lambda: w.import_conversations(value))
             menu.addAction('專案設定', lambda: w.show_project(value))
         else:
             return
@@ -473,11 +504,11 @@ def diff_of(part: dict) -> str:
     return ''
 
 
-def diff_html(diff: str) -> str:
+def diff_html(diff: str, limit: int = 400) -> str:
     """Coloured diff lines; everything escaped, nothing loaded."""
     good, bad = theme.OK or '#2e7d32', theme.DANGER or '#c62828'
     lines = []
-    for line in diff.splitlines()[:400]:
+    for line in diff.splitlines()[:limit]:
         text = html.escape(line) or '&nbsp;'
         if line.startswith('+') and not line.startswith('+++'):
             lines.append(f'<span style="color:{good}">{text}</span>')
@@ -690,6 +721,7 @@ class MessageWidget(QWidget):
     """One transcript item; rebuilt in place when its item changes."""
     edit_requested = Signal(str)
     retry_requested = Signal()
+    fork_requested = Signal(str)   # message id
 
     def __init__(self, item: dict):
         super().__init__()
@@ -761,6 +793,10 @@ class MessageWidget(QWidget):
             change = mini_button('編輯')
             change.clicked.connect(lambda: self.edit_requested.emit(self.item.get('text', '')))
             row.addWidget(change)
+        else:
+            fork = mini_button('分叉')
+            fork.clicked.connect(lambda: self.fork_requested.emit(self.item['id']))
+            row.addWidget(fork)
         if not right:
             row.addStretch(1)
         policy = self.actions.sizePolicy()
@@ -850,6 +886,17 @@ class ConversationView(QWidget):
         self.project_chip.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project_chip.clicked.connect(self._open_project)
         head.addWidget(self.project_chip)
+        self.git_chip = QPushButton()
+        self.git_chip.setObjectName('ChatChip')
+        self.git_chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.git_chip.clicked.connect(lambda: self.git_root and self.window_.open_git(self.git_root))
+        self.git_chip.hide()
+        head.addWidget(self.git_chip)
+        self.git_root = ''
+        self.context_chip = QLabel()
+        self.context_chip.setObjectName('ChatChip')
+        self.context_chip.hide()
+        head.addWidget(self.context_chip)
         self.agent_chip = QLabel()
         self.agent_chip.setObjectName('ChatChip')
         head.addWidget(self.agent_chip)
@@ -911,6 +958,7 @@ class ConversationView(QWidget):
         self.forms: dict[str, FormBox] = {}
         self.permission_rows: list[QWidget] = []
         self.buffered: list[dict] = []
+        self.last_state = ''
 
     # -- loading ---------------------------------------------------------------
     def open(self, key: str) -> None:
@@ -938,9 +986,26 @@ class ConversationView(QWidget):
         self.composer.settings.set_options(self.window_.store.dispatch.options.get(row.get('client', ''), {}), row,
                                            self.window_.store.dispatch.options.get(row.get('client', ''), {})
                                            .get('mode_fixed', False))
+        self.git_root = ''
+        self.git_chip.hide()
+        self.last_state = row.get('state', '')
         self.update_row()
         self._fetch(None)
         self.window_.request_options(row.get('client', ''), key, row.get('directory', ''))
+        self.check_git()
+
+    def check_git(self) -> None:
+        """Branch and change count of the conversation's folder, read off the UI thread."""
+        row = self.window_.store.dispatch.get(self.key) if self.key else None
+        if row is not None:
+            self.window_.git_status(self.key, row.get('directory', ''))
+
+    def git_arrived(self, key: str, root: str, summary: str) -> None:
+        if key != self.key:
+            return
+        self.git_root = root
+        self.git_chip.setText(summary)
+        self.git_chip.setVisible(bool(root))
 
     def options_arrived(self, key: str, options: dict) -> None:
         row = self.window_.store.dispatch.get(key)
@@ -1029,6 +1094,7 @@ class ConversationView(QWidget):
         widget = MessageWidget(item)
         widget.edit_requested.connect(self.edit_text)
         widget.retry_requested.connect(self.retry)
+        widget.fork_requested.connect(self.fork)
         self.widgets[item['id']] = widget
         return widget
 
@@ -1043,6 +1109,10 @@ class ConversationView(QWidget):
 
     def _last_user_text(self) -> str:
         return next((i['text'] for i in reversed(self.transcript.items) if i['kind'] == 'user'), '')
+
+    def fork(self, message_id: str) -> None:
+        if self.key:
+            self.window_.dispatcher.fork(self.key, message_id, done=self.window_.bridge.started.emit)
 
     def retry(self) -> None:
         text = self._last_user_text()
@@ -1078,6 +1148,20 @@ class ConversationView(QWidget):
         self.project_chip.setText(project['name'] if project else '未分類')
         self.project_chip.setToolTip(row.get('directory', ''))
         self.agent_chip.setText(row['source'])
+        usage = row.get('context') or {}
+        self.context_chip.setText(context_text(usage))
+        self.context_chip.setToolTip(f"{usage.get('used', 0):,} / {usage['limit']:,} tokens" if usage.get('limit')
+                                     else '')
+        high = bool(usage.get('limit')) and usage.get('used', 0) >= 0.8 * usage['limit']
+        if self.context_chip.property('high') != high:
+            self.context_chip.setProperty('high', high)
+            self.context_chip.style().unpolish(self.context_chip)
+            self.context_chip.style().polish(self.context_chip)
+        self.context_chip.setVisible(bool(self.context_chip.text()))
+        if row['state'] != self.last_state:
+            if self.last_state == 'running':
+                self.check_git()   # the agent may have changed files
+            self.last_state = row['state']
         running = row['state'] == 'running' and not row.get('permissions') and not row.get('forms')
         self.composer.set_running(row['state'] == 'running')
         if not self.loading:
@@ -1631,6 +1715,12 @@ class ProjectView(QWidget):
         self.name.setObjectName('PageTitle')
         self.name.editingFinished.connect(self._rename)
         head.addWidget(self.name, 1)
+        git = button('Git')
+        git.clicked.connect(lambda: self.window_.open_git(self.root.text(), report=True))
+        head.addWidget(git)
+        adopt = button('匯入對話')
+        adopt.clicked.connect(lambda: self.window_.import_conversations(self.pid))
+        head.addWidget(adopt)
         new = button('＋ 在此專案開新對話', primary=True)
         new.clicked.connect(lambda: self.window_.show_new(self.pid))
         head.addWidget(new)
@@ -1794,6 +1884,122 @@ class DeleteDialog(QDialog):
         self.resize(420, 0)
 
 
+class ImportDialog(QDialog):
+    """Sessions started in an agent's own app or terminal, to continue them here."""
+
+    def __init__(self, window, project: str | None, agent: str):
+        super().__init__(window)
+        self.window_ = window
+        self.project = project
+        self.found: list[dict] = []
+        self.setWindowTitle('匯入對話')
+        self.resize(760, 520)
+        layout = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.agent = QComboBox()
+        for kind, name in AGENTS:
+            if kind in window.dispatcher.clients:
+                self.agent.addItem(name, kind)
+        self.agent.setCurrentIndex(max(0, self.agent.findData(agent)))
+        self.agent.currentIndexChanged.connect(lambda _i: self.load())
+        top.addWidget(self.agent)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText('搜尋')
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _t: self.fill())
+        top.addWidget(self.search, 1)
+        layout.addLayout(top)
+        self.list = QTreeWidget()
+        self.list.setHeaderLabels(['標題', '資料夾', '時間'])
+        self.list.setRootIsDecorated(False)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list.itemDoubleClicked.connect(lambda _i, _c: self.adopt())
+        self.list.itemSelectionChanged.connect(self._sync)
+        header = self.list.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, header.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, header.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, header.ResizeMode.ResizeToContents)
+        self.list.setColumnWidth(1, 240)
+        layout.addWidget(self.list, 1)
+        self.status = label('', muted=True)
+        layout.addWidget(self.status)
+        buttons = QHBoxLayout()
+        self.only_project = QCheckBox('只列出專案資料夾內的')
+        root = (window.projects.get(project) or {}).get('root', '') if project else ''
+        self.root = root
+        self.only_project.setVisible(bool(root))
+        self.only_project.setChecked(bool(root))
+        self.only_project.toggled.connect(lambda _c: self.fill())
+        buttons.addWidget(self.only_project)
+        buttons.addStretch(1)
+        close = button('關閉', flat=True)
+        close.clicked.connect(self.reject)
+        buttons.addWidget(close)
+        self.adopt_button = button('匯入', primary=True)
+        self.adopt_button.clicked.connect(self.adopt)
+        buttons.addWidget(self.adopt_button)
+        layout.addLayout(buttons)
+        window.bridge.sessions.connect(self.arrived)
+        self.load()
+
+    def load(self) -> None:
+        self.found = []
+        self.list.clear()
+        self.status.setText('載入中…')
+        self.status.show()
+        client = self.agent.currentData()
+        self.window_.dispatcher.sessions(client, lambda found: self.window_.bridge.sessions.emit(client, found))
+        self._sync()
+
+    def arrived(self, client: str, found: list) -> None:
+        if client != self.agent.currentData():
+            return
+        self.found = found
+        self.fill()
+
+    def fill(self) -> None:
+        self.list.clear()
+        query = self.search.text().strip().lower()
+        root = os.path.normcase(os.path.normpath(self.root)) if self.root and self.only_project.isChecked() else ''
+        shown = 0
+        for session in self.found:
+            folder = session.get('directory', '')
+            if query and query not in session['title'].lower() and query not in folder.lower():
+                continue
+            if root:
+                norm = os.path.normcase(os.path.normpath(folder)) if folder else ''
+                if norm != root and not norm.startswith(root.rstrip(os.sep) + os.sep):
+                    continue
+            stamp = datetime.fromtimestamp(session['updated'], timezone.utc).isoformat() if session.get('updated') else ''
+            item = QTreeWidgetItem([session['title'], folder, when(stamp) if stamp else ''])
+            item.setData(0, ROLE, session)
+            item.setToolTip(1, folder)
+            if session.get('tracked'):
+                item.setText(2, '已在 AgentDock')
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.list.addTopLevelItem(item)
+            shown += 1
+        self.status.setText('' if shown else '沒有可匯入的對話。')
+        self.status.setVisible(not shown)
+        self._sync()
+
+    def _sync(self) -> None:
+        self.adopt_button.setEnabled(bool(self.list.selectedItems()))
+
+    def adopt(self) -> None:
+        client = self.agent.currentData()
+        target = self.window_.target_for(client)
+        picked = [i.data(0, ROLE) for i in self.list.selectedItems() if i.data(0, ROLE)]
+        for index, session in enumerate(picked):
+            last = index == len(picked) - 1
+            self.window_.dispatcher.adopt(client, session['id'], target['owner'], session['title'],
+                                          directory=session.get('directory', ''), project=self.project,
+                                          done=self.window_.bridge.started.emit if last else (lambda _k: None))
+        if picked:
+            self.accept()
+
+
 # --------------------------------------------------------------------------- window
 class ChatWindow(QWidget):
     closed = Signal()
@@ -1833,6 +2039,8 @@ class ChatWindow(QWidget):
         self.bridge.started.connect(self.open_conversation)
         self.bridge.deleted.connect(self._deleted)
         self.bridge.options.connect(self._options_arrived)
+        self.bridge.git.connect(self.conversation.git_arrived)
+        self.git_windows: dict[str, QDialog] = {}
         attach_dir = Path(store.dispatch.file).parent / 'attachments' / 'chat'
         self.new_view.composer.attach_dir = self.conversation.composer.attach_dir = attach_dir
         dispatcher.listeners.append(self.bridge.live.emit)
@@ -1965,6 +2173,48 @@ class ChatWindow(QWidget):
             self.conversation.key = ''
             self.show_new()
         self.refresh()
+
+    def import_conversations(self, project: str | None = None) -> None:
+        row = self.store.dispatch.get(self.current_key) if self.current_key else None
+        agent = (row or {}).get('client') or ((self.projects.get(project) or {}).get('agent') if project else None) \
+            or self.ui_state.get('last_agent') or AGENTS[0][0]
+        ImportDialog(self, project, agent).exec()
+
+    def git_status(self, key: str, directory: str) -> None:
+        import threading
+
+        from agentdock import gitops
+
+        def run():
+            root = gitops.repo_root(directory)
+            summary = ''
+            if root:
+                try:
+                    summary = gitops.status(root).summary
+                except gitops.GitError:
+                    root = ''
+            self.bridge.git.emit(key, root or '', summary)
+        threading.Thread(target=run, name='AgentDock git status', daemon=True).start()
+
+    def open_git(self, directory: str, report: bool = False) -> None:
+        from agentdock import gitops
+        from agentdock.ui.git_view import GitDialog
+        root = gitops.repo_root(directory)
+        if not root:
+            if report:
+                self.notify('這個資料夾不是 Git 儲存庫。')
+            return
+        dialog = self.git_windows.get(root)
+        if dialog is None:
+            dialog = GitDialog(self, root)
+            dialog.finished.connect(lambda _r, r=root: (self.git_windows.pop(r, None), self.conversation.check_git()))
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            self.git_windows[root] = dialog
+        else:
+            dialog.reload()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def resume_in_terminal(self, key: str) -> None:
         """Continue the session in the client's own terminal UI. The one place a window is wanted."""

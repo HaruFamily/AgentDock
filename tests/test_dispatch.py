@@ -79,6 +79,9 @@ class FakeOpenCode:
                 parts = path.strip('/').split('/')
                 if path == '/api/info':
                     return self._json(200, {'version': fake.version})
+                if path == '/api/session':
+                    return self._json(200, {'data': [{**s, 'time': {'updated': 1700000000000}}
+                                                     for s in fake.sessions.values()]})
                 if path == '/api/session/active':
                     return self._json(200, {'data': {s: {'type': 'running'} for s in fake.active}})
                 if parts[:2] == ['api', 'session'] and len(parts) >= 3:
@@ -114,6 +117,14 @@ class FakeOpenCode:
                     fake.sessions[sid] = {'id': sid, 'title': body.get('title'), 'location': body.get('location')}
                     return self._json(200, {'data': fake.sessions[sid]})
                 sid = parts[2]
+                if parts[3] == 'fork':
+                    new = f'ses_{len(fake.sessions) + 1}'
+                    fake.sessions[new] = {**fake.sessions[sid], 'id': new}
+                    messages = fake.messages.get(sid, [])
+                    ids = [m['id'] for m in messages]
+                    cut = ids.index(body['before']) if body.get('before') in ids else len(ids)
+                    fake.messages[new] = messages[:cut]
+                    return self._json(200, {'data': fake.sessions[new]})
                 if parts[3] == 'prompt':
                     fake.prompt(sid, body['text'])
                     return self._json(200, {'data': {'id': 'msg_u', 'type': 'user'}})
