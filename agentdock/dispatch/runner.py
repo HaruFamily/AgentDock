@@ -27,7 +27,8 @@ def title_for(text: str) -> str:
 def default_adapters() -> list[Adapter]:
     from agentdock.dispatch.claude import ClaudeClient
     from agentdock.dispatch.codex import CodexClient
-    return [ClaudeClient(), CodexClient()]
+    from agentdock.dispatch.grok import GrokClient
+    return [ClaudeClient(), CodexClient(), GrokClient()]
 
 
 class Dispatcher:

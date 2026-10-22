@@ -22,7 +22,7 @@ from agentdock.ui.question_text import QuestionText
 from agentdock.ui.widgets import ElidedLabel, icon_button
 
 ROLE = Qt.ItemDataRole.UserRole
-AGENTS = (('opencode', 'OpenCode'), ('claude-code', 'Claude Code'), ('codex', 'Codex'))
+AGENTS = (('opencode', 'OpenCode'), ('claude-code', 'Claude Code'), ('codex', 'Codex'), ('grok-cli', 'Grok'))
 RAIL = 56
 RAIL_OPEN = 188
 

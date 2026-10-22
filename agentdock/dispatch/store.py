@@ -17,7 +17,7 @@ from agentdock.files import atomic_json, load_json
 
 FINAL = ('done', 'failed', 'interrupted')
 STATES = ('running', 'unknown', *FINAL)
-SOURCES = {'opencode': 'OpenCode', 'claude-code': 'Claude Code', 'codex': 'Codex'}
+SOURCES = {'opencode': 'OpenCode', 'claude-code': 'Claude Code', 'codex': 'Codex', 'grok-cli': 'Grok'}
 MAX_TEXT = 20000
 MAX_RECENT = 8
 

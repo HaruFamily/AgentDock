@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -106,14 +107,49 @@ def npm_dir() -> list[Path]:
     return dirs
 
 
+_spawn_queue: 'queue.Queue[tuple[Callable[[], Any], dict]]' = queue.Queue()
+_spawn_thread: threading.Thread | None = None
+_spawn_lock = threading.Lock()
+
+
+def _spawner() -> None:
+    while True:
+        make, box = _spawn_queue.get()
+        try:
+            box['value'] = make()
+        except BaseException as e:  # handed back to the caller
+            box['error'] = e
+        box['done'].set()
+
+
+def _spawn(make: Callable[[], Any]) -> Any:
+    """Start child processes from one long-lived thread.
+
+    Some CLIs (grok) ask the OS to stop them when the thread that started them ends; the worker
+    threads that send messages are short-lived.
+    """
+    global _spawn_thread
+    with _spawn_lock:
+        if _spawn_thread is None or not _spawn_thread.is_alive():
+            _spawn_thread = threading.Thread(target=_spawner, name='AgentDock spawner', daemon=True)
+            _spawn_thread.start()
+    box: dict = {'done': threading.Event()}
+    _spawn_queue.put((make, box))
+    box['done'].wait()
+    if 'error' in box:
+        raise box['error']
+    return box['value']
+
+
 class ChildProcess:
     """A client process with JSON lines on stdin/stdout; stderr kept as a short tail for errors."""
 
     def __init__(self, args: list[str], cwd: str | None, env: dict[str, str],
                  on_line: Callable[[dict], None], on_exit: Callable[[int | None, str], None], name: str):
         try:
-            self.proc = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                         stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+            self.proc = _spawn(lambda: subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                        creationflags=NO_WINDOW))
         except OSError as e:
             raise ClientError(f'無法啟動 {name}：{e}') from e
         self.name = name

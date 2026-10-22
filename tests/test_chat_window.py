@@ -238,7 +238,7 @@ def test_drag_moves_between_projects_and_search_filters(window, tmp_path):
 
 def test_unsupported_agents_cannot_send(window, tmp_path, fake):
     win, store, projects, notes, app = window
-    assert set(win.dispatcher.clients) == {'opencode', 'claude-code', 'codex'}
+    assert set(win.dispatcher.clients) == {'opencode', 'claude-code', 'codex', 'grok-cli'}
     win.dispatcher.clients = ('opencode',)   # e.g. a build without the other adapters
     win.show_new()
     win.new_view.pick_agent('codex')

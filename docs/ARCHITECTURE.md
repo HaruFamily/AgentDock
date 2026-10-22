@@ -12,7 +12,7 @@
 
 Inbox 可送任務給 OpenCode 2.x 並在卡片上授權、回答、接續與停止。`dispatch/` 套件（不匯入 PySide6）：`opencode.py` 連共用背景服務、`runner.py` 的 Dispatcher 在 App 行程背景執行緒處理 HTTP 與 SSE、`store.py` 存 `data/dispatch.json`。卡片 owner／work_id 與 Inbox MCP、活動 hook 相同（`session:opencode:<id>`），三者合併為一張；broker 沒有新增路由。細節、API 對照與驗證見 [DISPATCH.md](DISPATCH.md)。
 
-之後改由對話視窗收發，並加入 Claude Code（每個對話一個 `claude` stream-json 子行程，`dispatch/claude.py`）與 Codex（共用一個 `codex app-server` JSON-RPC 子行程，`dispatch/codex.py`）；兩者經 `dispatch/adapter.py` 的轉接器介面接到 Dispatcher，輸出統一成 OpenCode V2 形狀，store／通知／對話畫面不必分家。
+之後改由對話視窗收發，並加入 Claude Code（每個對話一個 `claude` stream-json 子行程，`dispatch/claude.py`）、Codex（共用一個 `codex app-server` JSON-RPC 子行程，`dispatch/codex.py`）與 Grok（共用一個 `grok agent stdio` ACP 子行程，`dispatch/grok.py`）；兩者經 `dispatch/adapter.py` 的轉接器介面接到 Dispatcher，輸出統一成 OpenCode V2 形狀，store／通知／對話畫面不必分家。
 
 ## Grok CLI 接入（2026-10-18）
 
