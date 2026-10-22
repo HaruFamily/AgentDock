@@ -450,7 +450,8 @@ class _Head(QWidget):
         self._press = None
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
-        if e.button() == Qt.MouseButton.LeftButton and self._press is not None and not self._dragged:
+        if e.button() == Qt.MouseButton.LeftButton and self._press is not None and not self._dragged \
+                and not self.fold.locked:
             self.fold.set_collapsed(not self.fold.collapsed, emit=True)
         self._press = None
 
@@ -529,6 +530,7 @@ class Fold(QWidget):
             outer.setContentsMargins(8, 6, 8, 6)
         outer.setSpacing(2)
         self.drag_id: str | None = None  # set for Agent groups: the header can be dragged to reorder
+        self.locked = False              # a section shown as a tab is always open
         head = _Head(self)
         head.setObjectName("SectionHead" if section else "GroupHead")
         head.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
@@ -613,10 +615,17 @@ def _type_rank(t: str) -> int:
 class AgentsView(QWidget):
     summary_changed = Signal(str, bool)  # one line for the floating card, alert
 
+    SECTIONS = (("agents", "Agent"), ("library", "MCP 庫"), ("extensions", "擴充庫"))
+
     def __init__(self, manager: AgentManager, library: Library, on_changed: Callable[[], None] = lambda: None,
-                 ui_state: dict[str, Any] | None = None, save_state: Callable[[], None] = lambda: None) -> None:
+                 ui_state: dict[str, Any] | None = None, save_state: Callable[[], None] = lambda: None,
+                 wide: bool = False) -> None:
         super().__init__()
         self.setObjectName("SettingsPage")
+        # wide: a page of the conversation window (title, one section per tab, centred column);
+        # otherwise the narrow floating-card page with all sections stacked.
+        self.wide = wide
+        self.setProperty("wide", wide)
         self.manager = manager
         self.library = library
         self.on_changed = on_changed
@@ -640,6 +649,7 @@ class AgentsView(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self.root_layout = root
         settings_footer = QFrame()
         settings_footer.setObjectName("SettingsFooter")
         settings_actions = QHBoxLayout(settings_footer)
@@ -652,11 +662,40 @@ class AgentsView(QWidget):
         backup_menu.addAction("匯入敏感設定（加密）…", lambda: self.guard(self._import_secrets))
         self.settings_menu_button.setMenu(settings_menu)
         settings_actions.addWidget(self.settings_menu_button)
+        if wide:
+            settings_footer.hide()
+            self.settings_menu_button.setText("進階")
+            head = QHBoxLayout()
+            head.setContentsMargins(32, 24, 32, 8)
+            head.setSpacing(8)
+            title = QLabel("設定")
+            title.setObjectName("PageTitle")
+            head.addWidget(title)
+            head.addSpacing(16)
+            self.tabs: dict[str, QPushButton] = {}
+            for key, text in self.SECTIONS:
+                tab = button(text)
+                tab.setProperty("seg", True)
+                tab.setCheckable(True)
+                tab.clicked.connect(lambda _c=False, k=key: self.show_section(k))
+                head.addWidget(tab)
+                self.tabs[key] = tab
+            head.addStretch(1)
+            head.addWidget(self.settings_menu_button)
+            column_head = QWidget()
+            column_head.setLayout(head)
+            column_head.setMaximumWidth(1024)
+            top = QHBoxLayout()
+            top.addStretch(1)
+            top.addWidget(column_head, 100)
+            top.addStretch(1)
         self.notice = QLabel("")
         self.notice.setObjectName("Toast")
         self.notice.setWordWrap(True)
         self.notice.hide()
         self._notice_timer.timeout.connect(self.notice.hide)
+        if wide:
+            root.addLayout(top)
         root.addWidget(self.notice)
         scroll = QScrollArea()
         self.scroll = scroll
@@ -671,8 +710,19 @@ class AgentsView(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.body = QWidget()
-        self.lay = QVBoxLayout(self.body)
-        self.lay.setContentsMargins(10, 10, 10, 14)
+        if wide:
+            centre = QHBoxLayout(self.body)
+            centre.setContentsMargins(32, 8, 32, 20)
+            centre.addStretch(1)
+            column = QWidget()
+            column.setMaximumWidth(960)
+            centre.addWidget(column, 100)
+            centre.addStretch(1)
+            self.lay = QVBoxLayout(column)
+            self.lay.setContentsMargins(0, 0, 0, 0)
+        else:
+            self.lay = QVBoxLayout(self.body)
+            self.lay.setContentsMargins(10, 10, 10, 14)
         self.lay.setSpacing(20)
         scroll.setWidget(self.body)
         root.addWidget(scroll, 1)
@@ -692,7 +742,16 @@ class AgentsView(QWidget):
         bl.addWidget(self.clear_btn)
         bl.addWidget(self.update_btn)
         bl.addWidget(self.apply_btn)
-        root.addWidget(self.bar)
+        if wide:
+            self.bar.setMaximumWidth(1024)
+            holder = QHBoxLayout()
+            holder.setContentsMargins(32, 0, 32, 12)
+            holder.addStretch(1)
+            holder.addWidget(self.bar, 100)
+            holder.addStretch(1)
+            root.addLayout(holder)
+        else:
+            root.addWidget(self.bar)
         root.addWidget(settings_footer)
         self.refresh()
 
@@ -1037,10 +1096,43 @@ class AgentsView(QWidget):
             lib.body_lay.addWidget(self._library_row(entry))
         lib.set_badge(f"({len(entries)}{'*' if self._lib_alerts else ''})", alert=bool(self._lib_alerts))
         self.lay.addWidget(lib)
-        self.lay.addWidget(self._extension_section())
+        extensions = self._extension_section()
+        self.lay.addWidget(extensions)
         self.lay.addStretch()
+        if self.wide:
+            self._as_tabs({"agents": agents, "library": lib, "extensions": extensions})
         self._paint_bar()
         self._emit_summary(len(rows))
+
+    def _as_tabs(self, sections: dict[str, "Fold"]) -> None:
+        """Wide page: each section is a tab; its header keeps only the count and its buttons."""
+        self.sections = sections
+        for key, fold in sections.items():
+            fold.set_collapsed(False)
+            fold.locked = True
+            fold.arrow.hide()
+            fold.title.hide()
+            fold.setToolTip("")
+            text = dict(self.SECTIONS)[key]
+            if fold.badge_text:
+                text += " " + fold.badge_text.strip("()").replace("*", " •")
+            self.tabs[key].setText(text)
+            fold.set_meta(fold.badge_text.strip("()").replace("*", "") + " 項" if fold.badge_text else "")
+            if key != "agents":   # plain lists sit in one card, like each Agent
+                fold.body.setObjectName("WideList")
+                fold.body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+                fold.body_lay.setContentsMargins(14, 10, 10, 10)
+        self.show_section(self.ui_state.get("settings_tab", "agents"), save=False)
+
+    def show_section(self, key: str, save: bool = True) -> None:
+        if key not in dict(self.SECTIONS):
+            key = "agents"
+        for name, fold in getattr(self, "sections", {}).items():
+            fold.setVisible(name == key)
+            self.tabs[name].setChecked(name == key)
+        if save and self.ui_state.get("settings_tab") != key:
+            self.ui_state["settings_tab"] = key
+            self.save_state()
 
     def _paint_bar(self) -> None:
         pending_needs = [n for n in self.needs if not self._op_for(n["profile"], n["server"])]

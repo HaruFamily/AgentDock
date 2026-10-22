@@ -4,8 +4,8 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from agentdock.ui import theme
 from agentdock.ui.card import Bar, card_style
@@ -14,13 +14,14 @@ from agentdock.ui.card import Bar, card_style
 class QuotaView(QWidget):
     """Remaining quota per provider and window. `compact`: one line per window, no errors or plans."""
 
-    def __init__(self, model, compact: bool = False):
+    def __init__(self, model, compact: bool = False, columns: int = 1, show_head: bool = True):
         super().__init__()
-        self.model, self.compact = model, compact
+        self.model, self.compact, self.columns = model, compact, columns
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         head = QHBoxLayout()
+        self.head = head
         self.updated = QLabel('')
         self.updated.setObjectName('CardMeta')
         head.addWidget(self.updated, 1)
@@ -29,13 +30,23 @@ class QuotaView(QWidget):
         self.refresh_button.setToolTip('立即更新額度')
         self.refresh_button.clicked.connect(lambda: self.model and self.model.collect())
         head.addWidget(self.refresh_button)
-        layout.addLayout(head)
+        if show_head:
+            layout.addLayout(head)
         self.body = QWidget()
-        self.rows = QVBoxLayout(self.body)
-        self.rows.setContentsMargins(0, 0, 0, 0)
-        self.rows.setSpacing(2)
-        if compact:
-            layout.addWidget(self.body)
+        if columns > 1:
+            # Cards in a grid; each provider is one card.
+            self.rows = QGridLayout(self.body)
+            self.rows.setContentsMargins(0, 0, 0, 0)
+            self.rows.setHorizontalSpacing(14)
+            self.rows.setVerticalSpacing(14)
+            for c in range(columns):
+                self.rows.setColumnStretch(c, 1)
+        else:
+            self.rows = QVBoxLayout(self.body)
+            self.rows.setContentsMargins(0, 0, 0, 0)
+            self.rows.setSpacing(2)
+        if compact or columns > 1:
+            layout.addWidget(self.body)   # the page around a card grid scrolls instead
         else:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -63,16 +74,30 @@ class QuotaView(QWidget):
         from agentdock.tools.tokengauge import gauge
         when = time.strftime('%H:%M', time.localtime(q.last)) if q.last else ''
         self.updated.setText(theme.t('updating') if q.busy else (theme.t('updated', t=when) if when else theme.t('no_quota')))
-        for r in q.visible_results():
-            self.rows.addWidget(self._provider(r, gauge))
-        if not self.compact:
+        results = q.visible_results()
+        for n, r in enumerate(results):
+            if self.columns > 1:
+                self.rows.addWidget(self._provider(r, gauge), n // self.columns, n % self.columns,
+                                    Qt.AlignmentFlag.AlignTop)
+            else:
+                self.rows.addWidget(self._provider(r, gauge))
+        if self.columns > 1:
+            self.rows.setRowStretch((len(results) + self.columns - 1) // self.columns, 1)
+        elif not self.compact:
             self.rows.addStretch()
 
     def _provider(self, r, gauge) -> QWidget:
-        box = QWidget()
+        box = QFrame()
         v = QVBoxLayout(box)
-        v.setContentsMargins(0, 0, 0, 2 if self.compact else 6)
-        v.setSpacing(1)
+        if self.columns > 1:
+            box.setObjectName('QuotaCard')
+            box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+            box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            v.setContentsMargins(12, 10, 12, 12)
+            v.setSpacing(4)
+        else:
+            v.setContentsMargins(0, 0, 0, 2 if self.compact else 6)
+            v.setSpacing(1)
         head = QHBoxLayout()
         head.setContentsMargins(4, 2, 4, 1)
         name = QLabel(r.name)
@@ -162,26 +187,49 @@ class ToolsPage(QWidget):
 
     def __init__(self, model, float_on: bool, extra: list[tuple[str, QWidget]]):
         super().__init__()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 24)
-        layout.setSpacing(12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        body = QWidget()
+        centre = QHBoxLayout(body)
+        centre.setContentsMargins(32, 24, 32, 24)
+        centre.addStretch(1)
+        column = QWidget()
+        column.setMaximumWidth(960)
+        centre.addWidget(column, 100)
+        centre.addStretch(1)
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        self.quota = QuotaView(model, columns=2, show_head=False)
         head = QHBoxLayout()
+        head.setSpacing(10)
         title = QLabel('額度')
         title.setObjectName('PageTitle')
-        head.addWidget(title, 1)
+        head.addWidget(title)
+        head.addWidget(self.quota.updated, 0, Qt.AlignmentFlag.AlignBottom)
+        head.addWidget(self.quota.refresh_button, 0, Qt.AlignmentFlag.AlignBottom)
+        head.addStretch(1)
         self.float_switch = QCheckBox('額度浮動視窗')
         self.float_switch.setChecked(float_on)
         self.float_switch.toggled.connect(self.float_toggled.emit)
-        head.addWidget(self.float_switch)
+        head.addWidget(self.float_switch, 0, Qt.AlignmentFlag.AlignBottom)
         layout.addLayout(head)
-        self.quota = QuotaView(model)
-        self.quota.setMaximumWidth(760)
-        layout.addWidget(self.quota, 1)
+        layout.addWidget(self.quota)
         for name, widget in extra:
             label = QLabel(name)
             label.setObjectName('PageTitle')
+            layout.addSpacing(10)
             layout.addWidget(label)
-            layout.addWidget(widget, 1)
+            layout.addWidget(widget)
+        layout.addStretch(1)
+        scroll.setWidget(body)
+        self.restyle()
 
     def restyle(self) -> None:
+        # The update time and ⟳ moved here from the quota view; they keep its look.
+        self.setStyleSheet(card_style())
         self.quota.restyle()

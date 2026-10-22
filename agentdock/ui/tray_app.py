@@ -86,7 +86,7 @@ class TrayApp(Dock):
         self.apply_theme(self.ui.get('theme', 'princess' if local_theme else 'clean'), save=False)
         self.dispatcher = Dispatcher(self.store.dispatch, notify=self.bus.notice.emit)
         self.projects = ProjectStore(self.data, emit=self.bus.changed.emit)
-        self.agents = AgentsView(self.manager, self.library, ui_state=self.ui, save_state=self._save_ui)
+        self.agents = AgentsView(self.manager, self.library, ui_state=self.ui, save_state=self._save_ui, wide=True)
         self.quota = None
         try:
             from agentdock.tools.tokengauge import QuotaModel

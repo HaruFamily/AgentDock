@@ -51,6 +51,10 @@ def _style() -> str:
 #ChatChip {{ border: 1px solid {t.LINE}; border-radius: 11px; padding: 2px 10px; color: {t.MUTED}; font-size: 12px; background: transparent; }}
 #EndLine {{ color: {t.MUTED}; font-size: 12px; }}
 #EndLine[failed="true"] {{ color: {t.DANGER}; }}
+QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
+#SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
+#SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 14px; }}
+#QuotaCard {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 14px; }}
 """
 
 

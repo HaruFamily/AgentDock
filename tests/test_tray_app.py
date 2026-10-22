@@ -166,3 +166,27 @@ def test_settings_remove_retired_inbox_instead_of_migrating(tmp_path, ui_app, na
     assert set(tomlkit.parse(cfg.read_text(encoding='utf-8')).unwrap()['mcp_servers']) == {'zeta'}
     assert list((tmp_path / 'data').glob('*.bak')) or any(cfg.parent.glob('*.bak'))   # backed up first
     assert not any(e['key'] == 'inbox-activity' for e in view._addable_extensions(manager.get(profile.id)))
+
+
+def test_wide_settings_show_one_section_per_tab(tmp_path, ui_app):
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView
+    manager, library = AgentManager(tmp_path / 'data'), Library(tmp_path / 'repo', tmp_path / 'data')
+    manager.add('Codex', 'codex', str(tmp_path / 'config.toml'))
+    state, saved = {}, []
+    view = AgentsView(manager, library, ui_state=state, save_state=lambda: saved.append(1), wide=True)
+    view.resize(1100, 800)
+    view.show()
+    assert set(view.tabs) == {'agents', 'library', 'extensions'} and view.tabs['agents'].isChecked()
+    assert view.sections['agents'].isVisible() and not view.sections['library'].isVisible()
+    view.tabs['library'].click()
+    assert view.sections['library'].isVisible() and not view.sections['agents'].isVisible()
+    assert state['settings_tab'] == 'library' and saved
+    lib = view.sections['library']
+    lib.head.itemAt(0).widget()  # header still holds the buttons
+    view.refresh()                # a rebuild keeps the chosen tab and keeps sections open
+    assert view.sections['library'].isVisible() and not view.sections['library'].collapsed
+    assert view.sections['library'].locked and not view.settings_menu_button.isHidden()
+    narrow = AgentsView(manager, library)
+    assert not hasattr(narrow, 'tabs') and narrow.property('wide') is False
