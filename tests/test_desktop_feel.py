@@ -241,3 +241,34 @@ def test_claude_model_names_carry_the_version():
     bar.set_options(options, {})
     assert bar.model_chip.text() == 'Opus 5.5'
     assert [a.text() for a in bar.model_chip.menu_.actions()][:2] == ['預設（Opus 5.5）', 'Opus 5.5']
+
+
+# --------------------------------------------------------------------------- the local look's decorations
+def test_local_look_paints_parts_of_the_chat_window(window, monkeypatch):
+    import types
+    from agentdock.ui import theme
+    win, make, store, sender, notes, work, projects, state, app = window
+    assert not theme.decorated('panel')   # nothing local: the plain look
+    calls = []
+
+    def hook(name):
+        return lambda painter, rect, *args: calls.append(name)
+    local = types.SimpleNamespace(**{f'draw_{n}': hook(n) for n in ('canvas', 'panel', 'box', 'heading')})
+    local.draw_box = lambda *_a: (_ for _ in ()).throw(RuntimeError('broken'))   # a failing hook never breaks painting
+    monkeypatch.setattr(theme, 'PRIVATE', local)
+    monkeypatch.setattr(theme, 'CUTE', True)
+    win.refresh_theme()
+    win.show_new()
+    win.repaint()
+    app.processEvents()
+    assert {'canvas', 'panel', 'heading'} <= set(calls)
+    assert win.sidebar.layout().contentsMargins().top() == 40
+    assert 'background: transparent; border-right: none' in win.styleSheet()
+
+
+def test_rounding_stays_within_half_the_height(window):
+    import re
+    win, make, store, sender, notes, work, projects, state, app = window
+    css = win.styleSheet()
+    radius = lambda name: int(re.search(rf'#{name} {{[^}}]*border-radius: (\d+)px', css).group(1))
+    assert radius('UserBubble') * 2 <= 36 and radius('ToolRow') * 2 <= 28

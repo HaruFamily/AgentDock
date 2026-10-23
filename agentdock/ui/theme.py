@@ -135,6 +135,28 @@ def apply(name: str) -> str:
     return STYLE
 
 
+def decorated(name: str) -> bool:
+    """Whether the local look paints `name` itself (draw_<name> in data/private_theme.py)."""
+    return bool(CUTE and PRIVATE is not None and callable(getattr(PRIVATE, f"draw_{name}", None)))
+
+
+def decorate(name: str, painter, rect, *args) -> bool:
+    """Let the local look paint a part of the chat window (canvas, panel, box, heading, bubble...).
+    False when it does not, so the caller keeps the plain look; a failing hook never breaks painting."""
+    if not decorated(name):
+        return False
+    painter.save()
+    try:
+        getattr(PRIVATE, f"draw_{name}")(painter, rect, *args)
+        return True
+    except Exception:
+        import logging
+        logging.exception("local appearance: draw_%s", name)
+        return False
+    finally:
+        painter.restore()
+
+
 def t(key: str, **kw) -> str:
     cute, plain = WORDS[key]
     return (cute if CUTE else plain).format(**kw)

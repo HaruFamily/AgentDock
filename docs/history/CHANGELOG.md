@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：對話視窗圓角與本機主題裝飾。_style 依可愛外觀加大圓角，單行元件（UserBubble 最小高 36、ToolRow）半徑不超過高度一半；ConversationTree.drawRow 畫整列圓角選取／滑過底色，關掉系統 Highlight 與 branch；theme.decorated／decorate 與 chat_window.paint_decor：ChatWindow（canvas）、Sidebar（panel）、Composer（box）、HeadingLabel（heading），畫了的部分改透明並加邊距。新增 2 項測試，完整 311 項通過。
+
 - 2026-10-23：Claude 模型名稱含版本（`model_label`：description 開頭「Opus 5.5」），預設模型以 `model_default`（Default 的 currently …）顯示在晶片與「預設（…）」；Esc 在沒有焦點時也清搜尋。新增 1 項測試，完整 309 項通過。
 
 - 2026-10-23：對話視窗操作對齊桌面版。SettingsBar 改為兩顆 ChipButton（模型＋推理同一選單、權限；`pick()`），Composer 底列「＋」、圓形 RoundButton（送出／停止依執行中與是否打字切換）、Suggestions（`/` 指令、`@` 專案檔案 `project_files`）、↑ 叫回上一則；NewConversationView 改為輸入框下方專案或資料夾晶片（set_folder／set_project）、Agent 晶片與「最近」RecentRow；Rail 改為只有圖示，聊天鈕／Ctrl+B 收起清單（ui.json `sidebar_hidden`），清單放進 QSplitter（`sidebar_width`）；清單滑過「⋯」、釘選（DispatchStore.set_pinned；track 保留 pinned 與 custom_title）；SearchPalette（Ctrl+K）；ConversationView「↓」回到最新；整窗拖放檔案；Claude Code initialize 的 commands 記進 options。Claude Code 在對話視窗顯示為「Claude」（SOURCES，載入時依 client 更新）；ClaudeClient.options 沒有模型時以 `_probe` 送 initialize 取得（每次執行一次，略過 value=default），選項加 `mode_default`，SettingsBar 以它代替「預設權限」；Claude MODES 拿掉 auto。新增 11 項測試，完整 308 項通過。

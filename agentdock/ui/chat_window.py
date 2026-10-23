@@ -129,48 +129,57 @@ def context_text(usage: dict | None) -> str:
 
 def _style() -> str:
     t = theme
+    # The sweet look rounds everything more; parts the local look paints itself drop their plain box.
+    big, mid, small = (26, 20, 14) if t.CUTE else (18, 14, 8)
+    # Qt drops the rounding when a radius exceeds half the height: single-line parts get their own.
+    bubble, pill = (17, 14) if t.CUTE else (14, 8)
+    line = f'1px solid {t.LINE}'
+    rail_bg, rail_line = ('transparent', 'none') if t.decorated('canvas') else (t.CARD, line)
+    side_bg, side_line = ('transparent', 'none') if t.decorated('panel') else (t.CARD, line)
+    box_bg, box_line = ('transparent', 'none') if t.decorated('box') else (t.CARD, line)
+    request_line = f'1px dashed {t.LINE}' if t.CUTE else line
     return f"""
 #ChatWindow {{ background: {t.CANVAS}; }}
-#ChatRail {{ background: {t.CARD}; border-right: 1px solid {t.LINE}; }}
-#ChatRail QPushButton {{ border: none; border-radius: 10px; padding: 10px; background: transparent; }}
+#ChatRail {{ background: {rail_bg}; border-right: {rail_line}; }}
+#ChatRail QPushButton {{ border: none; border-radius: {small}px; padding: 10px; background: transparent; }}
 #ChatRail QPushButton:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatRail QPushButton[current="true"] {{ background: {t.ACCENT_SOFT}; color: {t.ACCENT_DEEP}; font-weight: 700; }}
-#ChatSidebar {{ background: {t.CARD}; border-right: 1px solid {t.LINE}; }}
+#ChatSidebar {{ background: {side_bg}; border-right: {side_line}; }}
 #ChatSplit::handle {{ background: transparent; }}
 QPushButton#RowMore {{ border: none; background: transparent; border-radius: 6px; padding: 0; }}
 QPushButton#RowMore:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatSplit::handle:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatSidebar QTreeWidget {{ background: transparent; border: none; outline: none; }}
-#ChatSidebar QTreeWidget::item {{ min-height: 30px; border-radius: 8px; padding: 2px 4px; }}
-#ChatSidebar QTreeWidget::item:selected {{ background: {t.ACCENT_SOFT}; color: {t.INK}; }}
-#ChatSidebar QTreeWidget::item:hover {{ background: {t.HOVER}; }}
+#ChatSidebar QTreeWidget::item {{ min-height: 30px; padding: 2px 4px; background: transparent; }}
+#ChatSidebar QTreeWidget::item:selected {{ background: transparent; color: {t.INK}; }}
+#ChatSidebar QTreeWidget::branch {{ background: transparent; border: none; }}
 #SectionLabel {{ color: {t.MUTED}; font-size: 12px; }}
-#UserBubble {{ background: {t.ACCENT_SOFT}; border: 1px solid {t.LINE}; border-radius: 14px; }}
-#ToolRow {{ text-align: left; border: 1px solid {t.LINE}; border-radius: 8px; padding: 4px 10px; background: {t.CARD}; color: {t.MUTED}; }}
-#ToolDetail {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 8px; padding: 8px; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 12px; }}
-#Request {{ background: {t.WARN_BG}; border: 1px solid {t.LINE}; border-radius: 12px; }}
-#Composer {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 18px; }}
+#UserBubble {{ background: {t.ACCENT_SOFT}; border: 1px solid {t.LINE}; border-radius: {bubble}px; }}
+#ToolRow {{ text-align: left; border: 1px solid {t.LINE}; border-radius: {pill}px; min-height: 20px; padding: 4px 12px; background: {t.CARD}; color: {t.MUTED}; }}
+#ToolDetail {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; padding: 8px; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 12px; }}
+#Request {{ background: {t.WARN_BG}; border: {request_line}; border-radius: {mid}px; }}
+#Composer {{ background: {box_bg}; border: {box_line}; border-radius: {big}px; }}
 #Composer QPlainTextEdit {{ border: none; background: transparent; }}
 #ConvTitle {{ font-size: 16px; font-weight: 700; }}
 #PageTitle {{ font-size: 22px; font-weight: 700; }}
 #ChatChip {{ border: 1px solid {t.LINE}; border-radius: 11px; padding: 2px 10px; color: {t.MUTED}; font-size: 12px; background: transparent; }}
 #EndLine {{ color: {t.MUTED}; font-size: 12px; }}
 #EndLine[failed="true"] {{ color: {t.DANGER}; }}
-#CodeBlock {{ background: {t.ACCENT_SOFT}; border: 1px solid {t.LINE}; border-radius: 10px; }}
+#CodeBlock {{ background: {t.ACCENT_SOFT}; border: 1px solid {t.LINE}; border-radius: {small}px; }}
 #CodeBlock QScrollArea, #CodeBlock QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
 #CodeLang {{ color: {t.MUTED}; font-size: 11px; }}
 QPushButton#MiniButton {{ border: none; background: transparent; color: {t.MUTED}; padding: 2px 8px; font-size: 12px; border-radius: 6px; }}
 QPushButton#MiniButton:hover {{ background: {t.HOVER}; color: {t.INK}; }}
-QPushButton#FileChip {{ border: 1px solid {t.LINE}; border-radius: 10px; padding: 2px 10px; background: {t.CANVAS}; color: {t.INK}; font-size: 12px; }}
+QPushButton#FileChip {{ border: 1px solid {t.LINE}; border-radius: 11px; padding: 2px 10px; background: {t.CANVAS}; color: {t.INK}; font-size: 12px; }}
 #FileNote {{ color: {t.MUTED}; font-size: 12px; }}
 #ErrorText {{ color: {t.DANGER}; }}
 QDialog {{ background: {t.CANVAS}; }}
-QDialog QTreeWidget, QDialog QTextBrowser {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 10px; outline: none; }}
+QDialog QTreeWidget, QDialog QTextBrowser {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; outline: none; }}
 QDialog QTreeWidget::item {{ min-height: 26px; }}
 QDialog QTreeWidget::item:selected {{ background: {t.ACCENT_SOFT}; color: {t.INK}; }}
 QDialog QHeaderView::section {{ background: {t.CARD}; color: {t.MUTED}; border: none; border-bottom: 1px solid {t.LINE}; padding: 4px 6px; }}
 #ChatChip[high="true"] {{ color: {t.DANGER}; border-color: {t.DANGER}; }}
-QPushButton#Chip {{ border: none; background: transparent; color: {t.MUTED}; padding: 4px 20px 4px 8px; border-radius: 8px; font-size: 13px; text-align: left; }}
+QPushButton#Chip {{ border: none; background: transparent; color: {t.MUTED}; padding: 4px 20px 4px 8px; border-radius: 12px; font-size: 13px; text-align: left; }}
 QPushButton#Chip:hover {{ background: {t.HOVER}; color: {t.INK}; }}
 QPushButton#Chip:disabled {{ color: {t.DIM}; }}
 QPushButton#IconButton {{ border: none; background: transparent; border-radius: 15px; padding: 0; }}
@@ -179,27 +188,27 @@ QPushButton#RoundButton, QPushButton#StopButton {{ border: none; border-radius: 
 QPushButton#RoundButton:hover, QPushButton#StopButton:hover {{ background: {t.ACCENT_DEEP}; }}
 QPushButton#RoundButton:disabled {{ background: {t.DIM}; }}
 #HomeTitle {{ font-size: 28px; font-weight: 700; }}
-QPushButton#RecentRow {{ border: none; background: transparent; border-radius: 10px; padding: 0; text-align: left; }}
+QPushButton#RecentRow {{ border: none; background: transparent; border-radius: {small}px; padding: 0; text-align: left; }}
 QPushButton#RecentRow:hover {{ background: {t.HOVER}; }}
 #RecentTitle {{ font-size: 14px; }}
 #RecentMeta {{ color: {t.MUTED}; font-size: 12px; }}
 #RecentAlert {{ color: {t.ALERT}; font-size: 12px; }}
-#DiffView {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 8px; padding: 8px; }}
+#DiffView {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; padding: 8px; }}
 #Reasoning {{ color: {t.MUTED}; }}
-#FindBar {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 10px; }}
+#FindBar {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; }}
 QPushButton#LatestButton {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 16px; padding: 0; }}
 QPushButton#LatestButton:hover {{ border-color: {t.ACCENT}; }}
 #PaletteBackdrop {{ background: rgba(0, 0, 0, 40); }}
-#Palette {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 16px; }}
+#Palette {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {big}px; }}
 #Palette QListWidget {{ border: none; }}
 #Palette QListWidget::item {{ padding: 6px 10px; }}
 #Suggestions {{ background: transparent; border: none; border-bottom: 1px solid {t.LINE}; outline: none; padding: 0 0 4px 0; }}
-#Suggestions::item {{ padding: 4px 8px; border-radius: 8px; color: {t.INK}; }}
+#Suggestions::item {{ padding: 4px 8px; border-radius: 10px; color: {t.INK}; }}
 #Suggestions::item:selected {{ background: {t.ACCENT_SOFT}; color: {t.ACCENT_DEEP}; }}
 QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
 #SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
-#SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 14px; }}
-#QuotaCard {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 14px; }}
+#SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
+#QuotaCard {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
 """
 
 
@@ -230,6 +239,17 @@ ICONS = {
     'shield': 'M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z',
     'agent': 'M12 8V4M8 4h8M6 8h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM9 13h.01M15 13h.01',
 }
+
+
+def paint_decor(widget, name: str, event, *args) -> None:
+    """After the widget's own painting, let the local look draw `name` over its whole rect."""
+    if theme.decorated(name):
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QPainter
+        painter = QPainter(widget)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        theme.decorate(name, painter, QRectF(widget.rect()), *args)
+        painter.end()
 
 
 def on_accent() -> str:
@@ -366,9 +386,42 @@ class ConversationTree(QTreeWidget):
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        from PySide6.QtGui import QColor, QPalette
+        palette = self.palette()   # drawRow paints the rounded highlight; the system's square one stays off
+        for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.HighlightedText):
+            palette.setColor(role, QColor(0, 0, 0, 0) if role == QPalette.ColorRole.Highlight else QColor(theme.INK or '#000'))
+        self.setPalette(palette)
         self.header().setStretchLastSection(False)
         self.header().setSectionResizeMode(0, self.header().ResizeMode.Stretch)
         self.header().setSectionResizeMode(1, self.header().ResizeMode.ResizeToContents)
+
+    def drawRow(self, painter, option, index):  # noqa: N802
+        """One rounded highlight for the whole row; per-cell backgrounds would split it in two."""
+        from PySide6.QtGui import QCursor, QPainter
+        selected = self.selectionModel().isSelected(index)
+        hovered = index == self.indexAt(self.viewport().mapFromGlobal(QCursor.pos()))
+        if selected or hovered:
+            first = self.visualRect(index.siblingAtColumn(0))
+            rect = option.rect.adjusted(first.left() - option.rect.left(), 1, -2, -1)
+            radius = 13 if theme.CUTE else 8
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(theme_color('ACCENT_SOFT' if selected else 'HOVER'))
+            painter.drawRoundedRect(rect, radius, radius)
+            painter.restore()
+        super().drawRow(painter, option, index)
+
+    def drawBranches(self, painter, rect, index):  # noqa: N802
+        pass   # no expand arrows; the indent would otherwise show the system's square selection colour
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        super().mouseMoveEvent(event)
+        self.viewport().update()
+
+    def leaveEvent(self, event):  # noqa: N802
+        super().leaveEvent(event)
+        self.viewport().update()
 
     @staticmethod
     def _project_at(item) -> str | None:
@@ -450,6 +503,14 @@ class Sidebar(QFrame):
         self.tree.key_action.connect(lambda action, key: (window.delete_conversation(key) if action == 'delete'
                                                           else window.rename_conversation(key)))
         layout.addWidget(self.tree, 1)
+
+    def restyle(self) -> None:
+        # A painted panel (lace, ruffles) needs room around the list.
+        self.layout().setContentsMargins(*((26, 40, 26, 26) if theme.decorated('panel') else (12, 14, 12, 12)))
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        paint_decor(self, 'panel', event, 26)
 
     def keys(self) -> list[str]:
         """Conversation keys in the order shown."""
@@ -867,6 +928,7 @@ class MessageWidget(QWidget):
             bubble = QFrame()
             bubble.setObjectName('UserBubble')
             bubble.setMaximumWidth(620)
+            bubble.setMinimumHeight(36)   # a one-line bubble stays round (radius at most half the height)
             inner = QVBoxLayout(bubble)
             inner.setContentsMargins(14, 10, 14, 10)
             # Not the shared label(): its ignored width policy would collapse a bubble to one column.
@@ -1649,7 +1711,12 @@ class Composer(QFrame):
         layout.addLayout(self.bar)
         self.restyle()
 
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        paint_decor(self, 'box', event, 26)
+
     def restyle(self) -> None:
+        self.layout().setContentsMargins(*((24, 22, 22, 20) if theme.decorated('box') else (12, 12, 10, 10)))
         self.attach.setIcon(icon('plus', theme.MUTED or '#888888', 18))
         for chip in (self.settings.model_chip, self.settings.mode_chip, self.send, self.stop):
             chip.restyle()
@@ -1901,6 +1968,26 @@ class FindBar(QFrame):
 
 
 # --------------------------------------------------------------------------- new conversation
+class HeadingLabel(QLabel):
+    """The new-conversation title; the local look may put a ribbon behind it."""
+
+    def paintEvent(self, event):  # noqa: N802
+        if theme.decorated('heading'):
+            from PySide6.QtCore import QRectF
+            from PySide6.QtGui import QPainter
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            width = self.fontMetrics().horizontalAdvance(self.text())
+            text = QRectF((self.width() - width) / 2, 0, width, self.height())
+            theme.decorate('heading', painter, QRectF(self.rect()), text)
+            painter.end()
+        super().paintEvent(event)
+
+    def sizeHint(self):  # noqa: N802
+        hint = super().sizeHint()
+        return QSize(hint.width(), hint.height() + (24 if theme.decorated('heading') else 0))
+
+
 class RecentRow(QPushButton):
     """One conversation under the new-conversation box: title, then its state, Agent and time."""
 
@@ -1951,7 +2038,7 @@ class NewConversationView(QWidget):
         lay = QVBoxLayout(column)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        heading = QLabel('要做什麼？')
+        heading = HeadingLabel('要做什麼？')
         heading.setObjectName('HomeTitle')
         heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(heading)
@@ -2900,6 +2987,8 @@ class ChatWindow(QWidget):
             composer.restyle()
         for chip in (self.new_view.place, self.new_view.agent_chip):
             chip.restyle()
+        self.sidebar.restyle()
+        self.update()
         self.conversation.more_button.setIcon(icon('more', theme.MUTED or '#888888', 18))
         self.rail.set_current(self.rail.current)
         self.sidebar.refresh()
@@ -2936,6 +3025,10 @@ class ChatWindow(QWidget):
             target.add_files([u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()])
             target.text.setFocus()
             event.acceptProposedAction()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        paint_decor(self, 'canvas', event)
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
