@@ -138,6 +138,7 @@ def _style() -> str:
     side_bg, side_line = ('transparent', 'none') if t.decorated('panel') else (t.CARD, line)
     box_bg, box_line = ('transparent', 'none') if t.decorated('box') else (t.CARD, line)
     bubble_bg, bubble_line = ('transparent', 'none') if t.decorated('bubble') else (t.ACCENT_SOFT, line)
+    code_bg, code_line = ('transparent', 'none') if t.decorated('code') else (t.ACCENT_SOFT, line)
     request_line = f'1px dashed {t.LINE}' if t.CUTE else line
     return f"""
 #ChatWindow {{ background: {t.CANVAS}; }}
@@ -166,7 +167,7 @@ QPushButton#RowMore:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatChip {{ border: 1px solid {t.LINE}; border-radius: 11px; padding: 2px 10px; color: {t.MUTED}; font-size: 12px; background: transparent; }}
 #EndLine {{ color: {t.MUTED}; font-size: 12px; }}
 #EndLine[failed="true"] {{ color: {t.DANGER}; }}
-#CodeBlock {{ background: {t.ACCENT_SOFT}; border: 1px solid {t.LINE}; border-radius: {small}px; }}
+#CodeBlock {{ background: {code_bg}; border: {code_line}; border-radius: {small}px; }}
 #CodeBlock QScrollArea, #CodeBlock QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
 #CodeLang {{ color: {t.MUTED}; font-size: 11px; }}
 QPushButton#MiniButton {{ border: none; background: transparent; color: {t.MUTED}; padding: 2px 8px; font-size: 12px; border-radius: 6px; }}
@@ -210,7 +211,7 @@ QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
 #SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
 #SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
 #QuotaCard {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
-"""
+""" + t.extra_style('chat')
 
 
 class Bridge(QObject):
@@ -376,11 +377,16 @@ class Rail(QFrame):
         self.buttons[name] = b
         return b
 
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        paint_decor(self, 'rail', event)
+
     def set_current(self, name: str) -> None:
         self.current = name
         for key, b in self.buttons.items():
             b.setIcon(icon('plus' if key == 'new' else key,
-                           (theme.ACCENT_DEEP if key == name else theme.MUTED) or '#888888'))
+                           (theme.ACCENT_DEEP if key == name else (theme.ACCENT if theme.CUTE else theme.MUTED))
+                           or '#888888'))
             b.setProperty('current', key == name)
             b.style().unpolish(b)
             b.style().polish(b)
@@ -754,7 +760,7 @@ class ReasoningRow(QWidget):
 
     def update_part(self, part: dict) -> None:
         self.part = part
-        self.toggle.setText(('▾' if self.toggle.isChecked() else '▸') + ' 思考過程')
+        self.toggle.setText(theme.t('fold_open' if self.toggle.isChecked() else 'fold_closed') + ' 思考過程')
         source = f":::note\n{part.get('text', '')}\n:::"   # muted, smaller: it is not the answer
         if self.text.source != source:
             self.text.source = source
@@ -802,7 +808,7 @@ class ToolRow(QWidget):
         text = f'{head}  {summary}' if summary else head
         if len(text) > 90:
             text = text[:89] + '…'
-        self.arrow = '▾' if self.toggle.isChecked() else '▸'
+        self.arrow = theme.t('fold_open' if self.toggle.isChecked() else 'fold_closed')
         self.toggle.setText(f'{self.arrow} {text}{mark}')
         diff = diff_of(part)
         hidden = {'old_string', 'new_string', 'oldString', 'newString', 'edits'} if diff else set()
@@ -850,7 +856,7 @@ class CodeBlock(QFrame):
         layout.setContentsMargins(0, 0, 0, 6)
         layout.setSpacing(0)
         head = QHBoxLayout()
-        head.setContentsMargins(10, 2, 4, 0)
+        head.setContentsMargins(*((16, 8, 10, 2) if theme.decorated('code') else (10, 2, 4, 0)))
         self.language = QLabel()
         self.language.setObjectName('CodeLang')
         head.addWidget(self.language, 1)
@@ -871,6 +877,12 @@ class CodeBlock(QFrame):
         layout.addWidget(self.area)
         self.code = ''
         self.set_code(language, code)
+
+    def paintEvent(self, event):  # noqa: N802
+        if theme.decorated('code'):
+            paint_decor(self, 'code', event)
+            return
+        super().paintEvent(event)
 
     def set_code(self, language: str, code: str) -> None:
         self.code = code
@@ -985,8 +997,15 @@ class MessageWidget(QWidget):
             self.layout_.addLayout(row)
             self.setVisible(bool(text))   # a normal finish needs no line, nor its spacing
         else:
+            if theme.decorated('reply'):
+                self.layout_.setContentsMargins(54, 14, 18, 12)   # room for the card and its avatar
             self._add_actions(right=False, edit=False)
             self.update_item(item)
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        if self.item.get('kind') == 'assistant':
+            paint_decor(self, 'reply', event)
 
     def _add_actions(self, right: bool, edit: bool) -> None:
         """Copy (and edit) under a message, shown while the pointer is over it; the space stays reserved."""
@@ -1997,8 +2016,11 @@ class Bubble(QFrame):
         super().paintEvent(event)
 
 
+MASCOT = 96   # height the local look's mascot gets above the new-conversation title
+
+
 class HeadingLabel(QLabel):
-    """The new-conversation title; the local look may put a ribbon behind it."""
+    """The new-conversation title; the local look may put a ribbon behind it and a mascot above it."""
 
     def paintEvent(self, event):  # noqa: N802
         if theme.decorated('heading'):
@@ -2006,15 +2028,32 @@ class HeadingLabel(QLabel):
             from PySide6.QtGui import QPainter
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            top = MASCOT if theme.decorated('mascot') else 0
             width = self.fontMetrics().horizontalAdvance(self.text())
-            text = QRectF((self.width() - width) / 2, 0, width, self.height())
-            theme.decorate('heading', painter, QRectF(self.rect()), text)
+            band = QRectF(0, top, self.width(), self.height() - top)
+            theme.decorate('heading', painter, band, QRectF((self.width() - width) / 2, top, width, band.height()))
+            painter.end()
+        if theme.decorated('mascot'):
+            from PySide6.QtCore import QRectF
+            from PySide6.QtGui import QPainter
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            theme.decorate('mascot', painter, QRectF(0, 0, self.width(), MASCOT))
             painter.end()
         super().paintEvent(event)
 
     def sizeHint(self):  # noqa: N802
         hint = super().sizeHint()
-        return QSize(hint.width(), hint.height() + (24 if theme.decorated('heading') else 0))
+        extra = (24 if theme.decorated('heading') else 0) + (MASCOT if theme.decorated('mascot') else 0)
+        return QSize(hint.width(), hint.height() + extra)
+
+    def minimumSizeHint(self):  # noqa: N802
+        return self.sizeHint()
+
+    def restyle(self) -> None:
+        # The text sits in the ribbon below the mascot: bottom-aligned, lifted by half the ribbon's extra.
+        self.setContentsMargins(0, 0, 0, 12 if theme.decorated('heading') else 0)
+        self.updateGeometry()
 
 
 class RecentRow(QPushButton):
@@ -2069,7 +2108,8 @@ class NewConversationView(QWidget):
         lay.setSpacing(0)
         self.heading = heading = HeadingLabel(theme.t('chat_heading'))
         heading.setObjectName('HomeTitle')
-        heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        heading.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+        heading.restyle()
         lay.addWidget(heading)
         lay.addSpacing(22)
         self.composer = Composer(self, enter_sends=True, max_lines=12, min_lines=2)
@@ -2670,6 +2710,79 @@ class SearchPalette(QFrame):
             self.hide()
 
 
+class TitleBar(QWidget):
+    """The window's own title bar when the local look draws one (draw_titlebar): drag to move, double-click
+    to maximise, and minimise / maximise / close buttons the look paints. Moving and resizing are left to
+    the system (startSystemMove / startSystemResize), so snapping to screen edges keeps working."""
+    HEIGHT = 44
+    BUTTONS = ('min', 'max', 'close')
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window_ = window
+        self.setFixedHeight(self.HEIGHT)
+        self.setMouseTracking(True)
+        self.hovered = ''
+        self.pressed = ''
+
+    def button_rects(self) -> dict:
+        from PySide6.QtCore import QRectF
+        size, gap = 30, 6
+        right = self.width() - 14
+        rects = {}
+        for name in reversed(self.BUTTONS):
+            rects[name] = QRectF(right - size, (self.height() - size) / 2, size, size)
+            right -= size + gap
+        return rects
+
+    def _at(self, pos) -> str:
+        return next((name for name, r in self.button_rects().items() if r.contains(pos)), '')
+
+    def paintEvent(self, event):  # noqa: N802
+        from PySide6.QtCore import QRectF
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        theme.decorate('titlebar', painter, QRectF(self.rect()), self.window_.windowTitle(), self.button_rects(),
+                       self.hovered, self.window_.isMaximized())
+        painter.end()
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        name = self._at(event.position())
+        if name != self.hovered:
+            self.hovered = name
+            self.update()
+
+    def leaveEvent(self, event):  # noqa: N802
+        self.hovered = ''
+        self.update()
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        self.pressed = self._at(event.position())
+        if not self.pressed and self.window_.windowHandle() is not None:
+            self.window_.windowHandle().startSystemMove()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        name = self._at(event.position())
+        if name and name == self.pressed:
+            self.act(name)
+        self.pressed = ''
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        if not self._at(event.position()):
+            self.act('max')
+
+    def act(self, name: str) -> None:
+        w = self.window_
+        if name == 'min':
+            w.showMinimized()
+        elif name == 'max':
+            w.showNormal() if w.isMaximized() else w.showMaximized()
+        elif name == 'close':
+            w.close()
+
+
 class ChatWindow(QWidget):
     closed = Signal()
     page_changed = Signal(str)   # 'chat', or a page added with add_page
@@ -2689,9 +2802,18 @@ class ChatWindow(QWidget):
         self.setMinimumSize(QSize(900, 600))
         self.setAcceptDrops(True)
         self.bridge = Bridge()
-        layout = QHBoxLayout(self)
+        self.outer = QVBoxLayout(self)
+        self.outer.setContentsMargins(0, 0, 0, 0)
+        self.outer.setSpacing(0)
+        self.titlebar = TitleBar(self)
+        self.titlebar.hide()
+        self.outer.addWidget(self.titlebar)
+        layout = QHBoxLayout()
         layout.setContentsMargins(RAIL, 0, 0, 0)   # the rail floats over this margin
         layout.setSpacing(0)
+        self.outer.addLayout(layout, 1)
+        self.frameless = False
+        self.setMouseTracking(True)
         self.sidebar = Sidebar(self)
         self.pages = QStackedWidget()
         self.split = QSplitter(Qt.Orientation.Horizontal)
@@ -3017,8 +3139,10 @@ class ChatWindow(QWidget):
         for chip in (self.new_view.place, self.new_view.agent_chip):
             chip.restyle()
         self.sidebar.restyle()
+        self._frame_mode()
         self.sidebar.new_button.setText(theme.t('chat_new'))
         self.new_view.heading.setText(theme.t('chat_heading'))
+        self.new_view.heading.restyle()
         from agentdock.ui import cute
         cute.tint_caption(self)
         self.update()
@@ -3059,14 +3183,86 @@ class ChatWindow(QWidget):
             target.text.setFocus()
             event.acceptProposedAction()
 
+    # -- the look's own frame ---------------------------------------------------------
+    BORDER = 9
+
+    def _border(self) -> int:
+        return self.BORDER if self.frameless and not self.isMaximized() else 0
+
+    def _frame_mode(self) -> None:
+        """Frameless with the look's title bar and rounded, laced edge when it draws one; else the system's."""
+        frameless = theme.decorated('titlebar')
+        if frameless != self.frameless:
+            shown = self.isVisible()
+            geometry = self.geometry()
+            self.frameless = frameless
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint, frameless)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, frameless)
+            if shown:
+                self.setGeometry(geometry)
+                self.show()
+        self.titlebar.setVisible(frameless)
+        b = self._border()
+        self.outer.setContentsMargins(b, b, b, b)
+        self._place_rail()
+        self.update()
+
+    def _place_rail(self) -> None:
+        b = self._border()
+        top = b + (self.titlebar.height() if self.frameless else 0)
+        self.rail.setGeometry(b, top, self.rail.width(), self.height() - top - b)
+        self.rail.raise_()
+
+    def _edges(self, pos):
+        b = self._border()
+        if not b:
+            return Qt.Edge(0)
+        grip = b + 2
+        edges = Qt.Edge(0)
+        if pos.x() <= grip:
+            edges |= Qt.Edge.LeftEdge
+        if pos.x() >= self.width() - grip:
+            edges |= Qt.Edge.RightEdge
+        if pos.y() <= grip:
+            edges |= Qt.Edge.TopEdge
+        if pos.y() >= self.height() - grip:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        edges = self._edges(event.position().toPoint())
+        shapes = {Qt.Edge.LeftEdge: Qt.CursorShape.SizeHorCursor, Qt.Edge.RightEdge: Qt.CursorShape.SizeHorCursor,
+                  Qt.Edge.TopEdge: Qt.CursorShape.SizeVerCursor, Qt.Edge.BottomEdge: Qt.CursorShape.SizeVerCursor,
+                  Qt.Edge.LeftEdge | Qt.Edge.TopEdge: Qt.CursorShape.SizeFDiagCursor,
+                  Qt.Edge.RightEdge | Qt.Edge.BottomEdge: Qt.CursorShape.SizeFDiagCursor,
+                  Qt.Edge.RightEdge | Qt.Edge.TopEdge: Qt.CursorShape.SizeBDiagCursor,
+                  Qt.Edge.LeftEdge | Qt.Edge.BottomEdge: Qt.CursorShape.SizeBDiagCursor}
+        shape = shapes.get(edges)
+        if shape is None:
+            self.unsetCursor()
+        else:
+            self.setCursor(shape)
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        edges = self._edges(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton and edges and self.windowHandle() is not None:
+            self.windowHandle().startSystemResize(edges)
+            return
+        super().mousePressEvent(event)
+
     def paintEvent(self, event):  # noqa: N802
         super().paintEvent(event)
-        paint_decor(self, 'canvas', event)
+        if theme.decorated('canvas'):
+            paint_decor(self, 'canvas', event, self._border())
+        elif self.frameless:   # a transparent window must still get a background
+            painter = QPainter(self)
+            painter.fillRect(self.rect(), theme_color('CANVAS'))
+            painter.end()
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
-        self.rail.setGeometry(0, 0, self.rail.width(), self.height())
-        self.rail.raise_()
+        self._place_rail()
         palette = getattr(self, 'palette_', None)
         if palette is not None and palette.isVisible():
             palette.open()
@@ -3085,6 +3281,12 @@ class ChatWindow(QWidget):
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
+        if not hasattr(self, 'titlebar'):
+            return   # still being built
+        if event.type() == QEvent.Type.WindowStateChange and self.frameless:
+            self._frame_mode()
+        if event.type() == QEvent.Type.WindowTitleChange:
+            self.titlebar.update()
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             self.conversation.update_row()
 

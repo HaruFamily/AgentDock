@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：TitleBar 與無框主視窗（_frame_mode、BORDER 9、_edges、startSystemMove／startSystemResize、WindowStateChange 更新邊距）；掛鉤 rail、reply（assistant MessageWidget）、code（CodeBlock）、mascot（HeadingLabel 上方）；theme.extra_style（STYLE_APP／STYLE_CHAT）；WORDS fold_closed／fold_open；可愛外觀窄欄圖示用 ACCENT。測試改為不依賴假 Claude 的事件時序。新增 1 項測試，完整 313 項通過。
+
 - 2026-10-23：新增 `ui/cute.py`（Dresser 事件過濾器：對話框無框＋draw_dialog、選單／提示框透明視窗、QMessageBox 中文按鈕與主題圖示；tint_caption 以 DWM 屬性 33–36 設主視窗圓角與標題列顏色），TrayApp 安裝；RoundButton 的 draw_round、Bubble 的 draw_bubble；WORDS 加 chat_heading、chat_new。新增 1 項測試，完整 312 項通過。
 
 - 2026-10-23：對話視窗圓角與本機主題裝飾。_style 依可愛外觀加大圓角，單行元件（UserBubble 最小高 36、ToolRow）半徑不超過高度一半；ConversationTree.drawRow 畫整列圓角選取／滑過底色，關掉系統 Highlight 與 branch；theme.decorated／decorate 與 chat_window.paint_decor：ChatWindow（canvas）、Sidebar（panel）、Composer（box）、HeadingLabel（heading），畫了的部分改透明並加邊距。新增 2 項測試，完整 311 項通過。

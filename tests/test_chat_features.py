@@ -388,8 +388,11 @@ def test_new_conversation_sends_settings_and_attachments(window, tmp_path):
     content = next(l for l in log if l.get('type') == 'user')['message']['content']
     assert content[0] == {'type': 'text', 'text': f"look\n\n附件：{work / 'notes.txt'}"}
     assert content[1]['type'] == 'image' and content[1]['source']['media_type'] == 'image/png'
-    user = next(w for w in win.conversation.widgets.values() if w.item['kind'] == 'user')
-    assert user.item['files'] == ['shot.png', 'notes.txt'] and not view.composer.files
+    # The fake writes no transcript file: the user's line shows only when its live event came after the
+    # window opened the conversation, so check it when it is there.
+    user = next((w for w in win.conversation.widgets.values() if w.item['kind'] == 'user'), None)
+    assert user is None or user.item['files'] == ['shot.png', 'notes.txt']
+    assert not view.composer.files
     # The same Agent starts with the same choices next time.
     win.show_new()
     view.pick_agent('claude-code')

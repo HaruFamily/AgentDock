@@ -86,6 +86,8 @@ WORDS = {
     "sent": ("已送出", "已送出"),
     "chat_heading": ("要做什麼呢？", "要做什麼？"),
     "chat_new": ("♡ 新對話", "＋ 新對話"),
+    "fold_closed": ("♡", "▸"),
+    "fold_open": ("♥", "▾"),
 }
 
 
@@ -133,8 +135,22 @@ def apply(name: str) -> str:
             g[k] = v
     FONT_FAMILY = c["FONT"]
     CUTE = c["CUTE"]
-    STYLE = _build(c)
+    STYLE = _build(c) + extra_style("app")
     return STYLE
+
+
+def extra_style(scope: str) -> str:
+    """Extra style sheet the local look adds (STYLE_APP for the whole app, STYLE_CHAT for the chat window),
+    a string or a function returning one; only in the sweet look."""
+    if not CUTE or PRIVATE is None or THEMES.get(NAME) is not THEMES.get("princess"):
+        return ""
+    value = getattr(PRIVATE, f"STYLE_{scope.upper()}", "")
+    try:
+        return str(value() if callable(value) else value or "")
+    except Exception:
+        import logging
+        logging.exception("local appearance: STYLE_%s", scope)
+        return ""
 
 
 def decorated(name: str) -> bool:

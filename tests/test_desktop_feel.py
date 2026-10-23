@@ -312,3 +312,33 @@ def test_dialogs_lose_the_square_system_frame(ui_app, monkeypatch):
         plain.hide()
     finally:
         ui_app.removeEventFilter(dresser)
+
+
+def test_window_draws_its_own_title_bar(window, monkeypatch):
+    import types
+    from PySide6.QtCore import QPoint, Qt
+    from agentdock.ui import theme
+    win, make, store, sender, notes, work, projects, state, app = window
+    assert not win.frameless and win.titlebar.isHidden()
+    seen = []
+    monkeypatch.setattr(theme, 'CUTE', True)
+    monkeypatch.setattr(theme, 'PRIVATE', types.SimpleNamespace(
+        draw_titlebar=lambda p, r, title, buttons, hovered, maximized: seen.append((title, sorted(buttons))),
+        draw_canvas=lambda p, r, border: seen.append(('canvas', border))))
+    win.refresh_theme()
+    app.processEvents()
+    win.repaint()
+    assert win.frameless and win.isVisible() and not win.titlebar.isHidden()
+    assert win.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert ('AgentDock', ['close', 'max', 'min']) in seen and ('canvas', win.BORDER) in seen
+    assert win.rail.y() == win.BORDER + win.titlebar.height()
+    assert win._edges(QPoint(1, 1)) == Qt.Edge.LeftEdge | Qt.Edge.TopEdge and not win._edges(QPoint(300, 300))
+    closed = []
+    win.closed.connect(lambda: closed.append(1))
+    win.titlebar.act('close')
+    assert closed and not win.isVisible()
+    # Back to the system frame with the plain look.
+    monkeypatch.setattr(theme, 'PRIVATE', None)
+    win.show()
+    win.refresh_theme()
+    assert not win.frameless and win.titlebar.isHidden() and win.rail.y() == 0
