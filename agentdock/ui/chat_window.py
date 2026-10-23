@@ -1582,7 +1582,10 @@ class SettingsBar(QObject):
         return next((t for i, t in self.choices[field] if i == value), '') if value else ''
 
     def _default_text(self, field: str) -> str:
-        """Only when the Agent does not say what its default is."""
+        """Only when the Agent does not say what its default is. OpenCode without a variant names that
+        state itself (effort_unset: the model reasons its own way)."""
+        if field == 'effort' and self.options.get('effort_unset'):
+            return str(self.options['effort_unset'])
         return self.DEFAULTS[field]
 
     def _render(self) -> None:

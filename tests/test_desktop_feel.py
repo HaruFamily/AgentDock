@@ -366,3 +366,37 @@ def test_codex_and_grok_report_their_real_defaults(window):
     bar = win.new_view.composer.settings
     wait(lambda: bar.model_chip.text() == 'GPT X', app=app)
     assert bar.effort_chip.text() == '高' and bar.values() == {'model': '', 'effort': '', 'mode': ''}
+
+
+def test_opencode_shows_the_model_it_really_uses(ui_app, tmp_path, monkeypatch):
+    import json
+    from agentdock.dispatch.opencode import OpenCodeService
+    from agentdock.ui.chat_window import SettingsBar
+    from test_dispatch import PASSWORD, FakeOpenCode
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    fake = FakeOpenCode()
+    try:
+        service = OpenCodeService(fake.url, PASSWORD, fake.version)
+        options = service.options(str(tmp_path))
+        assert options['defaults'] == {} and options['effort_unset'] == '標準'   # nothing says: no model shown as real
+        # The model OpenCode last used (its state) with the variant it remembers for it.
+        (tmp_path / 'state' / 'opencode').mkdir(parents=True)
+        (tmp_path / 'state' / 'opencode' / 'model.json').write_text(json.dumps(
+            {'recent': [{'providerID': 'openai', 'modelID': 'gpt-a'}], 'variant': {'openai/gpt-a': 'high'}}), encoding='utf-8')
+        assert service.options(str(tmp_path))['defaults'] == {'model': 'openai/gpt-a', 'effort': {'openai/gpt-a': 'high'}}
+        # The user's config beats it; a project's opencode.jsonc beats that.
+        (tmp_path / 'config' / 'opencode').mkdir(parents=True)
+        (tmp_path / 'config' / 'opencode' / 'opencode.json').write_text('{"model": "openai/gpt-b"}', encoding='utf-8')
+        assert service.options(str(tmp_path))['defaults']['model'] == 'openai/gpt-b'
+        fake.config = {'model': 'openai/gpt-a'}
+        options = service.options(str(tmp_path))
+        assert options['defaults']['model'] == 'openai/gpt-a'
+        bar = SettingsBar()
+        bar.set_options(options, {})
+        assert bar.model_chip.text() == 'GPT A' and bar.effort_chip.text() == '高'
+        bar.pick('model', 'openai/gpt-b')
+        assert bar.effort_chip.text() == '標準'
+        assert [a.text() for a in bar.effort_chip.menu_.actions()] == ['標準', '低', '高']
+    finally:
+        fake.close()

@@ -200,11 +200,56 @@ class OpenCodeService:
                 models.append({'id': f"{m.get('providerID')}/{m.get('id')}", 'label': str(m.get('name') or m.get('id')),
                                'efforts': [str(v.get('id')) for v in m.get('variants') or [] if v.get('id')],
                                'context': int((m.get('limit') or {}).get('context') or 0)})
+        raw_agents = (self.request('GET', '/api/agent' + query) or {}).get('data', [])
         agents = [{'id': str(a['id']), 'label': str(a.get('name') or a['id'])}
-                  for a in (self.request('GET', '/api/agent' + query) or {}).get('data', [])
-                  if a.get('mode') in ('primary', 'all') and not a.get('hidden')]
+                  for a in raw_agents if a.get('mode') in ('primary', 'all') and not a.get('hidden')]
         default = next((a['id'] for a in agents if a['id'] == 'build'), '')
-        return {'models': models, 'modes': agents, **({'mode_default': default} if default else {})}
+        build = next((a for a in raw_agents if a.get('id') == (default or 'build')), {})
+        model, variant = self._default_model(directory, query, build, {m['id'] for m in models})
+        defaults = {**({'model': model} if model else {}), **({'effort': {model: variant}} if model and variant else {})}
+        return {'models': models, 'modes': agents, **({'mode_default': default} if default else {}),
+                'defaults': defaults, 'effort_unset': '標準'}   # no variant: the model's own reasoning
+
+    def _default_model(self, directory: str, query: str, agent: dict, known: set[str]) -> tuple[str, str]:
+        """The model (and variant) OpenCode uses when none is chosen, in its own order: the agent's model,
+        the config's `model`, the model it last used (state model.json), then the latest conversation's."""
+        def ref(value) -> tuple[str, str]:
+            if isinstance(value, str) and '/' in value:
+                return value, ''
+            if isinstance(value, dict):
+                name = value.get('modelID') or value.get('id') or ''
+                provider = value.get('providerID') or ''
+                return (f'{provider}/{name}' if provider and name else ''), str(value.get('variant') or '')
+            return '', ''
+
+        candidates = [ref(agent.get('model'))]
+        if agent.get('variant') and candidates[0][0]:
+            candidates[0] = (candidates[0][0], str(agent['variant']))
+        try:
+            config = (self.request('GET', '/api/config' + query) or {}).get('data') or {}
+        except Exception:
+            config = {}
+        candidates.append(ref(config.get('model')))
+        candidates += [ref(c.get('model')) for c in config_files(directory)]
+        variants: dict = {}
+        try:
+            state = json.loads((state_dir() / 'model.json').read_text(encoding='utf-8'))
+            variants = state.get('variant') if isinstance(state.get('variant'), dict) else {}
+            candidates += [ref(r) for r in (state.get('recent') or [])[:1]]
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            latest = self.sessions(limit=1)
+            for message in self.messages(latest[0]['id'], 10) if latest else []:
+                if message.get('type') == 'assistant' and message.get('model'):
+                    candidates.append(ref(message['model']))
+                    break
+        except Exception:
+            pass
+        for model, variant in candidates:
+            if model in known:
+                return model, variant or str(variants.get(model) or '')
+        return '', ''
 
     def interrupt(self, session_id: str) -> bool:
         return bool((self.request('POST', f'/api/session/{_q(session_id)}/interrupt') or {}).get('interrupted'))
@@ -247,6 +292,23 @@ class OpenCodeService:
         data = page.get('data', [])
         older = (page.get('cursor') or {}).get('next') if len(data) >= limit else None
         return data, older
+
+
+def config_files(directory: str) -> list[dict]:
+    """OpenCode's config files that can set `model`: the project's first, then the user's."""
+    from agentdock.agents import strip_jsonc
+    out = []
+    folders = [Path(directory)] if directory else []
+    folders.append(Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'opencode')
+    for folder in folders:
+        for name in ('opencode.json', 'opencode.jsonc'):
+            try:
+                data = json.loads(strip_jsonc((folder / name).read_text(encoding='utf-8'))[0] or '{}')
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict):
+                out.append(data)
+    return out
 
 
 def _q(value: str) -> str:

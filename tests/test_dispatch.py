@@ -21,6 +21,7 @@ class FakeOpenCode:
     """Just enough of the OpenCode V2 API, with the event payloads seen from opencode 2.0.32."""
 
     def __init__(self, version='2.0.32'):
+        self.config = {}
         self.version = version
         self.sessions, self.permissions, self.forms, self.messages = {}, {}, {}, {}
         self.active, self.listeners, self.calls = set(), [], []
@@ -79,6 +80,15 @@ class FakeOpenCode:
                 parts = path.strip('/').split('/')
                 if path == '/api/info':
                     return self._json(200, {'version': fake.version})
+                if path == '/api/model':
+                    return self._json(200, {'data': [
+                        {'providerID': 'openai', 'id': 'gpt-a', 'name': 'GPT A', 'variants': [{'id': 'low'}, {'id': 'high'}]},
+                        {'providerID': 'openai', 'id': 'gpt-b', 'name': 'GPT B', 'variants': [{'id': 'low'}, {'id': 'high'}]}]})
+                if path == '/api/agent':
+                    return self._json(200, {'data': [{'id': 'build', 'name': 'Build', 'mode': 'primary'},
+                                                     {'id': 'plan', 'name': 'Plan', 'mode': 'primary'}]})
+                if path == '/api/config':
+                    return self._json(200, {'data': fake.config})
                 if path == '/api/session':
                     return self._json(200, {'data': [{**s, 'time': {'updated': 1700000000000}}
                                                      for s in fake.sessions.values()]})

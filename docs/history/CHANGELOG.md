@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：OpenCode 回報實際會用的模型與 variant（OpenCodeService._default_model、config_files；options effort_unset＝「標準」）。假 OpenCode 加 /api/model、/api/agent、/api/config。新增 1 項測試，完整 315 項通過。
+
 - 2026-10-23：選項回報實際預設值（options `defaults`；Claude probe 加送 get_settings，learned(init, applied)；Codex isDefault／defaultReasoningEffort／config/read；Grok currentModelId），SettingsBar 以實際值顯示並不另列「預設…」；新對話頁拿掉標題文字（HeadingLabel 改為只畫吉祥物的 Mascot，移除 draw_heading 與 WORDS chat_heading）。假 claude 支援 get_settings。新增 1 項測試，完整 314 項通過。
 
 - 2026-10-23：模型與推理強度拆成兩顆晶片（SettingsBar.effort_chip）。完整 313 項通過。
