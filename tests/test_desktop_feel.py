@@ -241,6 +241,9 @@ def test_claude_model_names_carry_the_version():
     bar.set_options(options, {})
     assert bar.model_chip.text() == 'Opus 5.5'
     assert [a.text() for a in bar.model_chip.menu_.actions()][:2] == ['預設（Opus 5.5）', 'Opus 5.5']
+    assert bar.effort_chip.text() == '預設推理'
+    bar.pick('model', 'opus')
+    assert [a.text() for a in bar.effort_chip.menu_.actions()] == ['預設推理', '低', '高']
 
 
 # --------------------------------------------------------------------------- the local look's decorations

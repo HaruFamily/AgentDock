@@ -1514,7 +1514,8 @@ class ConversationView(QWidget):
 class SettingsBar(QObject):
     """Model, reasoning effort and permission mode for one conversation; '' leaves the client's default.
 
-    Two chips as in desktop chat apps: `model_chip` (model and reasoning, one menu) and `mode_chip`; the
+    Chips as in desktop chat apps: `model_chip`, then `effort_chip` (what the chosen model offers), and
+    `mode_chip`; the
     composer places them."""
     changed = Signal(str, str)   # field, value
     DEFAULTS = {'model': '預設模型', 'effort': '預設推理', 'mode': '預設權限'}
@@ -1522,9 +1523,10 @@ class SettingsBar(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model_chip = ChipButton()
+        self.effort_chip = ChipButton()
         self.mode_chip = ChipButton('shield')
-        self.model_chip.hide()
-        self.mode_chip.hide()
+        for chip in (self.model_chip, self.effort_chip, self.mode_chip):
+            chip.hide()
         self.options: dict = {}
         self.current = {'model': '', 'effort': '', 'mode': ''}
         self.choices: dict[str, list[tuple[str, str]]] = {'model': [], 'effort': [], 'mode': []}
@@ -1581,33 +1583,30 @@ class SettingsBar(QObject):
         return f'預設（{actual}）' if actual else self.DEFAULTS[field]
 
     def _render(self) -> None:
-        has_model = bool(self.choices['model'] or self.choices['effort'])
         model = self._label('model') or str(self.options.get('model_default') or '') or self.DEFAULTS['model']
-        effort = self._label('effort')
-        self.model_chip.setText(f'{model}  {effort}' if effort else model)
-        self.model_chip.setVisible(has_model)
+        self.model_chip.setText(model)
+        self.model_chip.setVisible(bool(self.choices['model']))
+        self.effort_chip.setText(self._label('effort') or self.DEFAULTS['effort'])
+        self.effort_chip.setVisible(bool(self.choices['effort']))
         self.mode_chip.setText(self._label('mode') or self.DEFAULTS['mode'])
         self.mode_chip.setVisible(bool(self.choices['mode']))
         self._menus()
 
     def _menus(self) -> None:
         from PySide6.QtGui import QActionGroup
-        for chip, fields in ((self.model_chip, ('model', 'effort')), (self.mode_chip, ('mode',))):
+        for chip, field in ((self.model_chip, 'model'), (self.effort_chip, 'effort'), (self.mode_chip, 'mode')):
             menu = chip.menu_
             menu.clear()
-            for n, field in enumerate(fields):
-                if not self.choices[field]:
-                    continue
-                if n:
-                    menu.addSection('推理')
-                group = QActionGroup(menu)
-                own = field == 'mode' and self._default_mode()
-                entries = self.choices[field] if own else [('', self._default_text(field))] + self.choices[field]
-                for item_id, text in entries:
-                    action = menu.addAction(text, lambda f=field, v=item_id: self.pick(f, v))
-                    action.setCheckable(True)
-                    action.setChecked(item_id == self._shown(field))
-                    group.addAction(action)
+            if not self.choices[field]:
+                continue
+            group = QActionGroup(menu)
+            own = field == 'mode' and self._default_mode()
+            entries = self.choices[field] if own else [('', self._default_text(field))] + self.choices[field]
+            for item_id, text in entries:
+                action = menu.addAction(text, lambda f=field, v=item_id: self.pick(f, v))
+                action.setCheckable(True)
+                action.setChecked(item_id == self._shown(field))
+                group.addAction(action)
 
     def pick(self, field: str, value: str) -> None:
         """The user chose `value` for `field` (from a chip's menu)."""
@@ -1735,6 +1734,7 @@ class Composer(QFrame):
         self.bar.addWidget(self.settings.mode_chip)
         self.bar.addStretch(1)
         self.bar.addWidget(self.settings.model_chip)
+        self.bar.addWidget(self.settings.effort_chip)
         self.stop = RoundButton('stop', '停止', self)
         self.stop.setObjectName('StopButton')
         self.stop.hide()
@@ -1756,7 +1756,7 @@ class Composer(QFrame):
     def restyle(self) -> None:
         self.layout().setContentsMargins(*((24, 22, 22, 20) if theme.decorated('box') else (12, 12, 10, 10)))
         self.attach.setIcon(icon('plus', theme.MUTED or '#888888', 18))
-        for chip in (self.settings.model_chip, self.settings.mode_chip, self.send, self.stop):
+        for chip in (self.settings.model_chip, self.settings.effort_chip, self.settings.mode_chip, self.send, self.stop):
             chip.restyle()
 
     # -- typing helpers ------------------------------------------------------------

@@ -347,16 +347,16 @@ def test_settings_bar_follows_the_model(ui_app):
                'modes': [{'id': 'plan', 'label': '計畫'}]}
     bar.set_options(options, {'model': 'a', 'effort': 'high', 'mode': ''})
     assert bar.values() == {'model': 'a', 'effort': 'high', 'mode': ''} and changes == []
-    assert bar.efforts() == ['low', 'high'] and bar.model_chip.text() == 'A  高'
-    menu = [a.text() for a in bar.model_chip.menu_.actions()]
-    assert menu == ['預設模型', 'A', 'B', '推理', '預設推理', '低', '高']
+    assert bar.efforts() == ['low', 'high'] and bar.model_chip.text() == 'A' and bar.effort_chip.text() == '高'
+    assert [a.text() for a in bar.model_chip.menu_.actions()] == ['預設模型', 'A', 'B']
+    assert [a.text() for a in bar.effort_chip.menu_.actions()] == ['預設推理', '低', '高']
     bar.pick('model', 'b')
     assert ('model', 'b') in changes and ('effort', '') in changes and bar.efforts() == []   # B has no efforts
-    assert bar.model_chip.text() == 'B'
+    assert bar.model_chip.text() == 'B' and bar.effort_chip.isHidden()
     bar.set_options(options, {'mode': 'plan'}, mode_locked=True)
     assert not bar.mode_chip.isEnabled() and bar.values()['mode'] == 'plan' and bar.mode_chip.text() == '計畫'
     bar.set_options({}, {})
-    assert bar.model_chip.isHidden() and bar.mode_chip.isHidden()
+    assert bar.model_chip.isHidden() and bar.effort_chip.isHidden() and bar.mode_chip.isHidden()
 
 
 def test_new_conversation_sends_settings_and_attachments(window, tmp_path):
