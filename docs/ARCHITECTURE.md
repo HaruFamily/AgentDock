@@ -80,7 +80,8 @@ Inbox 可送任務給 OpenCode 2.x 並在卡片上授權、回答、接續與停
   問答頁內嵌 `inbox_view.InboxView`，設定頁內嵌 `agents_view.AgentsView`（外觀只在右鍵選單切換），外部工具成為額外的頁。
   新通知由 app.py 交給 ui/notifications.py 彙整分級數量、主題色符號角標及可選提示音（無文字彈窗）；點擊時依待授權、新問題、舊待答、失敗、完成與其他結果導覽，不自動切頁。提示控制器以穩定請求識別去重，持續保留待處理標記，原生活動失效後移除授權提醒。
   裝飾繪圖由本機主題的 draw_frame、draw_icon、draw_bar 提供，共用程式只包含預設極簡外觀；Ctrl+Alt+H 切回極簡時也關閉舊外觀的選擇題泡泡。全螢幕偵測在 winutil.foreground_is_fullscreen()。
-- `ui/theme.py`：內建黑綠極簡外觀，load_private() 從 data/private_theme.py 載入 CONFIG 與三個繪圖函式。對話視窗另可選用 `draw_canvas(p, rect)`、`draw_panel(p, rect, radius)`（對話清單）、`draw_box(p, rect, radius)`（輸入框）、`draw_heading(p, rect, text_rect)`（新對話標題）：`theme.decorated(name)`／`theme.decorate(name, ...)` 只在可愛外觀且本機主題有該函式時使用，畫了的部分樣式表改為透明並留出邊距，函式出錯只記 log、退回一般外觀。檔案缺少、無效或 DEVICE 不符合本機名稱時退回極簡；私人檔案不納入 Git 或設定匯出。
+- `ui/theme.py`：內建黑綠極簡外觀，load_private() 從 data/private_theme.py 載入 CONFIG 與三個繪圖函式。對話視窗另可選用 `draw_canvas(p, rect)`、`draw_panel(p, rect, radius)`（對話清單）、`draw_box(p, rect, radius)`（輸入框）、`draw_heading(p, rect, text_rect)`（新對話標題）：`theme.decorated(name)`／`theme.decorate(name, ...)` 只在可愛外觀且本機主題有該函式時使用，畫了的部分樣式表改為透明並留出邊距，函式出錯只記 log、退回一般外觀。另有 `draw_bubble(p, rect)`（自己的訊息）、`draw_round(p, rect, icon, enabled, hovered)`（送出／停止）與 `draw_dialog(p, rect, title, close_rect, hovered)`。
+- `ui/cute.py`：App 層級的事件過濾器（TrayApp 安裝）。本機主題有 draw_dialog 時，所有 QDialog（含 QMessageBox、QInputDialog，不含原生檔案對話框）在 Polish 時改為無框透明，由主題畫外框、標題與關閉鈕，標題列可拖曳、點關閉＝reject；可愛外觀下 QMenu 與提示框改透明視窗，圓角才不會露出方角；QMessageBox 按鈕改中文，可愛外觀用 draw_icon 取代系統圖示。`tint_caption()` 在 Windows 11 用 DWM 把主視窗標題列與邊框換成主題色並圓角。檔案缺少、無效或 DEVICE 不符合本機名稱時退回極簡；私人檔案不納入 Git 或設定匯出。
   本機主題可使用額外字型，字型快取放在 data/fonts。新問題通知仍由 app.py 負責。
 - `agents_view._track_known()`：ui.json 的 `known_mcp` 記住各 Agent 設定檔裡的 MCP 名稱；少掉的（不是經 AgentDock 移除的）標成「被移除了」並排入「全部更新」的補回。
 - `secretbox.py`：祕密檔匯出／匯入（scrypt＋AES-256-GCM，只補缺少的項目）。`library.split_local()` 讓本機絕對路徑跟祕密一樣只存 data/secrets.json，

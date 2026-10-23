@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：新增 `ui/cute.py`（Dresser 事件過濾器：對話框無框＋draw_dialog、選單／提示框透明視窗、QMessageBox 中文按鈕與主題圖示；tint_caption 以 DWM 屬性 33–36 設主視窗圓角與標題列顏色），TrayApp 安裝；RoundButton 的 draw_round、Bubble 的 draw_bubble；WORDS 加 chat_heading、chat_new。新增 1 項測試，完整 312 項通過。
+
 - 2026-10-23：對話視窗圓角與本機主題裝飾。_style 依可愛外觀加大圓角，單行元件（UserBubble 最小高 36、ToolRow）半徑不超過高度一半；ConversationTree.drawRow 畫整列圓角選取／滑過底色，關掉系統 Highlight 與 branch；theme.decorated／decorate 與 chat_window.paint_decor：ChatWindow（canvas）、Sidebar（panel）、Composer（box）、HeadingLabel（heading），畫了的部分改透明並加邊距。新增 2 項測試，完整 311 項通過。
 
 - 2026-10-23：Claude 模型名稱含版本（`model_label`：description 開頭「Opus 5.5」），預設模型以 `model_default`（Default 的 currently …）顯示在晶片與「預設（…）」；Esc 在沒有焦點時也清搜尋。新增 1 項測試，完整 309 項通過。

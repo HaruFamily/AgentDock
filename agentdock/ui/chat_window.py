@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtGui import QFontDatabase, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMenu, QMessageBox,
@@ -137,6 +137,7 @@ def _style() -> str:
     rail_bg, rail_line = ('transparent', 'none') if t.decorated('canvas') else (t.CARD, line)
     side_bg, side_line = ('transparent', 'none') if t.decorated('panel') else (t.CARD, line)
     box_bg, box_line = ('transparent', 'none') if t.decorated('box') else (t.CARD, line)
+    bubble_bg, bubble_line = ('transparent', 'none') if t.decorated('bubble') else (t.ACCENT_SOFT, line)
     request_line = f'1px dashed {t.LINE}' if t.CUTE else line
     return f"""
 #ChatWindow {{ background: {t.CANVAS}; }}
@@ -154,7 +155,7 @@ QPushButton#RowMore:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatSidebar QTreeWidget::item:selected {{ background: transparent; color: {t.INK}; }}
 #ChatSidebar QTreeWidget::branch {{ background: transparent; border: none; }}
 #SectionLabel {{ color: {t.MUTED}; font-size: 12px; }}
-#UserBubble {{ background: {t.ACCENT_SOFT}; border: 1px solid {t.LINE}; border-radius: {bubble}px; }}
+#UserBubble {{ background: {bubble_bg}; border: {bubble_line}; border-radius: {bubble}px; }}
 #ToolRow {{ text-align: left; border: 1px solid {t.LINE}; border-radius: {pill}px; min-height: 20px; padding: 4px 12px; background: {t.CARD}; color: {t.MUTED}; }}
 #ToolDetail {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; padding: 8px; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 12px; }}
 #Request {{ background: {t.WARN_BG}; border: {request_line}; border-radius: {mid}px; }}
@@ -323,6 +324,24 @@ class RoundButton(QPushButton):
     def restyle(self) -> None:
         self.setIcon(icon(self.icon_name, on_accent(), 16))
 
+    def paintEvent(self, event):  # noqa: N802
+        if theme.decorated('round'):
+            from PySide6.QtCore import QRectF
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            theme.decorate('round', painter, QRectF(self.rect()), self.icon_name, self.isEnabled(), self.underMouse())
+            painter.end()
+            return
+        super().paintEvent(event)
+
+    def enterEvent(self, event):  # noqa: N802
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):  # noqa: N802
+        super().leaveEvent(event)
+        self.update()
+
 
 # --------------------------------------------------------------------------- rail
 class Rail(QFrame):
@@ -472,7 +491,7 @@ class Sidebar(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 14, 12, 12)
         layout.setSpacing(10)
-        self.new_button = button('＋ 新對話', primary=True)
+        self.new_button = button(theme.t('chat_new'), primary=True)
         self.new_button.clicked.connect(lambda: window.show_new())
         layout.addWidget(self.new_button)
         self.search = QLineEdit()
@@ -925,12 +944,12 @@ class MessageWidget(QWidget):
         if item['kind'] == 'user':
             row = QHBoxLayout()
             row.addStretch(1)
-            bubble = QFrame()
+            bubble = Bubble()
             bubble.setObjectName('UserBubble')
             bubble.setMaximumWidth(620)
             bubble.setMinimumHeight(36)   # a one-line bubble stays round (radius at most half the height)
             inner = QVBoxLayout(bubble)
-            inner.setContentsMargins(14, 10, 14, 10)
+            inner.setContentsMargins(*((18, 11, 26, 13) if theme.decorated('bubble') else (14, 10, 14, 10)))
             # Not the shared label(): its ignored width policy would collapse a bubble to one column.
             self.user_text = QLabel(item['text'])
             self.user_text.setWordWrap(True)
@@ -1968,6 +1987,16 @@ class FindBar(QFrame):
 
 
 # --------------------------------------------------------------------------- new conversation
+class Bubble(QFrame):
+    """The user's own message; the local look may paint it (draw_bubble)."""
+
+    def paintEvent(self, event):  # noqa: N802
+        if theme.decorated('bubble'):
+            paint_decor(self, 'bubble', event)
+            return
+        super().paintEvent(event)
+
+
 class HeadingLabel(QLabel):
     """The new-conversation title; the local look may put a ribbon behind it."""
 
@@ -2038,7 +2067,7 @@ class NewConversationView(QWidget):
         lay = QVBoxLayout(column)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        heading = HeadingLabel('要做什麼？')
+        self.heading = heading = HeadingLabel(theme.t('chat_heading'))
         heading.setObjectName('HomeTitle')
         heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(heading)
@@ -2988,6 +3017,10 @@ class ChatWindow(QWidget):
         for chip in (self.new_view.place, self.new_view.agent_chip):
             chip.restyle()
         self.sidebar.restyle()
+        self.sidebar.new_button.setText(theme.t('chat_new'))
+        self.new_view.heading.setText(theme.t('chat_heading'))
+        from agentdock.ui import cute
+        cute.tint_caption(self)
         self.update()
         self.conversation.more_button.setIcon(icon('more', theme.MUTED or '#888888', 18))
         self.rail.set_current(self.rail.current)
@@ -3040,6 +3073,8 @@ class ChatWindow(QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
+        from agentdock.ui import cute
+        cute.tint_caption(self)
         # Back to the conversation that was open last time; only when the window is first shown, so a
         # start in the tray never loads anything.
         if not self._restored:

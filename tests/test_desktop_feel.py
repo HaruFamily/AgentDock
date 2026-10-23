@@ -272,3 +272,43 @@ def test_rounding_stays_within_half_the_height(window):
     css = win.styleSheet()
     radius = lambda name: int(re.search(rf'#{name} {{[^}}]*border-radius: (\d+)px', css).group(1))
     assert radius('UserBubble') * 2 <= 36 and radius('ToolRow') * 2 <= 28
+
+
+def test_dialogs_lose_the_square_system_frame(ui_app, monkeypatch):
+    import types
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtWidgets import QDialog, QMessageBox, QVBoxLayout, QLabel
+    from agentdock.ui import cute, theme
+    dresser = cute.install(ui_app)
+    try:
+        painted = []
+        monkeypatch.setattr(theme, 'CUTE', True)
+        monkeypatch.setattr(theme, 'PRIVATE', types.SimpleNamespace(
+            draw_dialog=lambda p, r, title, close, hovered: painted.append(title)))
+        dialog = QDialog()
+        dialog.setWindowTitle('刪除對話')
+        QVBoxLayout(dialog).addWidget(QLabel('x'))
+        dialog.show()
+        dialog.repaint()
+        ui_app.processEvents()
+        assert dialog.windowFlags() & Qt.WindowType.FramelessWindowHint and '刪除對話' in painted
+        assert dialog.layout().contentsMargins().top() >= cute.MARGINS[1]
+        closed = []
+        dialog.rejected.connect(lambda: closed.append(1))
+        from PySide6.QtTest import QTest
+        QTest.mouseClick(dialog, Qt.MouseButton.LeftButton, pos=cute.close_rect(dialog).center())
+        assert closed
+        box = QMessageBox(QMessageBox.Icon.Question, 't', 'q', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.show()
+        ui_app.processEvents()
+        assert box.button(QMessageBox.StandardButton.Yes).text() == '是' and box.button(QMessageBox.StandardButton.No).text() == '否'
+        box.hide()
+        # Without the local hook the system frame stays.
+        monkeypatch.setattr(theme, 'PRIVATE', None)
+        plain = QDialog()
+        plain.show()
+        ui_app.processEvents()
+        assert not plain.windowFlags() & Qt.WindowType.FramelessWindowHint
+        plain.hide()
+    finally:
+        ui_app.removeEventFilter(dresser)

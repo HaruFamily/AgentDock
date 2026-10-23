@@ -83,6 +83,8 @@ class TrayApp(Dock):
         self.library.inbox_retired = True
         self.broker = Broker(self.data, self.store, on_show=lambda _id: self.bus.show_requested.emit(), inbox=False)
         local_theme = theme.load_private(self.data)
+        from agentdock.ui import cute
+        self.dresser = cute.install(app)   # dialogs, menus and tooltips follow the sweet look
         self.apply_theme(self.ui.get('theme', 'princess' if local_theme else 'clean'), save=False)
         self.dispatcher = Dispatcher(self.store.dispatch, notify=self.bus.notice.emit)
         self.projects = ProjectStore(self.data, emit=self.bus.changed.emit)
