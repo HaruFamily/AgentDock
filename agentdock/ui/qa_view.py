@@ -204,7 +204,7 @@ class AutoGrowText(PasteTextEdit):
     def _fit(self) -> None:
         line = self.fontMetrics().lineSpacing()
         needed = max(1, int(self.document().size().height() + 0.5))  # plain-text layout reports height in lines
-        lines = min(self.max_lines, needed)
+        lines = min(self.max_lines, max(getattr(self, 'min_lines', 1), needed))
         chrome = int(2 * self.document().documentMargin()) + 2 * self.frameWidth() + 2
         self.setFixedHeight(lines * line + chrome)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if needed > self.max_lines

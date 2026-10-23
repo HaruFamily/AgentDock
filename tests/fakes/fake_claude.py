@@ -123,7 +123,8 @@ log({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'entrypoint': os.environ.get('CLA
 while True:
     message = read()
     if message.get('type') == 'control_request' and message['request'].get('subtype') == 'initialize':
-        out({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': message['request_id'], 'response': {}}})
+        out({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': message['request_id'], 'response': {
+            'commands': [{'name': 'review', 'description': 'Review the changes', 'argumentHint': ''}]}}})
         out({'type': 'system', 'subtype': 'init', 'session_id': SID})
     elif message.get('type') == 'user':
         turn(str(message['message']['content']))

@@ -85,6 +85,10 @@ class DispatchStore:
                    'read': True, 'id': str(uuid.uuid4())}
             if project is not None or 'project' in old:
                 row['project'] = project if project is not None else old['project']
+            if old.get('custom_title'):   # a name the user gave survives a new start
+                row['title'], row['custom_title'] = old['title'], True
+            if old.get('pinned'):
+                row['pinned'] = True
             for name in SETTINGS:   # model, effort, permission mode; '' is the client's own default
                 value = (settings or {}).get(name, old.get(name, ''))
                 if value:
@@ -132,6 +136,17 @@ class DispatchStore:
             if row is None or not title:
                 return
             self.rows = {**self.rows, key: {**row, 'title': title, 'custom_title': True}}
+            self._save()
+        self.emit('change', None)
+
+    def set_pinned(self, key: str, pinned: bool) -> None:
+        """Pinned conversations are listed first."""
+        with self.lock:
+            row = self.rows.get(key)
+            if row is None or bool(row.get('pinned')) == pinned:
+                return
+            row = {**row, 'pinned': True} if pinned else {k: v for k, v in row.items() if k != 'pinned'}
+            self.rows = {**self.rows, key: row}
             self._save()
         self.emit('change', None)
 

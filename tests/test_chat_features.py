@@ -272,7 +272,7 @@ def test_keyboard_new_step_stop_search(window):
     win.open_conversation(first)
     win.new_like_current()
     assert win.pages.currentWidget() is win.new_view and win.new_view.agent == 'grok-cli'
-    assert win.new_view.folder.text() == str(work)
+    assert win.new_view.folder_path == str(work) and win.new_view.place.text() == work.name
     win.focus_search()
     win.sidebar.search.setText('zzz')
     win.escape()
@@ -347,14 +347,16 @@ def test_settings_bar_follows_the_model(ui_app):
                'modes': [{'id': 'plan', 'label': '計畫'}]}
     bar.set_options(options, {'model': 'a', 'effort': 'high', 'mode': ''})
     assert bar.values() == {'model': 'a', 'effort': 'high', 'mode': ''} and changes == []
-    effort = bar.combos['effort']
-    assert [effort.itemText(i) for i in range(effort.count())] == ['預設推理', '低', '高']
-    bar.combos['model'].setCurrentIndex(bar.combos['model'].findData('b'))
-    assert ('model', 'b') in changes and bar.combos['effort'].isHidden()   # B has no efforts to pick
+    assert bar.efforts() == ['low', 'high'] and bar.model_chip.text() == 'A  高'
+    menu = [a.text() for a in bar.model_chip.menu_.actions()]
+    assert menu == ['預設模型', 'A', 'B', '推理', '預設推理', '低', '高']
+    bar.pick('model', 'b')
+    assert ('model', 'b') in changes and ('effort', '') in changes and bar.efforts() == []   # B has no efforts
+    assert bar.model_chip.text() == 'B'
     bar.set_options(options, {'mode': 'plan'}, mode_locked=True)
-    assert not bar.combos['mode'].isEnabled() and bar.values()['mode'] == 'plan'
+    assert not bar.mode_chip.isEnabled() and bar.values()['mode'] == 'plan' and bar.mode_chip.text() == '計畫'
     bar.set_options({}, {})
-    assert all(c.isHidden() for c in bar.combos.values())
+    assert bar.model_chip.isHidden() and bar.mode_chip.isHidden()
 
 
 def test_new_conversation_sends_settings_and_attachments(window, tmp_path):
@@ -367,11 +369,11 @@ def test_new_conversation_sends_settings_and_attachments(window, tmp_path):
     view = win.new_view
     view.pick_agent('claude-code')
     bar = view.composer.settings
-    bar.combos['model'].setCurrentIndex(bar.combos['model'].findData('sonnet'))
-    bar.combos['effort'].setCurrentIndex(bar.combos['effort'].findData('low'))
-    bar.combos['mode'].setCurrentIndex(bar.combos['mode'].findData('plan'))
+    bar.pick('model', 'sonnet')
+    bar.pick('effort', 'low')
+    bar.pick('mode', 'plan')
     assert state['new_settings']['claude-code'] == {'model': 'sonnet', 'effort': 'low', 'mode': 'plan'}
-    view.folder.setText(str(work))
+    view.set_folder(str(work))
     view.composer.add_files([str(work / 'shot.png'), str(work / 'notes.txt'), str(work / 'missing.txt')])
     assert [Path(f).name for f in view.composer.files] == ['shot.png', 'notes.txt']
     view.composer.text.setPlainText('look')
@@ -402,9 +404,9 @@ def test_changing_settings_in_a_conversation(window):
                                                      'modes': [{'id': 'acceptEdits', 'label': '自動接受編輯'}]})
     win.open_conversation(key)
     bar = win.conversation.composer.settings
-    wait(lambda: not bar.combos['model'].isHidden(), app=app)
-    bar.combos['model'].setCurrentIndex(bar.combos['model'].findData('haiku'))
-    bar.combos['mode'].setCurrentIndex(bar.combos['mode'].findData('acceptEdits'))
+    wait(lambda: not bar.model_chip.isHidden(), app=app)
+    bar.pick('model', 'haiku')
+    bar.pick('mode', 'acceptEdits')
     wait(lambda: store.dispatch.get(key).get('mode') == 'acceptEdits', app=app)
     log_file = Path(store.dispatch.file).parent.parent / 'claude.log'
     wait(lambda: sum(l.get('type') == 'control_request' and l['request']['subtype'] in ('set_model', 'set_permission_mode')

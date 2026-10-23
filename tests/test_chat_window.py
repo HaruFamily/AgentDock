@@ -152,7 +152,7 @@ def test_new_conversation_in_project_streams_into_the_window(window, tmp_path, f
     project = projects.add('Repo', str(tmp_path))
     win.show_new(project['id'])
     view = win.new_view
-    assert not view.folder.isVisible() and view.where.text() == os.path.normpath(str(tmp_path))
+    assert view.place.text() == 'Repo' and view.place.toolTip() == os.path.normpath(str(tmp_path))
     view.composer.text.setPlainText('整理 README')
     view.send()
     pump(app, lambda: win.pages.currentWidget() is win.conversation and win.current_key)
@@ -183,7 +183,7 @@ def test_new_conversation_in_project_streams_into_the_window(window, tmp_path, f
 def test_reopening_loads_history_and_inline_permission(window, tmp_path, fake):
     win, store, projects, notes, app = window
     win.show_new()
-    win.new_view.folder.setText(str(tmp_path))
+    win.new_view.set_folder(str(tmp_path))
     win.new_view.composer.text.setPlainText('permission please')
     win.new_view.send()
     pump(app, lambda: win.current_key and store.dispatch.get(win.current_key)['permissions'])
@@ -250,17 +250,18 @@ def test_unsupported_agents_cannot_send(window, tmp_path, fake):
     assert win.new_view.composer.send.isEnabled()
 
 
-def test_rail_hover_and_pages(window):
+def test_rail_pages_and_list_toggle(window):
     win, store, projects, notes, app = window
-    from PySide6.QtCore import QEvent
-    from PySide6.QtGui import QEnterEvent
-    from PySide6.QtCore import QPointF
     opened = []
     win.open_page = opened.append
-    app.sendEvent(win.rail, QEnterEvent(QPointF(5, 5), QPointF(5, 5), QPointF(5, 5)))
-    assert win.rail.width() == 188 and win.rail.buttons['chat'].text().strip() == '聊天'
-    app.sendEvent(win.rail, QEvent(QEvent.Type.Leave))
-    assert win.rail.width() == 56 and win.rail.buttons['chat'].text() == ''
+    assert win.rail.width() == 56 and win.rail.buttons['chat'].toolTip() == '聊天'
+    # 聊天 while chatting hides and shows the list; Ctrl+B does the same.
+    win.rail.buttons['chat'].click()
+    assert win.sidebar.isHidden() and win.rail.buttons['new'].isVisibleTo(win.rail)
+    win.rail.buttons['new'].click()
+    assert win.pages.currentWidget() is win.new_view and win.sidebar.isHidden()
+    win.toggle_sidebar()
+    assert not win.sidebar.isHidden() and not win.rail.buttons['new'].isVisibleTo(win.rail)
     win.rail.buttons['settings'].click()
     win.rail.buttons['tools'].click()
     assert opened == ['settings', 'tools']

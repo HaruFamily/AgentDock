@@ -5,16 +5,17 @@
 ## 使用
 
 - 系統匣圖示或 `AgentDock.exe` 打開對話視窗；關閉視窗只是收回系統匣。
-- 最左窄邊欄：平常只有圖示，滑鼠移上去展開；聊天、工具在上，設定固定最下方。
-- 左側清單：「新對話」、搜尋、「專案」（＋新增），每個專案底下是它的對話，不屬於任何專案的放「未分類」。拖曳對話到另一個專案（或未分類）即可移動；移動只整理清單，工作階段原本的資料夾不變。每個對話右邊是狀態（待授權、進行中、失敗）或最後更新時間（剛剛、5 分、14:03、昨天、10/20）。
-- 對話的右鍵選單：改名（F2；改過的名字不再被 Agent 的標題蓋掉）、移到專案、複製工作階段 ID、在終端機接續（Windows；用該 Agent 自己的指令開新視窗，例如 `claude --resume <id>`，執行中不可用）、刪除（Delete）。專案的右鍵選單：在此專案開新對話、專案設定。
+- 最左窄邊欄：只有圖示（滑鼠停留看名稱）；聊天、工具在上，設定固定最下方。聊天頁再點一次「聊天」或按 Ctrl+B 收起／展開對話清單（記住），收起時窄邊欄多一個「＋」開新對話。清單右緣可拖拉寬度（220–460，記住）。
+- 左側清單：「新對話」、搜尋、「專案」（＋新增），每個專案底下是它的對話，不屬於任何專案的放「未分類」。拖曳對話到另一個專案（或未分類）即可移動；移動只整理清單，工作階段原本的資料夾不變。每個對話右邊是狀態（待授權、進行中、失敗）或最後更新時間（剛剛、5 分、14:03、昨天、10/20）；滑鼠移上去時換成「⋯」，內容同右鍵選單。釘選的對話集中在最上方「釘選」（`dispatch.json` 的 `pinned`）。
+- 對話的右鍵選單：釘選／取消釘選、改名（F2；改過的名字不再被 Agent 的標題蓋掉）、移到專案、複製工作階段 ID、在終端機接續（Windows；用該 Agent 自己的指令開新視窗，例如 `claude --resume <id>`，執行中不可用）、刪除（Delete）。專案的右鍵選單：在此專案開新對話、專案設定。
 - 刪除：預設只從 AgentDock 移除；勾「同時刪除 X 裡的紀錄」才刪 Agent 那邊的工作階段（OpenCode `DELETE /api/session/{id}`、Claude Code 刪紀錄檔與同名資料夾、Codex `thread/delete`、Grok `_x.ai/session/delete`），成功後才從清單移除。執行中的對話不能刪。
 - 專案（`data/projects.json`）：名稱、根目錄、預設 Agent。在專案裡開新對話一律在根目錄執行。對話歸屬：明確拖過去的為準，否則依工作資料夾落在哪個專案根目錄（取最深的），都不是就未分類。
-- 新對話：選 Agent（OpenCode／Claude Code／Codex／Grok）、選專案或未分類（未分類要選資料夾）。在未分類送出時記住這次的 Agent，下次預設用它；專案則用專案的預設 Agent。
-- 對話：完整紀錄（每次 60 則，往上可載入更早），新內容即時出字；工具動作收成一行，點開看參數與輸出；授權與問題顯示在對話最下方；Enter 送出、Shift+Enter 換行，執行中出現「停止」。執行中也能繼續送：OpenCode、Claude Code、Grok 排隊依序處理，Codex 用 `turn/steer` 加進正在跑的那一輪。
+- 新對話（版面同 Claude／Codex 桌面版）：標題、輸入框（底列左邊「＋」附加檔案與權限，右邊模型・推理與圓形送出），輸入框下方「📁 專案或資料夾 ▾」（列出專案、最近用過的資料夾、選擇資料夾…、新增專案…）與「Agent ▾」，最下面「最近」三則對話可直接點回去。在未分類送出時記住這次的 Agent，下次預設用它；專案則用專案的預設 Agent。
+- 對話：完整紀錄（每次 60 則，往上可載入更早），新內容即時出字；工具動作收成一行，點開看參數與輸出；授權與問題顯示在對話最下方；Enter 送出、Shift+Enter 換行；右下角一顆圓鈕，執行中且沒打字時是 ■ 停止，打了字就是 ↑ 送出。往上捲超過一段時右下角出現「↓」回到最新。執行中也能繼續送：OpenCode、Claude Code、Grok 排隊依序處理，Codex 用 `turn/steer` 加進正在跑的那一輪。
 - 訊息：滑鼠移上去出現「複製」（自己的訊息另有「編輯」：放回輸入框改完再送，原訊息保留）；回覆裡的程式碼區塊各自有「複製」，不換行、可左右捲。最後一輪失敗或停止時旁邊有「重試」，重送最後一則訊息。
-- 附件：輸入框左下的迴紋針、拖曳檔案到輸入框、貼上檔案或截圖（截圖存在 `data/attachments/chat/`）。送出前是一排可點掉的標籤，送出後顯示在自己的訊息下方。圖片（png、jpg、gif、webp，5 MB 內）直接給模型看：Claude Code 為 base64 圖片區塊、Codex 為 `localImage`、Grok 為 ACP image 區塊；其他檔案給路徑讓 Agent 自己讀（OpenCode 用 prompt 的 `files`、Grok 用 `resource_link`、Claude Code 與 Codex 在訊息後列出「附件：路徑」）。OpenCode 的圖片同樣走 `files`。
-- 模型、推理強度、權限模式：輸入框下方三個選單，「預設…」代表用該 Agent 自己的設定。清單來自各 Agent（Claude Code 的 initialize 回應、Codex `model/list`、Grok `_x.ai/models/list`、OpenCode `/api/model` 與 `/api/agent`），記在 `dispatch.json` 的 `options`，下次先用記住的再更新。推理強度依所選模型列出。新對話時的選擇依 Agent 記住（`ui.json` 的 `new_settings`）；對話中改了立刻套用：Claude Code 用 `set_model`、`apply_flag_settings`（effortLevel）、`set_permission_mode`，或下次啟動時帶 `--model`／`--effort`／`--permission-mode`；Codex 在下一輪 `turn/start` 帶 model、effort、approvalPolicy、sandboxPolicy（唯讀／自動／完全存取＝Codex 自己的三種預設）；Grok 用 `session/set_config_option`，權限模式（詢問／自動判斷／全部允許）只能在開新對話時選；OpenCode 用 `/model`（推理強度＝模型 variant）與 `/agent`（Build、Plan 等）。
+- 輸入：空白輸入框按 ↑ 叫回上一則自己的訊息。開頭打 `/` 列出指令（AgentDock 的 `/compact`，加上 Agent 回報的指令：目前是 Claude Code initialize 的 `commands`），打 `@` 列出對話資料夾裡的檔案（略過 .git、node_modules、venv、runtime 等，最多 5000 個、快取 30 秒）；↑↓ 選、Tab／Enter 帶入、Esc 關閉。
+- 附件：輸入框左下的「＋」、拖曳檔案到視窗任何地方、貼上檔案或截圖（截圖存在 `data/attachments/chat/`）。送出前是一排可點掉的標籤，送出後顯示在自己的訊息下方。圖片（png、jpg、gif、webp，5 MB 內）直接給模型看：Claude Code 為 base64 圖片區塊、Codex 為 `localImage`、Grok 為 ACP image 區塊；其他檔案給路徑讓 Agent 自己讀（OpenCode 用 prompt 的 `files`、Grok 用 `resource_link`、Claude Code 與 Codex 在訊息後列出「附件：路徑」）。OpenCode 的圖片同樣走 `files`。
+- 模型、推理強度、權限模式：輸入框底列兩顆晶片（右邊模型與推理同一個選單、左邊權限），「預設…」代表用該 Agent 自己的設定。清單來自各 Agent（Claude Code 的 initialize 回應、Codex `model/list`、Grok `_x.ai/models/list`、OpenCode `/api/model` 與 `/api/agent`），記在 `dispatch.json` 的 `options`，下次先用記住的再更新。推理強度依所選模型列出。新對話時的選擇依 Agent 記住（`ui.json` 的 `new_settings`）；對話中改了立刻套用：Claude Code 用 `set_model`、`apply_flag_settings`（effortLevel）、`set_permission_mode`，或下次啟動時帶 `--model`／`--effort`／`--permission-mode`；Codex 在下一輪 `turn/start` 帶 model、effort、approvalPolicy、sandboxPolicy（唯讀／自動／完全存取＝Codex 自己的三種預設）；Grok 用 `session/set_config_option`，權限模式（詢問／自動判斷／全部允許）只能在開新對話時選；OpenCode 用 `/model`（推理強度＝模型 variant）與 `/agent`（Build、Plan 等）。
 - 思考過程：模型的推理（Claude Code thinking、Codex reasoning 摘要、Grok thought、OpenCode reasoning）收成「思考過程」一行，點開才看。
 - 檔案修改：編輯類工具點開會顯示上色的差異（Codex、Grok 由 Agent 給，Claude Code、OpenCode 由舊／新文字算出）。
 - 壓縮對話：標題列「⋯」→「壓縮對話」，或直接送出 `/compact`。OpenCode `/compact`、Codex `thread/compact/start`、Claude Code 與 Grok 送 `/compact` 指令。
@@ -23,7 +24,7 @@
 - 上下文：標題列「上下文 N%」為 Agent 最後回報的上下文用量（80% 以上變紅；滑鼠停留看 token 數）。Claude Code 每輪結束送 `get_context_usage`（與 `/context` 同）；Codex `thread/tokenUsage/updated` 的 `last.totalTokens`／`modelContextWindow`；Grok `session/update` 的 `_meta.totalTokens`，上限取模型清單的 `totalContextTokens`；OpenCode 每輪結束讀最後一則回覆的 tokens（input＋output＋reasoning＋cache），上限取模型的 `limit.context`。不知道上限時只顯示 token 數。
 - Git：對話資料夾是 Git 儲存庫時，標題列顯示「分支 · N 個變更 · ↑↓」，Agent 每輪結束後更新；點下去（或專案頁「Git」）開 Git 視窗：變更分「已暫存」「變更」，點檔案看差異，雙擊或右鍵暫存／取消暫存，右鍵「捨棄變更…」（確認後才做），提交、推送（沒有上游時 `push -u origin <分支>`）、拉取（只快轉）、切換或新增分支。都是一般 `git` 指令（`agentdock/gitops.py`），只在點擊時執行。
 - 搜尋：左側搜尋也比對對話最後一則訊息、回覆、Agent 與資料夾；對話內 Ctrl+F 在已載入的訊息裡找，Enter／↓ 下一個，Esc 關閉。
-- 快捷鍵：Ctrl+N 在目前對話的專案（或資料夾）用同一個 Agent 開新對話；Ctrl+K 搜尋；Esc 停止目前對話（搜尋框有字時先清搜尋）；Alt+↑／↓ 切換上一個／下一個對話。
+- 快捷鍵：Ctrl+N 在目前對話的專案（或資料夾）用同一個 Agent 開新對話；Ctrl+K 打開搜尋面板（邊打邊列出對話，↑↓ 選、Enter 開啟、Esc 或點外面關閉）；Ctrl+B 收起／展開清單；Esc 停止目前對話（搜尋框有字時先清搜尋）；Alt+↑／↓ 切換上一個／下一個對話。
 - 重開視窗回到上次開著的對話（只在視窗第一次顯示時；開機只在系統匣時什麼都不載入）。
 - 授權：「允許」「一律允許」「拒絕」。不按就一直等，不會自動決定。問題：選項或自填，「回答」或「略過」。
 

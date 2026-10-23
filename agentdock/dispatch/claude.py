@@ -598,8 +598,12 @@ class ClaudeClient(Adapter):
         models = [{'id': str(m.get('value')), 'label': str(m.get('displayName') or m.get('value')),
                    'efforts': [str(e) for e in m.get('supportedEffortLevels') or []]}
                   for m in init.get('models') or [] if isinstance(m, dict) and m.get('value')]
-        if models:
-            self._options = {'models': models, 'modes': MODES}
+        commands = [{'name': str(c['name']).lstrip('/'), 'description': str(c.get('description') or ''),
+                     'hint': str(c.get('argumentHint') or '')}
+                    for c in init.get('commands') or [] if isinstance(c, dict) and c.get('name')]
+        learned = {**({'models': models} if models else {}), **({'commands': commands} if commands else {})}
+        if learned:
+            self._options = {**self._options, **learned, 'modes': MODES}
             self.remember(self._options)
 
     def options(self, row: dict | None, directory: str) -> dict:

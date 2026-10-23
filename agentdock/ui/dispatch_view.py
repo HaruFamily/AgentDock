@@ -48,6 +48,9 @@ class ChatInput(AutoGrowText):
         QPlainTextEdit.insertFromMimeData(self, source)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        hook = getattr(self, 'key_hook', None)
+        if hook is not None and hook(event):
+            return
         enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
         if self.enter_sends and enter and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.submitted.emit()

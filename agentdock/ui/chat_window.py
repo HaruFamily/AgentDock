@@ -15,11 +15,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
-                               QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QTreeWidget, QTreeWidgetItem,
+                               QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QMenu, QMessageBox,
+                               QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
 from agentdock.dispatch.adapter import EFFORT_LABELS
@@ -35,7 +36,7 @@ from agentdock.ui.widgets import ElidedLabel, icon_button
 ROLE = Qt.ItemDataRole.UserRole
 AGENTS = (('opencode', 'OpenCode'), ('claude-code', 'Claude Code'), ('codex', 'Codex'), ('grok-cli', 'Grok'))
 RAIL = 56
-RAIL_OPEN = 188
+SIDEBAR = (220, 270, 460)   # narrowest, default and widest conversation list
 FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
 
 
@@ -131,10 +132,14 @@ def _style() -> str:
     return f"""
 #ChatWindow {{ background: {t.CANVAS}; }}
 #ChatRail {{ background: {t.CARD}; border-right: 1px solid {t.LINE}; }}
-#ChatRail QPushButton {{ text-align: left; border: none; border-radius: 10px; padding: 10px 12px; background: transparent; }}
+#ChatRail QPushButton {{ border: none; border-radius: 10px; padding: 10px; background: transparent; }}
 #ChatRail QPushButton:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatRail QPushButton[current="true"] {{ background: {t.ACCENT_SOFT}; color: {t.ACCENT_DEEP}; font-weight: 700; }}
 #ChatSidebar {{ background: {t.CARD}; border-right: 1px solid {t.LINE}; }}
+#ChatSplit::handle {{ background: transparent; }}
+QPushButton#RowMore {{ border: none; background: transparent; border-radius: 6px; padding: 0; }}
+QPushButton#RowMore:hover {{ background: {t.ACCENT_SOFT}; }}
+#ChatSplit::handle:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatSidebar QTreeWidget {{ background: transparent; border: none; outline: none; }}
 #ChatSidebar QTreeWidget::item {{ min-height: 30px; border-radius: 8px; padding: 2px 4px; }}
 #ChatSidebar QTreeWidget::item:selected {{ background: {t.ACCENT_SOFT}; color: {t.INK}; }}
@@ -144,7 +149,7 @@ def _style() -> str:
 #ToolRow {{ text-align: left; border: 1px solid {t.LINE}; border-radius: 8px; padding: 4px 10px; background: {t.CARD}; color: {t.MUTED}; }}
 #ToolDetail {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 8px; padding: 8px; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 12px; }}
 #Request {{ background: {t.WARN_BG}; border: 1px solid {t.LINE}; border-radius: 12px; }}
-#Composer {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 16px; }}
+#Composer {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 18px; }}
 #Composer QPlainTextEdit {{ border: none; background: transparent; }}
 #ConvTitle {{ font-size: 16px; font-weight: 700; }}
 #PageTitle {{ font-size: 22px; font-weight: 700; }}
@@ -165,11 +170,32 @@ QDialog QTreeWidget::item {{ min-height: 26px; }}
 QDialog QTreeWidget::item:selected {{ background: {t.ACCENT_SOFT}; color: {t.INK}; }}
 QDialog QHeaderView::section {{ background: {t.CARD}; color: {t.MUTED}; border: none; border-bottom: 1px solid {t.LINE}; padding: 4px 6px; }}
 #ChatChip[high="true"] {{ color: {t.DANGER}; border-color: {t.DANGER}; }}
-#Composer QComboBox {{ border: none; background: transparent; color: {t.MUTED}; padding: 2px 4px; }}
-#Composer QComboBox:hover {{ background: {t.HOVER}; border-radius: 6px; }}
+QPushButton#Chip {{ border: none; background: transparent; color: {t.MUTED}; padding: 4px 20px 4px 8px; border-radius: 8px; font-size: 13px; text-align: left; }}
+QPushButton#Chip:hover {{ background: {t.HOVER}; color: {t.INK}; }}
+QPushButton#Chip:disabled {{ color: {t.DIM}; }}
+QPushButton#IconButton {{ border: none; background: transparent; border-radius: 15px; padding: 0; }}
+QPushButton#IconButton:hover {{ background: {t.HOVER}; }}
+QPushButton#RoundButton, QPushButton#StopButton {{ border: none; border-radius: 15px; padding: 0; background: {t.ACCENT}; }}
+QPushButton#RoundButton:hover, QPushButton#StopButton:hover {{ background: {t.ACCENT_DEEP}; }}
+QPushButton#RoundButton:disabled {{ background: {t.DIM}; }}
+#HomeTitle {{ font-size: 28px; font-weight: 700; }}
+QPushButton#RecentRow {{ border: none; background: transparent; border-radius: 10px; padding: 0; text-align: left; }}
+QPushButton#RecentRow:hover {{ background: {t.HOVER}; }}
+#RecentTitle {{ font-size: 14px; }}
+#RecentMeta {{ color: {t.MUTED}; font-size: 12px; }}
+#RecentAlert {{ color: {t.ALERT}; font-size: 12px; }}
 #DiffView {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 8px; padding: 8px; }}
 #Reasoning {{ color: {t.MUTED}; }}
 #FindBar {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 10px; }}
+QPushButton#LatestButton {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 16px; padding: 0; }}
+QPushButton#LatestButton:hover {{ border-color: {t.ACCENT}; }}
+#PaletteBackdrop {{ background: rgba(0, 0, 0, 40); }}
+#Palette {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 16px; }}
+#Palette QListWidget {{ border: none; }}
+#Palette QListWidget::item {{ padding: 6px 10px; }}
+#Suggestions {{ background: transparent; border: none; border-bottom: 1px solid {t.LINE}; outline: none; padding: 0 0 4px 0; }}
+#Suggestions::item {{ padding: 4px 8px; border-radius: 8px; color: {t.INK}; }}
+#Suggestions::item:selected {{ background: {t.ACCENT_SOFT}; color: {t.ACCENT_DEEP}; }}
 QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
 #SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
 #SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 14px; }}
@@ -196,7 +222,19 @@ ICONS = {
     'folder': 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
     'clip': 'M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9',
     'more': 'M5 12h.01M12 12h.01M19 12h.01',
+    'plus': 'M12 5v14M5 12h14',
+    'up': 'M12 19V5M5 12l7-7 7 7',
+    'stop': 'M8 8h8v8H8z',
+    'down': 'M12 5v14M19 12l-7 7-7-7',
+    'chevron': 'M6 9l6 6 6-6',
+    'shield': 'M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z',
+    'agent': 'M12 8V4M8 4h8M6 8h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM9 13h.01M15 13h.01',
 }
+
+
+def on_accent() -> str:
+    """Text and icon colour on an accent-filled button."""
+    return 'white' if theme.CUTE else (theme.CANVAS or '#000000')
 
 
 def icon(name: str, color: str, size: int = 18):
@@ -215,23 +253,76 @@ def icon(name: str, color: str, size: int = 18):
     return QIcon(pixmap)
 
 
+class ChipButton(QPushButton):
+    """A flat pick-one button as in desktop chat apps: optional icon, the current value and a small chevron.
+    Clicking opens its menu under it."""
+
+    def __init__(self, icon_name: str = '', parent=None):
+        super().__init__(parent)
+        self.setObjectName('Chip')
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.icon_name = icon_name
+        self.menu_ = QMenu(self)
+        self.clicked.connect(self.open_menu)
+        self.restyle()
+
+    def restyle(self) -> None:
+        if self.icon_name:
+            self.setIcon(icon(self.icon_name, theme.MUTED or '#888888', 14))
+
+    def open_menu(self) -> None:
+        if self.menu_.actions():
+            self.menu_.exec(self.mapToGlobal(self.rect().bottomLeft()))
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        from PySide6.QtGui import QPainter, QPen
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(theme_color('MUTED' if self.isEnabled() else 'DIM'))
+        pen.setWidthF(1.4)
+        painter.setPen(pen)
+        x, y = self.width() - 14, self.height() / 2 - 1.5
+        painter.drawPolyline([QPointF(x, y), QPointF(x + 3.5, y + 3.5), QPointF(x + 7, y)])
+        painter.end()
+
+
+class RoundButton(QPushButton):
+    """The circular send / stop button at the end of the message box."""
+
+    def __init__(self, icon_name: str, tip: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName('RoundButton')
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(tip)
+        self.setFixedSize(32, 32)
+        self.setIconSize(QSize(16, 16))
+        self.icon_name = icon_name
+        self.restyle()
+
+    def restyle(self) -> None:
+        self.setIcon(icon(self.icon_name, on_accent(), 16))
+
+
 # --------------------------------------------------------------------------- rail
 class Rail(QFrame):
-    """Collapsed to icons; widens over the list while the mouse is on it."""
+    """Icons for the window's pages. Clicking 聊天 while it is open shows or hides the conversation list,
+    as activity bars in desktop editors do."""
     picked = Signal(str)
 
     def __init__(self, parent):
         super().__init__(parent)
         self.setObjectName('ChatRail')
+        self.setFixedWidth(RAIL)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 12, 8, 12)
         layout.setSpacing(4)
         self.buttons = {}
-        for name, text in (('chat', '聊天'), ('tools', '工具')):
+        for name, text in (('chat', '聊天'), ('new', '新對話'), ('tools', '工具')):
             layout.addWidget(self._button(name, text))
+        self.buttons['new'].hide()   # only while the list (with its own button) is hidden
         layout.addStretch(1)
         layout.addWidget(self._button('settings', '設定'))
-        self.set_open(False)
         self.current = 'chat'
         self.set_current('chat')
 
@@ -239,35 +330,21 @@ class Rail(QFrame):
         b = QPushButton()
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setAccessibleName(text)
+        b.setToolTip(text)
         b.setIconSize(QSize(18, 18))
         b.setProperty('label', text)
         b.clicked.connect(lambda: self.picked.emit(name))
         self.buttons[name] = b
         return b
 
-    def set_open(self, opened: bool) -> None:
-        self.opened = opened
-        for b in self.buttons.values():
-            b.setText('  ' + b.property('label') if opened else '')
-        self.setFixedWidth(RAIL_OPEN if opened else RAIL)
-        if opened:
-            self.raise_()
-
     def set_current(self, name: str) -> None:
         self.current = name
         for key, b in self.buttons.items():
-            b.setIcon(icon(key, (theme.ACCENT_DEEP if key == name else theme.MUTED) or '#888888'))
+            b.setIcon(icon('plus' if key == 'new' else key,
+                           (theme.ACCENT_DEEP if key == name else theme.MUTED) or '#888888'))
             b.setProperty('current', key == name)
             b.style().unpolish(b)
             b.style().polish(b)
-
-    def enterEvent(self, event):  # noqa: N802
-        self.set_open(True)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):  # noqa: N802
-        self.set_open(False)
-        super().leaveEvent(event)
 
 
 # --------------------------------------------------------------------------- sidebar
@@ -337,7 +414,8 @@ class Sidebar(QFrame):
         super().__init__()
         self.window_ = window
         self.setObjectName('ChatSidebar')
-        self.setFixedWidth(270)
+        self.setMinimumWidth(SIDEBAR[0])
+        self.setMaximumWidth(SIDEBAR[2])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 14, 12, 12)
         layout.setSpacing(10)
@@ -364,6 +442,11 @@ class Sidebar(QFrame):
         self.tree.itemClicked.connect(self._clicked)
         self.tree.moved.connect(window.move_conversation)
         self.tree.customContextMenuRequested.connect(self._menu)
+        self.tree.setMouseTracking(True)
+        self.tree.itemEntered.connect(self._hovered)
+        self.tree.viewport().installEventFilter(self)
+        self.hover_item = None
+        self.hover_button = None
         self.tree.key_action.connect(lambda action, key: (window.delete_conversation(key) if action == 'delete'
                                                           else window.rename_conversation(key)))
         layout.addWidget(self.tree, 1)
@@ -376,10 +459,47 @@ class Sidebar(QFrame):
             found += [top.child(j).data(0, ROLE)[1] for j in range(top.childCount())]
         return found
 
+    # -- the ⋯ on the row under the mouse opens the same menu as a right click --------
+    def _hovered(self, item) -> None:
+        if item is self.hover_item:
+            return
+        self._unhover()
+        kind, _value = item.data(0, ROLE) or ('', '')
+        if kind != 'conv':
+            return
+        self.hover_item = item
+        b = QPushButton()
+        b.setObjectName('RowMore')
+        b.setAccessibleName('更多')
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setIcon(icon('more', theme.MUTED or '#888888', 16))
+        b.setFixedSize(26, 22)
+        b.clicked.connect(lambda _c=False, i=item, w=b: self._menu_for(i, w.mapToGlobal(w.rect().bottomLeft())))
+        self.hover_button = b
+        self.hover_text = item.text(1)
+        item.setText(1, ' ' * max(4, len(self.hover_text)))   # keeps the column width; the ⋯ sits on it
+        self.tree.setItemWidget(item, 1, b)
+
+    def _unhover(self) -> None:
+        if self.hover_item is not None:
+            try:
+                self.tree.removeItemWidget(self.hover_item, 1)
+                self.hover_item.setText(1, self.hover_text)
+            except RuntimeError:
+                pass   # the list was rebuilt
+        self.hover_item = self.hover_button = None
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.tree.viewport() and event.type() == QEvent.Type.Leave:
+            self._unhover()
+        return super().eventFilter(watched, event)
+
     def _menu(self, pos) -> None:
         item = self.tree.itemAt(pos)
-        if item is None:
-            return
+        if item is not None:
+            self._menu_for(item, self.tree.viewport().mapToGlobal(pos))
+
+    def _menu_for(self, item, where) -> None:
         kind, value = item.data(0, ROLE) or ('', '')
         w = self.window_
         menu = QMenu(self)
@@ -387,6 +507,8 @@ class Sidebar(QFrame):
             row = w.store.dispatch.get(value)
             if row is None:
                 return
+            pinned = bool(row.get('pinned'))
+            menu.addAction('取消釘選' if pinned else '釘選', lambda: w.store.dispatch.set_pinned(value, not pinned))
             menu.addAction('改名', lambda: w.rename_conversation(value))
             move = menu.addMenu('移到專案')
             current = w.projects.project_of(row)
@@ -407,7 +529,10 @@ class Sidebar(QFrame):
             menu.addAction('專案設定', lambda: w.show_project(value))
         else:
             return
-        menu.exec(self.tree.viewport().mapToGlobal(pos))
+        self.show_menu(menu, where)
+
+    def show_menu(self, menu, where) -> None:
+        menu.exec(where)
 
     def _clicked(self, item, _column):
         kind, value = item.data(0, ROLE) or ('', '')
@@ -419,7 +544,7 @@ class Sidebar(QFrame):
     def refresh(self) -> None:
         w = self.window_
         query = self.search.text().strip().lower()
-        expanded = {self.tree.topLevelItem(i).data(0, ROLE)[1]: self.tree.topLevelItem(i).isExpanded()
+        expanded = {tuple(self.tree.topLevelItem(i).data(0, ROLE)): self.tree.topLevelItem(i).isExpanded()
                     for i in range(self.tree.topLevelItemCount())}
         rows = sorted(w.store.dispatch.rows.items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
         groups: dict[str, list] = {}
@@ -427,20 +552,24 @@ class Sidebar(QFrame):
             if query and not any(query in str(row.get(name, '')).lower()
                                  for name in ('title', 'prompt', 'reply', 'source', 'directory')):
                 continue
-            groups.setdefault(w.projects.project_of(row), []).append((key, row))
+            groups.setdefault('\x00pinned' if row.get('pinned') else w.projects.project_of(row), []).append((key, row))
+        self._unhover()
         self.tree.clear()
+        PINNED = '\x00pinned'
         entries = [(p['id'], p['name']) for p in w.projects.list()] + [(UNSORTED, '未分類')]
+        if groups.get(PINNED):
+            entries.insert(0, (PINNED, '釘選'))
         for pid, name in entries:
             convs = groups.get(pid, [])
-            if pid == UNSORTED and not convs:
+            if pid in (UNSORTED, PINNED) and not convs:
                 continue
-            top = QTreeWidgetItem([name, str(len(convs)) if convs else ''])
-            top.setData(0, ROLE, ('project', pid))
+            top = QTreeWidgetItem([name, str(len(convs)) if convs and pid != PINNED else ''])
+            top.setData(0, ROLE, ('pinned', '') if pid == PINNED else ('project', pid))
             font = top.font(0)
             font.setBold(True)
             top.setFont(0, font)
             top.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if pid:
+            if pid and pid != PINNED:
                 top.setToolTip(0, w.projects.get(pid)['root'])
             self.tree.addTopLevelItem(top)
             for key, row in convs:
@@ -459,7 +588,7 @@ class Sidebar(QFrame):
                 top.addChild(child)
                 if key == w.current_key:
                     self.tree.setCurrentItem(child)
-            top.setExpanded(expanded.get(pid, True) or bool(query))
+            top.setExpanded(expanded.get(tuple(top.data(0, ROLE)), True) or bool(query))
 
     @staticmethod
     def _badge(row: dict) -> str:
@@ -935,7 +1064,15 @@ class ConversationView(QWidget):
         self.scroll.verticalScrollBar().rangeChanged.connect(self._range_changed)
         self._stick = True
         self.scroll.verticalScrollBar().valueChanged.connect(self._scrolled)
+        self.latest = QPushButton(self.scroll)
+        self.latest.setObjectName('LatestButton')
+        self.latest.setAccessibleName('最新訊息')
+        self.latest.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.latest.setFixedSize(34, 34)
+        self.latest.clicked.connect(self.to_latest)
+        self.latest.hide()
         self.composer = Composer(self, enter_sends=True)
+        self.composer.recall = self._last_user_text
         self.composer.submitted.connect(self.send)
         self.composer.stop.clicked.connect(lambda: self.window_.dispatcher.interrupt(self.key))
         self.composer.settings.changed.connect(
@@ -988,6 +1125,8 @@ class ConversationView(QWidget):
                                            .get('mode_fixed', False))
         self.git_root = ''
         self.git_chip.hide()
+        self.composer.root = row.get('directory', '')
+        self._commands(self.window_.store.dispatch.options.get(row.get('client', ''), {}))
         self.last_state = row.get('state', '')
         self.update_row()
         self._fetch(None)
@@ -1011,6 +1150,12 @@ class ConversationView(QWidget):
         row = self.window_.store.dispatch.get(key)
         if key == self.key and row is not None:
             self.composer.settings.set_options(options, row, options.get('mode_fixed', False))
+            self._commands(options)
+
+    def _commands(self, options: dict) -> None:
+        """What '/' offers: AgentDock's own /compact, then the Agent's commands it reported."""
+        own = [{'name': 'compact', 'description': '壓縮上下文'}]
+        self.composer.commands = own + [c for c in options.get('commands', []) if c.get('name') != 'compact']
 
     def _more_menu(self) -> None:
         if not self.key:
@@ -1142,6 +1287,7 @@ class ConversationView(QWidget):
         if row is None:
             return
         self.title.setText(row['title'])
+        self._commands(self.window_.store.dispatch.options.get(row['client'], {}))   # learned as it starts
         pid = self.window_.projects.project_of(row)
         project = self.window_.projects.get(pid) if pid else None
         self.project_chip.setIcon(icon('folder', theme.MUTED or '#888888', 14))
@@ -1237,89 +1383,197 @@ class ConversationView(QWidget):
     def _scrolled(self, value: int) -> None:
         bar = self.scroll.verticalScrollBar()
         self._stick = bar.maximum() - value < 40
+        self._place_latest()
+
+    def _place_latest(self) -> None:
+        """The ↓ over the transcript's lower right while reading older messages."""
+        bar = self.scroll.verticalScrollBar()
+        away = bar.maximum() - bar.value() > 200
+        if away:
+            self.latest.setIcon(icon('down', theme.MUTED or '#888888', 16))
+            view = self.scroll.viewport().geometry()
+            self.latest.move(view.right() - self.latest.width() - 18, view.bottom() - self.latest.height() - 12)
+            self.latest.raise_()
+        self.latest.setVisible(away)
+
+    def to_latest(self) -> None:
+        self._stick = True
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._place_latest()
 
     def _range_changed(self, _minimum: int, maximum: int) -> None:
         if self._stick:
             self.scroll.verticalScrollBar().setValue(maximum)
+        self._place_latest()
 
 
-class SettingsBar(QWidget):
-    """Model, reasoning effort and permission mode for one conversation; '' leaves the client's default."""
+class SettingsBar(QObject):
+    """Model, reasoning effort and permission mode for one conversation; '' leaves the client's default.
+
+    Two chips as in desktop chat apps: `model_chip` (model and reasoning, one menu) and `mode_chip`; the
+    composer places them."""
     changed = Signal(str, str)   # field, value
+    DEFAULTS = {'model': '預設模型', 'effort': '預設推理', 'mode': '預設權限'}
 
-    def __init__(self):
-        super().__init__()
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(2)
-        self.combos: dict[str, QComboBox] = {}
-        for field in ('model', 'effort', 'mode'):
-            combo = QComboBox()
-            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-            combo.currentIndexChanged.connect(lambda _i, f=field: self._picked(f))
-            combo.hide()
-            row.addWidget(combo)
-            self.combos[field] = combo
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.model_chip = ChipButton()
+        self.mode_chip = ChipButton('shield')
+        self.model_chip.hide()
+        self.mode_chip.hide()
         self.options: dict = {}
-        self._loading = False
+        self.current = {'model': '', 'effort': '', 'mode': ''}
+        self.choices: dict[str, list[tuple[str, str]]] = {'model': [], 'effort': [], 'mode': []}
 
     def set_options(self, options: dict, current: dict, mode_locked: bool = False) -> None:
-        self._loading = True
         self.options = options or {}
-        self._fill('model', '預設模型', [(m['id'], m['label']) for m in self.options.get('models', [])],
-                   current.get('model', ''))
-        self._fill_efforts(current.get('effort', ''))
-        self._fill('mode', '預設權限', [(m['id'], m['label']) for m in self.options.get('modes', [])],
-                   current.get('mode', ''))
-        self.combos['mode'].setEnabled(not mode_locked)
-        self._loading = False
+        self.current = {f: current.get(f, '') or '' for f in ('model', 'effort', 'mode')}
+        self.choices['model'] = self._listed([(m['id'], m['label']) for m in self.options.get('models', [])],
+                                             self.current['model'])
+        self.choices['mode'] = self._listed([(m['id'], m['label']) for m in self.options.get('modes', [])],
+                                            self.current['mode'])
+        self._fill_efforts(keep=True)
+        self.mode_chip.setEnabled(not mode_locked)
+        self._render()
 
-    def _fill(self, field: str, default: str, items: list[tuple[str, str]], value: str) -> None:
-        combo = self.combos[field]
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem(default, '')
-        for item_id, text in items:
-            combo.addItem(text, item_id)
-        if value and combo.findData(value) < 0:
-            combo.addItem(value, value)   # chosen earlier, no longer listed: keep showing it
-        combo.setCurrentIndex(max(0, combo.findData(value)))
-        combo.setVisible(combo.count() > 1)
-        combo.blockSignals(False)
+    @staticmethod
+    def _listed(items: list[tuple[str, str]], value: str) -> list[tuple[str, str]]:
+        if value and value not in [i for i, _t in items]:
+            items = items + [(value, value)]   # chosen earlier, no longer listed: keep showing it
+        return items
 
-    def _fill_efforts(self, value: str, keep: bool = True) -> None:
-        model = self.combos['model'].currentData() or ''
+    def efforts(self) -> list[str]:
+        return [e for e, _t in self.choices['effort']]
+
+    def _fill_efforts(self, keep: bool) -> None:
+        model = self.current['model']
         models = self.options.get('models', [])
         chosen = next((m for m in models if m['id'] == model), None)
         efforts: list[str] = list(chosen.get('efforts', [])) if chosen else []
         if not chosen:
             for m in models:   # the default model: what the listed models offer
                 efforts += [e for e in m.get('efforts', []) if e not in efforts]
+        value = self.current['effort']
         if not keep and value not in efforts:
-            value = ''   # the new model does not offer it
-        self._fill('effort', '預設推理', [(e, EFFORT_LABELS.get(e, e)) for e in efforts], value)
+            self.current['effort'] = value = ''   # the new model does not offer it
+        self.choices['effort'] = self._listed([(e, EFFORT_LABELS.get(e, e)) for e in efforts], value)
 
-    def _picked(self, field: str) -> None:
-        if self._loading:
+    def _label(self, field: str) -> str:
+        value = self.current[field]
+        return next((t for i, t in self.choices[field] if i == value), '') if value else ''
+
+    def _render(self) -> None:
+        has_model = bool(self.choices['model'] or self.choices['effort'])
+        model = self._label('model') or self.DEFAULTS['model']
+        effort = self._label('effort')
+        self.model_chip.setText(f'{model}  {effort}' if effort else model)
+        self.model_chip.setVisible(has_model)
+        self.mode_chip.setText(self._label('mode') or self.DEFAULTS['mode'])
+        self.mode_chip.setVisible(bool(self.choices['mode']))
+        self._menus()
+
+    def _menus(self) -> None:
+        from PySide6.QtGui import QActionGroup
+        for chip, fields in ((self.model_chip, ('model', 'effort')), (self.mode_chip, ('mode',))):
+            menu = chip.menu_
+            menu.clear()
+            for n, field in enumerate(fields):
+                if not self.choices[field]:
+                    continue
+                if n:
+                    menu.addSection('推理')
+                group = QActionGroup(menu)
+                for item_id, text in [('', self.DEFAULTS[field])] + self.choices[field]:
+                    action = menu.addAction(text, lambda f=field, v=item_id: self.pick(f, v))
+                    action.setCheckable(True)
+                    action.setChecked(item_id == self.current[field])
+                    group.addAction(action)
+
+    def pick(self, field: str, value: str) -> None:
+        """The user chose `value` for `field` (from a chip's menu)."""
+        if self.current[field] == value:
             return
+        self.current[field] = value
         if field == 'model':
-            self._loading = True
-            before = self.combos['effort'].currentData() or ''
-            self._fill_efforts(before, keep=False)
-            self._loading = False
-            if (self.combos['effort'].currentData() or '') != before:
+            before = self.current['effort']
+            self._fill_efforts(keep=False)
+            if self.current['effort'] != before:
                 self.changed.emit('effort', '')
-        self.changed.emit(field, self.combos[field].currentData() or '')
+        self._render()
+        self.changed.emit(field, value)
 
     def values(self) -> dict:
-        return {field: combo.currentData() or '' for field, combo in self.combos.items()}
+        return dict(self.current)
+
+
+SKIP_DIRS = {'.git', '.hg', '.svn', 'node_modules', '__pycache__', '.venv', 'venv', 'runtime', 'dist', 'build',
+             '.pytest_cache', '.mypy_cache', '.idea', '.vs', 'target', 'obj', 'bin'}
+_FILES: dict[str, tuple[float, list[str]]] = {}
+
+
+def project_files(root: str, limit: int = 5000) -> list[str]:
+    """Relative paths under `root` for @ mentions; cached briefly, heavy folders skipped."""
+    cached = _FILES.get(root)
+    if cached and time.monotonic() - cached[0] < 30:
+        return cached[1]
+    found: list[str] = []
+    try:
+        for base, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith('.'))
+            rel = os.path.relpath(base, root)
+            for name in sorted(files):
+                found.append(name if rel == '.' else os.path.join(rel, name).replace('\\', '/'))
+            if len(found) >= limit:
+                break
+    except OSError:
+        pass
+    _FILES[root] = (time.monotonic(), found[:limit])
+    return _FILES[root][1]
+
+
+class Suggestions(QListWidget):
+    """Choices for what is being typed (/ commands, @ files), shown inside the box above the text so typing
+    keeps its focus."""
+    LIMIT = 8
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('Suggestions')
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.hide()
+
+    def show_items(self, items: list[tuple[str, str, str]]) -> None:
+        """items: (shown text, muted note, text to insert)."""
+        self.clear()
+        for text, note, value in items[:self.LIMIT]:
+            entry = QListWidgetItem(f'{text}    {note}' if note else text)
+            entry.setData(ROLE, value)
+            self.addItem(entry)
+        if self.count():
+            self.setCurrentRow(0)
+            row = self.sizeHintForRow(0)
+            self.setFixedHeight(min(self.count(), self.LIMIT) * row + 2 * self.frameWidth() + 4)
+        self.setVisible(bool(self.count()))
+
+    def step(self, delta: int) -> None:
+        if self.count():
+            self.setCurrentRow((self.currentRow() + delta) % self.count())
+
+    def value(self) -> str | None:
+        item = self.currentItem()
+        return item.data(ROLE) if item else None
 
 
 class Composer(QFrame):
     """The message box: text, attachments, the conversation's settings, send and stop."""
     submitted = Signal()
 
-    def __init__(self, parent=None, enter_sends: bool = True, max_lines: int = 10):
+    def __init__(self, parent=None, enter_sends: bool = True, max_lines: int = 10, min_lines: int = 1):
         super().__init__(parent)
         self.setObjectName('Composer')
         self.setMaximumWidth(820)
@@ -1329,7 +1583,7 @@ class Composer(QFrame):
         self.files: list[str] = []
         self.attach_dir: Path | None = None
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 10, 10, 10)
+        layout.setContentsMargins(12, 12, 10, 10)
         layout.setSpacing(6)
         self.chips = QWidget()
         self.chip_row = QHBoxLayout(self.chips)
@@ -1337,35 +1591,120 @@ class Composer(QFrame):
         self.chip_row.setSpacing(6)
         self.chips.hide()
         layout.addWidget(self.chips)
+        self.suggest = Suggestions(self)
+        self.suggest.itemClicked.connect(lambda _i: self._accept())
+        layout.addWidget(self.suggest)
+        self.commands: list[dict] = []   # {'name', 'description'}; typed after '/'
+        self.root = ''                   # folder whose files '@' offers
+        self.recall = None               # callable giving the last message, for ↑ in an empty box
         self.text = text_box(max_lines, enter_sends=enter_sends)
+        self.text.key_hook = self._key
         self.text.attachments = True
+        self.text.min_lines = min_lines
+        self.text._fit()
         self.text.submitted.connect(self.submitted.emit)
         self.text.files_pasted.connect(self.add_files)
         self.text.image_pasted.connect(self.add_image)
         layout.addWidget(self.text)
         self.bar = QHBoxLayout()
-        self.bar.setSpacing(8)
+        self.bar.setSpacing(6)
         self.attach = QPushButton()
-        self.attach.setObjectName('MiniButton')
+        self.attach.setObjectName('IconButton')
+        self.attach.setFixedSize(30, 30)
         self.attach.setToolTip('附加檔案')
         self.attach.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach.clicked.connect(self.pick_files)
         self.bar.addWidget(self.attach)
-        self.settings = SettingsBar()
-        self.bar.addWidget(self.settings)
+        self.settings = SettingsBar(self)
+        self.bar.addWidget(self.settings.mode_chip)
         self.bar.addStretch(1)
-        self.stop = button('■ 停止', danger=True)
+        self.bar.addWidget(self.settings.model_chip)
+        self.stop = RoundButton('stop', '停止', self)
+        self.stop.setObjectName('StopButton')
         self.stop.hide()
         self.bar.addWidget(self.stop)
-        self.send = button('送出', primary=True)
+        self.send = RoundButton('up', '送出', self)
         self.send.setToolTip('Enter（Shift+Enter 換行）')
         self.send.clicked.connect(self.submitted.emit)
         self.bar.addWidget(self.send)
+        self.running = False
+        self.text.textChanged.connect(self._sync_buttons)
+        self.text.cursorPositionChanged.connect(self._suggest)
         layout.addLayout(self.bar)
         self.restyle()
 
     def restyle(self) -> None:
-        self.attach.setIcon(icon('clip', theme.MUTED or '#888888', 16))
+        self.attach.setIcon(icon('plus', theme.MUTED or '#888888', 18))
+        for chip in (self.settings.model_chip, self.settings.mode_chip, self.send, self.stop):
+            chip.restyle()
+
+    # -- typing helpers ------------------------------------------------------------
+    def _token(self) -> tuple[str, int]:
+        """The word being typed at the cursor and where it starts."""
+        cursor = self.text.textCursor()
+        block = cursor.block().text()
+        column = cursor.positionInBlock()
+        start = column
+        while start > 0 and not block[start - 1].isspace():
+            start -= 1
+        return block[start:column], cursor.position() - (column - start)
+
+    def _suggest(self) -> None:
+        word, start = self._token()
+        whole = self.text.toPlainText()
+        items: list[tuple[str, str, str]] = []
+        if word.startswith('/') and start == 0 and '\n' not in whole and ' ' not in whole:
+            typed = word[1:].lower()
+            items = [(f"/{c['name']}", c.get('description', ''), f"/{c['name']} ") for c in self.commands
+                     if typed in c['name'].lower()]
+            items.sort(key=lambda i: not i[0][1:].lower().startswith(typed))
+        elif word.startswith('@') and self.root and os.path.isdir(self.root):
+            typed = word[1:].lower().replace('\\', '/')
+            files = project_files(self.root)
+            hits = [f for f in files if typed in f.lower()] if typed else files
+            hits.sort(key=lambda f: (typed not in os.path.basename(f).lower(), len(f)))
+            items = [(f, '', f'@{f} ') for f in hits[:Suggestions.LIMIT]]
+        if items != getattr(self, '_items', None):
+            self._items = items
+            self.suggest.show_items(items)
+        elif not items:
+            self.suggest.hide()
+
+    def _accept(self) -> bool:
+        value = self.suggest.value()
+        if value is None:
+            return False
+        word, start = self._token()
+        cursor = self.text.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(start + len(word), cursor.MoveMode.KeepAnchor)
+        cursor.insertText(value)
+        self.text.setTextCursor(cursor)
+        self.suggest.hide()
+        self._items = []
+        return True
+
+    def _key(self, event) -> bool:
+        key = event.key()
+        if self.suggest.isVisible():
+            if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                self.suggest.step(-1 if key == Qt.Key.Key_Up else 1)
+                return True
+            if key in (Qt.Key.Key_Tab, Qt.Key.Key_Return, Qt.Key.Key_Enter) \
+                    and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                return self._accept()
+            if key == Qt.Key.Key_Escape:
+                self.suggest.hide()
+                return True
+        if key == Qt.Key.Key_Up and not event.modifiers() and not self.text.toPlainText() and self.recall:
+            text = self.recall()
+            if text:
+                self.text.setPlainText(text)
+                cursor = self.text.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                self.text.setTextCursor(cursor)
+                return True
+        return False
 
     # -- attachments -------------------------------------------------------------
     def pick_files(self) -> None:
@@ -1407,6 +1746,7 @@ class Composer(QFrame):
             self.chip_row.addWidget(chip)
         self.chip_row.addStretch(1)
         self.chips.setVisible(bool(self.files))
+        self._sync_buttons()
 
     def take_files(self) -> list[str]:
         files, self.files = self.files, []
@@ -1423,7 +1763,15 @@ class Composer(QFrame):
 
     # -- state -------------------------------------------------------------------
     def set_running(self, running: bool) -> None:
-        self.stop.setVisible(running)
+        self.running = running
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        """One round button as in desktop apps: stop while the Agent works and nothing is typed, otherwise
+        send (typing while it works queues the message)."""
+        typed = bool(self.text.toPlainText().strip() or self.files)
+        self.stop.setVisible(self.running and not typed)
+        self.send.setVisible(not self.running or typed)
 
     def save_draft(self) -> None:
         if self.draft_key:
@@ -1438,6 +1786,7 @@ class Composer(QFrame):
 
     def clear(self) -> None:
         self.text.clear()
+        self.suggest.hide()
         self.files = []
         self._chips()
         self.drafts.pop(self.draft_key, None)
@@ -1454,7 +1803,7 @@ class FindBar(QFrame):
         row.setContentsMargins(10, 4, 6, 4)
         row.setSpacing(4)
         self.query = QLineEdit()
-        self.query.setPlaceholderText('搜尋對話')
+        self.query.setPlaceholderText('搜尋')
         self.query.textChanged.connect(lambda _t: self.search(0))
         self.query.returnPressed.connect(lambda: self.step(1))
         row.addWidget(self.query, 1)
@@ -1536,57 +1885,89 @@ class FindBar(QFrame):
 
 
 # --------------------------------------------------------------------------- new conversation
+class RecentRow(QPushButton):
+    """One conversation under the new-conversation box: title, then its state, Agent and time."""
+
+    def __init__(self, key: str, row: dict, badge: str):
+        super().__init__()
+        self.key = key
+        self.setObjectName('RecentRow')
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(2)
+        self.title = ElidedLabel(row['title'])
+        self.title.setObjectName('RecentTitle')
+        lay.addWidget(self.title)
+        line = QHBoxLayout()
+        line.setSpacing(0)
+        parts = [row.get('source') or dict(AGENTS).get(row.get('client', ''), ''), when(row.get('updated_at', ''))]
+        if badge in ('待授權', '待回答', '進行中', '失敗'):
+            state = QLabel(badge + ' · ')
+            state.setObjectName('RecentAlert' if badge in ('待授權', '待回答', '失敗') else 'RecentMeta')
+            line.addWidget(state)
+        meta = QLabel(' · '.join(p for p in parts if p))
+        meta.setObjectName('RecentMeta')
+        line.addWidget(meta)
+        line.addStretch(1)
+        lay.addLayout(line)
+        self.setFixedHeight(self.sizeHint().height())
+
+    def sizeHint(self):  # noqa: N802
+        return self.layout().sizeHint()
+
+
 class NewConversationView(QWidget):
+    """As in desktop chat apps: a heading, the message box, then where it runs (project or folder) and
+    which Agent, and the latest conversations to jump back into."""
+    RECENT = 3
+
     def __init__(self, window):
         super().__init__()
         self.window_ = window
+        self.pid: str = UNSORTED
+        self.folder_path = ''
         outer = QVBoxLayout(self)
         outer.setContentsMargins(32, 32, 32, 32)
         outer.addStretch(2)
         column = QWidget()
         column.setMaximumWidth(760)
         lay = QVBoxLayout(column)
-        lay.setSpacing(16)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
         heading = QLabel('要做什麼？')
-        heading.setObjectName('PageTitle')
+        heading.setObjectName('HomeTitle')
         heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         lay.addWidget(heading)
-        chips = QHBoxLayout()
-        chips.addStretch(1)
-        self.agent_buttons = {}
-        for kind, name in AGENTS:
-            b = button(name)
-            b.setProperty('seg', True)
-            b.setCheckable(True)
-            b.clicked.connect(lambda _c=False, k=kind: self.pick_agent(k))
-            chips.addWidget(b)
-            self.agent_buttons[kind] = b
-        chips.addStretch(1)
-        lay.addLayout(chips)
-        self.composer = Composer(self, enter_sends=True, max_lines=12)
+        lay.addSpacing(22)
+        self.composer = Composer(self, enter_sends=True, max_lines=12, min_lines=2)
+        self.composer.setMaximumWidth(16777215)
         self.composer.submitted.connect(self.send)
         self.composer.settings.changed.connect(self._setting_changed)
         lay.addWidget(self.composer)
+        lay.addSpacing(6)
         place = QHBoxLayout()
-        place.setSpacing(8)
-        self.project = QComboBox()
-        self.project.setMinimumWidth(200)
-        self.project.currentIndexChanged.connect(lambda _i: self._project_changed())
-        place.addWidget(self.project)
-        self.folder = QLineEdit()
-        self.folder.setPlaceholderText('資料夾')
-        self.folder.setMinimumWidth(220)
-        place.addWidget(self.folder, 1)
-        self.browse = icon_button('…', '選擇資料夾')
-        self.browse.clicked.connect(self.pick_folder)
-        place.addWidget(self.browse)
-        self.where = label('', muted=True)
-        place.addWidget(self.where, 1)
+        place.setContentsMargins(6, 0, 6, 0)   # chips line up with the box's own controls
+        place.setSpacing(4)
+        self.place = ChipButton('folder')
+        place.addWidget(self.place)
+        self.agent_chip = ChipButton('agent')
+        place.addWidget(self.agent_chip)
+        place.addStretch(1)
         lay.addLayout(place)
         self.error = label('', muted=True)
-        self.error.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.error.setObjectName('ErrorText')
+        self.error.setContentsMargins(10, 6, 10, 0)
         self.error.hide()
         lay.addWidget(self.error)
+        lay.addSpacing(28)
+        self.recent_head = QLabel('最近')
+        self.recent_head.setObjectName('SectionLabel')
+        self.recent_head.setContentsMargins(12, 0, 0, 4)
+        lay.addWidget(self.recent_head)
+        self.recent = QVBoxLayout()
+        self.recent.setSpacing(2)
+        lay.addLayout(self.recent)
         row = QHBoxLayout()
         row.addStretch(1)
         row.addWidget(column, 100)
@@ -1595,45 +1976,97 @@ class NewConversationView(QWidget):
         outer.addStretch(3)
         self.agent = self.window_.ui_state.get('last_agent') or 'opencode'
 
+    # -- where -------------------------------------------------------------------
     def prepare(self, project: str | None = None) -> None:
-        self.project.blockSignals(True)
-        current = project if project is not None else self.project.currentData()
-        self.project.clear()
-        for p in self.window_.projects.list():
-            self.project.addItem(icon('folder', theme.MUTED or '#888888', 14), p['name'], p['id'])
-        self.project.addItem('未分類', UNSORTED)
-        index = self.project.findData(current) if current is not None else 0
-        self.project.setCurrentIndex(max(index, 0))
-        self.project.blockSignals(False)
-        if not self.folder.text() and self.window_.store.dispatch.recent:
-            self.folder.setText(self.window_.store.dispatch.recent[0])
-        self._project_changed()
+        if project is not None:
+            self.pid = project if (project == UNSORTED or self.window_.projects.get(project)) else UNSORTED
+        elif self.pid != UNSORTED and not self.window_.projects.get(self.pid):
+            self.pid = UNSORTED
+        if not self.folder_path and self.window_.store.dispatch.recent:
+            self.folder_path = self.window_.store.dispatch.recent[0]
+        self._place_changed()
         self.error.hide()
+        self.refresh_recent()
         self.composer.text.setFocus()
 
-    def _project_changed(self) -> None:
-        pid = self.project.currentData()
-        project = self.window_.projects.get(pid) if pid else None
-        self.folder.setVisible(project is None)
-        self.browse.setVisible(project is None)
-        if project:
-            self.pick_agent(project.get('agent') or 'opencode')
-        self.where.setText(project['root'] if project else '')
-        self.where.setVisible(project is not None)
-        if project is None:
-            self.pick_agent(self.agent)
+    def set_folder(self, folder: str) -> None:
+        """Work in a folder outside the projects."""
+        self.folder_path = os.path.normpath(folder) if folder else ''
+        self.pid = UNSORTED
+        self._place_changed()
 
+    def set_project(self, pid: str) -> None:
+        self.pid = pid
+        self._place_changed()
+
+    def project(self) -> dict | None:
+        return self.window_.projects.get(self.pid) if self.pid else None
+
+    def _place_changed(self) -> None:
+        project = self.project()
+        if project:
+            self.place.setText(project['name'])
+            self.place.setToolTip(project['root'])
+            self.pick_agent(project.get('agent') or 'opencode')
+        else:
+            self.place.setText(os.path.basename(self.folder_path.rstrip('\\/')) or self.folder_path or '專案或資料夾')
+            self.place.setToolTip(self.folder_path)
+            self.pick_agent(self.agent)
+        self._place_menu()
+
+    def _place_menu(self) -> None:
+        from PySide6.QtGui import QActionGroup
+        menu = self.place.menu_
+        menu.clear()
+        group = QActionGroup(menu)
+        projects = self.window_.projects.list()
+        current = self.project()
+        if projects:
+            menu.addSection('專案')
+            for p in projects:
+                action = menu.addAction(icon('folder', theme.MUTED or '#888888', 14), p['name'],
+                                        lambda pid=p['id']: self.set_project(pid))
+                action.setCheckable(True)
+                action.setChecked(current is not None and p['id'] == current['id'])
+                action.setToolTip(p['root'])
+                group.addAction(action)
+        recent = [f for f in self.window_.store.dispatch.recent[:6]]
+        if self.folder_path and self.folder_path not in recent:
+            recent.insert(0, self.folder_path)
+        if recent:
+            menu.addSection('資料夾')
+            for folder in recent:
+                action = menu.addAction(folder, lambda f=folder: self.set_folder(f))
+                action.setCheckable(True)
+                action.setChecked(current is None and folder == self.folder_path)
+                group.addAction(action)
+        menu.addSeparator()
+        menu.addAction('選擇資料夾…', self.pick_folder)
+        menu.addAction('新增專案…', self.window_.add_project)
+
+    # -- which Agent -------------------------------------------------------------
     def pick_agent(self, kind: str) -> None:
         ready = kind in self.window_.dispatcher.clients
-        for key, b in self.agent_buttons.items():
-            b.setChecked(key == kind)
-            b.setEnabled(key in self.window_.dispatcher.clients or key == kind)
         changed = kind != self.agent or not self.composer.settings.options
         self.agent = kind
+        self.agent_chip.setText(dict(AGENTS)[kind])
+        from PySide6.QtGui import QActionGroup
+        menu = self.agent_chip.menu_
+        menu.clear()
+        group = QActionGroup(menu)
+        for key, name in AGENTS:
+            action = menu.addAction(name, lambda k=key: self.pick_agent(k))
+            action.setCheckable(True)
+            action.setChecked(key == kind)
+            action.setEnabled(key in self.window_.dispatcher.clients or key == kind)
+            group.addAction(action)
         self.error.setText('' if ready else f'{dict(AGENTS)[kind]} 尚未支援。')
         self.error.setVisible(not ready)
         self.composer.send.setEnabled(ready)
-        self.composer.settings.set_options(self.window_.store.dispatch.options.get(kind, {}), self._saved())
+        options = self.window_.store.dispatch.options.get(kind, {})
+        self.composer.settings.set_options(options, self._saved())
+        self.composer.commands = list(options.get('commands', []))
+        self.composer.root = self._folder_now()
         if ready and changed:
             self.window_.request_options(kind, '', self._folder_now())
 
@@ -1650,38 +2083,55 @@ class NewConversationView(QWidget):
     def options_arrived(self, client: str, options: dict) -> None:
         if client == self.agent:
             self.composer.settings.set_options(options, self._saved())
+            self.composer.commands = list(options.get('commands', []))
 
     def _folder_now(self) -> str:
-        pid = self.project.currentData()
-        project = self.window_.projects.get(pid) if pid else None
-        return project['root'] if project else self.folder.text().strip().strip('"')
+        project = self.project()
+        return project['root'] if project else self.folder_path.strip().strip('"')
 
     def pick_folder(self) -> bool:
-        start = self.folder.text() if os.path.isdir(self.folder.text()) else os.path.expanduser('~')
+        start = self.folder_path if os.path.isdir(self.folder_path) else os.path.expanduser('~')
         chosen = QFileDialog.getExistingDirectory(self, '選擇資料夾', start)
         if chosen:
-            self.folder.setText(os.path.normpath(chosen))
+            self.set_folder(chosen)
         return bool(chosen)
+
+    # -- jump back in ------------------------------------------------------------
+    def refresh_recent(self) -> None:
+        rows = sorted(self.window_.store.dispatch.rows.items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
+        shown = [(key, row['title'], row.get('updated_at'), Sidebar._badge(row)) for key, row in rows[:self.RECENT]]
+        if shown == getattr(self, '_shown', None):
+            return
+        self._shown = shown
+        while self.recent.count():
+            item = self.recent.takeAt(0)
+            if item.widget():
+                item.widget().hide()
+                item.widget().deleteLater()
+        for key, row in rows[:self.RECENT]:
+            entry = RecentRow(key, row, Sidebar._badge(row))
+            entry.clicked.connect(lambda _c=False, k=key: self.window_.open_conversation(k))
+            self.recent.addWidget(entry)
+        self.recent_head.setVisible(bool(rows))
 
     def send(self) -> None:
         text = self.composer.text.toPlainText().strip()
         if not text or self.agent not in self.window_.dispatcher.clients:
             return
-        pid = self.project.currentData()
-        project = self.window_.projects.get(pid) if pid else None
+        project = self.project()
         if project:
             folder = project['root']
         else:
-            if not self.folder.text().strip() and not self.pick_folder():
+            if not self.folder_path.strip() and not self.pick_folder():
                 return
-            folder = self.folder.text().strip().strip('"')
+            folder = self.folder_path.strip().strip('"')
         if not os.path.isdir(folder):
             self.error.setText('找不到這個資料夾。')
             self.error.show()
             return
         target = self.window_.target_for(self.agent)
         self.window_.dispatcher.start_task(os.path.normpath(folder), text, target['owner'],
-                                           project=pid if project else None,
+                                           project=project['id'] if project else None,
                                            started=self.window_.bridge.started.emit, client=self.agent,
                                            settings=self.composer.settings.values(),
                                            files=self.composer.take_files())
@@ -2001,6 +2451,93 @@ class ImportDialog(QDialog):
 
 
 # --------------------------------------------------------------------------- window
+class SearchPalette(QFrame):
+    """Ctrl+K: a box over the window; type to find a conversation by title, messages, Agent or folder,
+    Enter opens it."""
+    LIMIT = 9
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window_ = window
+        self.setObjectName('PaletteBackdrop')
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.box = QFrame(self)
+        self.box.setObjectName('Palette')
+        lay = QVBoxLayout(self.box)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(6)
+        self.query = QLineEdit()
+        self.query.setObjectName('PaletteQuery')
+        self.query.setPlaceholderText('搜尋')
+        self.query.textChanged.connect(self.fill)
+        self.query.installEventFilter(self)
+        lay.addWidget(self.query)
+        self.results = QListWidget()
+        self.results.setObjectName('Suggestions')
+        self.results.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.results.itemClicked.connect(lambda _i: self.choose())
+        lay.addWidget(self.results)
+        self.hide()
+
+    def open(self) -> None:
+        self.setGeometry(self.window_.rect())
+        width = min(640, self.width() - 80)
+        self.box.setGeometry((self.width() - width) // 2, 72, width, 80)
+        self.query.clear()
+        self.fill()
+        self.show()
+        self.raise_()
+        self.query.setFocus()
+
+    def fill(self) -> None:
+        w = self.window_
+        query = self.query.text().strip().lower()
+        rows = sorted(w.store.dispatch.rows.items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
+        hits = [(k, r) for k, r in rows
+                if not query or any(query in str(r.get(n, '')).lower()
+                                    for n in ('title', 'prompt', 'reply', 'source', 'directory'))]
+        self.results.clear()
+        for key, row in hits[:self.LIMIT]:
+            pid = w.projects.project_of(row)
+            project = w.projects.get(pid) if pid else None
+            meta = ' · '.join(p for p in (row.get('source', ''), project['name'] if project else '',
+                                          when(row.get('updated_at', ''))) if p)
+            item = QListWidgetItem(f"{row['title']}\n{meta}")
+            item.setData(ROLE, key)
+            self.results.addItem(item)
+        if self.results.count():
+            self.results.setCurrentRow(0)
+        rows = sum(self.results.sizeHintForRow(i) + 4 for i in range(self.results.count()))
+        self.results.setFixedHeight(rows + 2 * self.results.frameWidth() + 4)
+        self.results.setVisible(bool(self.results.count()))
+        self.box.resize(self.box.width(), self.box.sizeHint().height())
+
+    def choose(self) -> None:
+        item = self.results.currentItem()
+        self.hide()
+        if item is not None:
+            self.window_.open_conversation(item.data(ROLE))
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.query and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Up, Qt.Key.Key_Down) and self.results.count():
+                step = -1 if key == Qt.Key.Key_Up else 1
+                self.results.setCurrentRow((self.results.currentRow() + step) % self.results.count())
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.choose()
+                return True
+            if key == Qt.Key.Key_Escape:
+                self.hide()
+                return True
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if not self.box.geometry().contains(event.position().toPoint()):
+            self.hide()
+
+
 class ChatWindow(QWidget):
     closed = Signal()
     page_changed = Signal(str)   # 'chat', or a page added with add_page
@@ -2018,14 +2555,26 @@ class ChatWindow(QWidget):
         self.setWindowTitle('AgentDock')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setMinimumSize(QSize(900, 600))
+        self.setAcceptDrops(True)
         self.bridge = Bridge()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(RAIL, 0, 0, 0)   # the rail floats over this margin
         layout.setSpacing(0)
         self.sidebar = Sidebar(self)
-        layout.addWidget(self.sidebar)
         self.pages = QStackedWidget()
-        layout.addWidget(self.pages, 1)
+        self.split = QSplitter(Qt.Orientation.Horizontal)
+        self.split.setObjectName('ChatSplit')
+        self.split.setHandleWidth(4)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(self.sidebar)
+        self.split.addWidget(self.pages)
+        self.split.setStretchFactor(0, 0)
+        self.split.setStretchFactor(1, 1)
+        width = self.ui_state.get('sidebar_width')
+        width = width if isinstance(width, int) and SIDEBAR[0] <= width <= SIDEBAR[2] else SIDEBAR[1]
+        self.split.setSizes([width, 10000])
+        self.split.splitterMoved.connect(lambda _p, _i: self.ui_state.__setitem__('sidebar_width', self.sidebar.width()))
+        layout.addWidget(self.split, 1)
         self.new_view = NewConversationView(self)
         self.conversation = ConversationView(self)
         self.project_view = ProjectView(self)
@@ -2054,7 +2603,9 @@ class ChatWindow(QWidget):
             self.resize(1180, 780)
         self._restored = False
         self.show_new()
-        for keys, action in (('Ctrl+N', self.new_like_current), ('Ctrl+K', self.focus_search),
+        self.palette_ = SearchPalette(self)
+        for keys, action in (('Ctrl+N', self.new_like_current), ('Ctrl+K', self.palette_.open),
+                             ('Ctrl+B', self.toggle_sidebar),
                              ('Ctrl+F', self.find_in_conversation),
                              ('Escape', self.escape), ('Alt+Up', lambda: self.step_conversation(-1)),
                              ('Alt+Down', lambda: self.step_conversation(1))):
@@ -2069,16 +2620,30 @@ class ChatWindow(QWidget):
         self.pages.addWidget(widget)
 
     def _chat_mode(self) -> None:
-        if self.sidebar.isHidden() or self.rail.current != 'chat':
-            self.sidebar.show()
+        if self.rail.current != 'chat':
             self.rail.set_current('chat')
             self.page_changed.emit('chat')
+        self._show_list(not self.ui_state.get('sidebar_hidden'))
+
+    def _show_list(self, shown: bool) -> None:
+        self.sidebar.setVisible(shown)
+        self.rail.buttons['new'].setVisible(not shown and self.rail.current == 'chat')
+
+    def toggle_sidebar(self) -> None:
+        """Ctrl+B, or 聊天 on the rail while chatting: hide or show the conversation list."""
+        if self.pages.currentWidget() in self.extra_pages.values():
+            self.show_page('chat')
+            return
+        hidden = not self.sidebar.isHidden()
+        self.ui_state['sidebar_hidden'] = hidden
+        self.save_state()
+        self._show_list(not hidden)
 
     def show_new(self, project: str | None = None, agent: str | None = None, folder: str | None = None) -> None:
         self._chat_mode()
         self.current_key = ''
         if folder:
-            self.new_view.folder.setText(folder)
+            self.new_view.set_folder(folder)
         self.new_view.prepare(project)
         if agent:
             self.new_view.pick_agent(agent)
@@ -2113,13 +2678,19 @@ class ChatWindow(QWidget):
         if name not in self.extra_pages:
             self.open_page(name)
             return
-        self.sidebar.hide()
         self.rail.set_current(name)
+        self._show_list(False)
+        self.rail.buttons['new'].hide()
         self.pages.setCurrentWidget(self.extra_pages[name])
         self.page_changed.emit(name)
 
     def _rail_picked(self, name: str) -> None:
-        self.show_page(name)
+        if name == 'new':
+            self.show_new()
+        elif name == 'chat' and self.pages.currentWidget() not in self.extra_pages.values():
+            self.toggle_sidebar()
+        else:
+            self.show_page(name)
 
     # -- actions -----------------------------------------------------------------
     def add_project(self) -> None:
@@ -2258,10 +2829,15 @@ class ChatWindow(QWidget):
     def focus_search(self) -> None:
         if self.sidebar.isHidden():
             self.show_page('chat')
+            if self.sidebar.isHidden():
+                self.toggle_sidebar()
         self.sidebar.search.setFocus()
         self.sidebar.search.selectAll()
 
     def escape(self) -> None:
+        if self.palette_.isVisible():
+            self.palette_.hide()
+            return
         if self.sidebar.search.hasFocus() and self.sidebar.search.text():
             self.sidebar.search.clear()
             return
@@ -2298,11 +2874,15 @@ class ChatWindow(QWidget):
             self.conversation.update_row()
         elif self.pages.currentWidget() is self.project_view:
             self.project_view.refresh()
+        elif self.pages.currentWidget() is self.new_view:
+            self.new_view.refresh_recent()
 
     def refresh_theme(self) -> None:
         self.setStyleSheet(_style())
         for composer in (self.new_view.composer, self.conversation.composer):
             composer.restyle()
+        for chip in (self.new_view.place, self.new_view.agent_chip):
+            chip.restyle()
         self.conversation.more_button.setIcon(icon('more', theme.MUTED or '#888888', 18))
         self.rail.set_current(self.rail.current)
         self.sidebar.refresh()
@@ -2316,10 +2896,37 @@ class ChatWindow(QWidget):
         self.save_state()
 
     # -- Qt -----------------------------------------------------------------------
+    def _drop_target(self):
+        page = self.pages.currentWidget()
+        if page is self.new_view:
+            return self.new_view.composer
+        if page is self.conversation and self.current_key:
+            return self.conversation.composer
+        return None
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        """Files dropped anywhere on a conversation go to its message box."""
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        if self._drop_target() is not None and urls and all(u.isLocalFile() for u in urls):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event):  # noqa: N802
+        target = self._drop_target()
+        if target is not None:
+            target.add_files([u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()])
+            target.text.setFocus()
+            event.acceptProposedAction()
+
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self.rail.setGeometry(0, 0, self.rail.width(), self.height())
         self.rail.raise_()
+        palette = getattr(self, 'palette_', None)
+        if palette is not None and palette.isVisible():
+            palette.open()
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)

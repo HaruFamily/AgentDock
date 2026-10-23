@@ -410,7 +410,7 @@ def test_chat_window_runs_other_agents(setup, client, ui_app):
         win.show_new()
         win.new_view.pick_agent(client)
         assert win.new_view.composer.send.isEnabled() and not win.new_view.error.isVisible()
-        win.new_view.folder.setText(str(work))
+        win.new_view.set_folder(str(work))
         win.new_view.composer.text.setPlainText('TOOL' if client == 'claude-code' else 'CMD')
         win.new_view.send()
         pump(lambda: win.current_key and win.conversation.permission_rows)
