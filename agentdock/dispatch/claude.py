@@ -33,6 +33,13 @@ MODES = [{'id': 'default', 'label': '詢問'}, {'id': 'acceptEdits', 'label': '�
 SKIPPED = 'The user skipped this question.'
 
 
+def model_label(model: dict) -> str:
+    """'Opus 5.5' rather than 'Opus': the description starts with the name and version."""
+    name = str(model.get('displayName') or model.get('value'))
+    head = str(model.get('description') or '').split(' · ')[0].strip()
+    return head if head.lower().startswith(name.lower()) and len(head) <= len(name) + 12 else name
+
+
 def find_executable() -> str | None:
     """The real claude.exe, not the npm .cmd shim (a shim would flash a console window)."""
     candidates: list[Path | str | None] = []
@@ -596,14 +603,17 @@ class ClaudeClient(Adapter):
 
     def learned(self, init: dict) -> None:
         """Models and their effort levels from Claude Code's initialize response."""
-        models = [{'id': str(m.get('value')), 'label': str(m.get('displayName') or m.get('value')),
+        models = [{'id': str(m.get('value')), 'label': model_label(m),
                    'efforts': [str(e) for e in m.get('supportedEffortLevels') or []]}
                   for m in init.get('models') or []
                   if isinstance(m, dict) and m.get('value') and m.get('value') != 'default']   # 預設模型 already
+        default = next((m for m in init.get('models') or [] if isinstance(m, dict) and m.get('value') == 'default'), None)
+        current = re.search(r'\(currently ([^)]+)\)', str((default or {}).get('description') or ''))
         commands = [{'name': str(c['name']).lstrip('/'), 'description': str(c.get('description') or ''),
                      'hint': str(c.get('argumentHint') or '')}
                     for c in init.get('commands') or [] if isinstance(c, dict) and c.get('name')]
-        learned = {**({'models': models} if models else {}), **({'commands': commands} if commands else {})}
+        learned = {**({'models': models} if models else {}), **({'commands': commands} if commands else {}),
+                   **({'model_default': current.group(1).strip()} if current else {})}
         if learned:
             self._options = {**self._options, **learned, 'modes': MODES, 'mode_default': 'default'}
             self.remember(self._options)

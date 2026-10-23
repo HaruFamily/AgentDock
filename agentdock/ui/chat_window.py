@@ -1475,9 +1475,14 @@ class SettingsBar(QObject):
         value = self._shown(field)
         return next((t for i, t in self.choices[field] if i == value), '') if value else ''
 
+    def _default_text(self, field: str) -> str:
+        """預設模型 names the model it is, when the Agent says (Claude: 'currently Opus 5.5')."""
+        actual = str(self.options.get('model_default') or '') if field == 'model' else ''
+        return f'預設（{actual}）' if actual else self.DEFAULTS[field]
+
     def _render(self) -> None:
         has_model = bool(self.choices['model'] or self.choices['effort'])
-        model = self._label('model') or self.DEFAULTS['model']
+        model = self._label('model') or str(self.options.get('model_default') or '') or self.DEFAULTS['model']
         effort = self._label('effort')
         self.model_chip.setText(f'{model}  {effort}' if effort else model)
         self.model_chip.setVisible(has_model)
@@ -1497,7 +1502,7 @@ class SettingsBar(QObject):
                     menu.addSection('推理')
                 group = QActionGroup(menu)
                 own = field == 'mode' and self._default_mode()
-                entries = self.choices[field] if own else [('', self.DEFAULTS[field])] + self.choices[field]
+                entries = self.choices[field] if own else [('', self._default_text(field))] + self.choices[field]
                 for item_id, text in entries:
                     action = menu.addAction(text, lambda f=field, v=item_id: self.pick(f, v))
                     action.setCheckable(True)
@@ -2849,7 +2854,8 @@ class ChatWindow(QWidget):
         if self.palette_.isVisible():
             self.palette_.hide()
             return
-        if self.sidebar.search.hasFocus() and self.sidebar.search.text():
+        focus = QApplication.focusWidget()
+        if self.sidebar.search.text() and (focus is None or focus is self.sidebar.search):
             self.sidebar.search.clear()
             return
         if self.conversation.find.isVisible():

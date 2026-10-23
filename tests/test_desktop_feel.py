@@ -221,3 +221,23 @@ def test_mode_menu_uses_the_agents_own_default():
     assert bar.mode_chip.text() == '計畫'
     bar.set_options({'modes': modes}, {})
     assert [a.text() for a in bar.mode_chip.menu_.actions()][0] == '預設權限'
+
+
+def test_claude_model_names_carry_the_version():
+    from agentdock.dispatch.claude import ClaudeClient
+    from agentdock.ui.chat_window import SettingsBar
+    client = ClaudeClient(find=lambda: None)
+    got = []
+    client.remember = got.append
+    client.learned({'models': [
+        {'value': 'default', 'displayName': 'Default (recommended)',
+         'description': 'Use the default model (currently Opus 5.5) · $4/$20 per Mtok', 'supportedEffortLevels': ['low']},
+        {'value': 'opus', 'displayName': 'Opus', 'description': 'Opus 5.5 · Best for everyday, complex tasks',
+         'supportedEffortLevels': ['low', 'high']},
+        {'value': 'custom', 'displayName': 'Custom', 'description': 'Something else entirely'}]})
+    options = got[-1]
+    assert [m['label'] for m in options['models']] == ['Opus 5.5', 'Custom'] and options['model_default'] == 'Opus 5.5'
+    bar = SettingsBar()
+    bar.set_options(options, {})
+    assert bar.model_chip.text() == 'Opus 5.5'
+    assert [a.text() for a in bar.model_chip.menu_.actions()][:2] == ['預設（Opus 5.5）', 'Opus 5.5']

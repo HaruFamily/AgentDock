@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：Claude 模型名稱含版本（`model_label`：description 開頭「Opus 5.5」），預設模型以 `model_default`（Default 的 currently …）顯示在晶片與「預設（…）」；Esc 在沒有焦點時也清搜尋。新增 1 項測試，完整 309 項通過。
+
 - 2026-10-23：對話視窗操作對齊桌面版。SettingsBar 改為兩顆 ChipButton（模型＋推理同一選單、權限；`pick()`），Composer 底列「＋」、圓形 RoundButton（送出／停止依執行中與是否打字切換）、Suggestions（`/` 指令、`@` 專案檔案 `project_files`）、↑ 叫回上一則；NewConversationView 改為輸入框下方專案或資料夾晶片（set_folder／set_project）、Agent 晶片與「最近」RecentRow；Rail 改為只有圖示，聊天鈕／Ctrl+B 收起清單（ui.json `sidebar_hidden`），清單放進 QSplitter（`sidebar_width`）；清單滑過「⋯」、釘選（DispatchStore.set_pinned；track 保留 pinned 與 custom_title）；SearchPalette（Ctrl+K）；ConversationView「↓」回到最新；整窗拖放檔案；Claude Code initialize 的 commands 記進 options。Claude Code 在對話視窗顯示為「Claude」（SOURCES，載入時依 client 更新）；ClaudeClient.options 沒有模型時以 `_probe` 送 initialize 取得（每次執行一次，略過 value=default），選項加 `mode_default`，SettingsBar 以它代替「預設權限」；Claude MODES 拿掉 auto。新增 11 項測試，完整 308 項通過。
 
 - 2026-10-22：對話視窗第三批。分叉（Adapter.fork：Claude Code 複製紀錄檔並重編 uuid、Codex thread/fork＋thread/revert、Grok _x.ai/session/fork、OpenCode POST fork；以整輪為單位）；匯入外部工作階段（Adapter.sessions、Dispatcher.sessions／adopt 四家皆可，ImportDialog）；上下文用量（session.context 事件存成 context：Claude get_context_usage、Codex tokenUsage/updated、Grok _meta.totalTokens、OpenCode 回覆 tokens）；Git（gitops.py、GitDialog、標題列分支與變更數）。新增 14 項測試，完整 297 項通過。
