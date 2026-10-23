@@ -127,14 +127,14 @@ class QuotaView(QWidget):
                 row.setSpacing(6)
                 kind = QLabel(gauge.KIND_LABEL.get(w.kind, w.kind))
                 kind.setObjectName('CardKind')
-                kind.setFixedWidth(22)
+                kind.setFixedWidth(theme.px(22))
                 pct = QLabel(f'{100 - used:.0f}%')
                 pct.setObjectName('CardPct')
-                pct.setFixedWidth(38)
+                pct.setFixedWidth(theme.px(40))
                 pct.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 left = QLabel(gauge.fmt_countdown(w.resets_at))
                 left.setObjectName('CardMeta')
-                left.setFixedWidth(50)
+                left.setFixedWidth(theme.px(54))
                 left.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 row.addWidget(kind)
                 row.addWidget(Bar(100 - used, used), 1)
@@ -156,16 +156,42 @@ class QuotaFloat(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setObjectName('PanelFrame')
         self.setWindowTitle('AgentDock 額度')
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 6, 10, 8)
+        self.layout_ = QVBoxLayout(self)
         self.view = QuotaView(model, compact=True)
-        layout.addWidget(self.view)
-        self.setFixedWidth(260)
+        self.layout_.addWidget(self.view)
         self._drag: QPoint | None = None
+        self.restyle()
+
+    def laced(self) -> bool:
+        return theme.decorated('settings_card')
 
     def restyle(self) -> None:
+        # The sweet look trims it like the settings cards; the frame's own box then steps aside.
+        self.setStyleSheet('#PanelFrame { background: transparent; border: none; }' if self.laced() else '')
+        self.layout_.setContentsMargins(*((24, 20, 24, 22) if self.laced() else (10, 6, 10, 8)))
+        self.setFixedWidth(theme.px(280 if self.laced() else 260))
         self.view.restyle()
         self.adjustSize()
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        if self.laced():
+            from PySide6.QtCore import QRectF
+            from PySide6.QtGui import QColor, QPainter, QPainterPath
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            shape = QPainterPath()
+            shape.addRoundedRect(QRectF(self.rect()), 22, 22)
+            painter.fillPath(shape, QColor(theme.CANVAS or '#ffffff'))   # nothing left unpainted shows black
+            theme.decorate('settings_card', painter, QRectF(self.rect()).adjusted(0, -3, 0, 0), 22.0)
+            painter.end()
+
+    def resizeEvent(self, event):  # noqa: N802
+        # Its own window: without this the corners outside the rounded frame stay as a square box.
+        from agentdock.ui.cute import round_mask
+        round_mask(self, 22 if self.laced() else 18)
+        super().resizeEvent(event)
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:

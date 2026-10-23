@@ -308,10 +308,12 @@ class GeneralPage(QWidget):
 
 
 class LookPage(QWidget):
-    """外觀: one tile per look; picking one applies it at once."""
+    """外觀: one tile per look and the text size; picking applies at once."""
     picked = Signal(str)
+    size_picked = Signal(str)
 
-    def __init__(self, looks: dict[str, dict], current: str) -> None:
+    def __init__(self, looks: dict[str, dict], current: str, sizes: dict[str, str] | None = None,
+                 size: str = "") -> None:
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -321,6 +323,25 @@ class LookPage(QWidget):
         self.row.setSpacing(16)
         self.card.lay.addLayout(self.row)
         lay.addWidget(self.card)
+        self.size_buttons: dict[str, QPushButton] = {}
+        self.size_card = Card()
+        if sizes:
+            holder = QWidget()
+            seg = QHBoxLayout(holder)
+            seg.setContentsMargins(0, 0, 0, 0)
+            seg.setSpacing(6)
+            for key, text in sizes.items():
+                b = QPushButton(text)
+                b.setCheckable(True)
+                b.setAutoExclusive(True)
+                b.setProperty("seg", True)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.setChecked(key == size)
+                b.clicked.connect(lambda _c=False, k=key: self.size_picked.emit(k))
+                seg.addWidget(b)
+                self.size_buttons[key] = b
+            self.size_card.lay.addWidget(setting_row("文字大小", holder))
+            lay.addWidget(self.size_card)
         lay.addStretch(1)
         self.tiles: dict[str, ThemeTile] = {}
         self.set_looks(looks, current)
@@ -345,6 +366,7 @@ class LookPage(QWidget):
 
     def restyle(self) -> None:
         self.card.restyle()
+        self.size_card.restyle()
         for tile in self.tiles.values():
             tile.update()
 

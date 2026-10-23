@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMenu, QMessageBox,
@@ -141,7 +141,7 @@ def _style() -> str:
     bubble_bg, bubble_line = ('transparent', 'none') if t.decorated('bubble') else (t.ACCENT_SOFT, line)
     code_bg, code_line = ('transparent', 'none') if t.decorated('code') else (t.ACCENT_SOFT, line)
     request_line = f'1px dashed {t.LINE}' if t.CUTE else line
-    return f"""
+    return t.sized(f"""
 #ChatWindow {{ background: {t.CANVAS}; }}
 #ChatRail {{ background: {rail_bg}; border-right: {rail_line}; }}
 #ChatRail QPushButton {{ border: none; border-radius: {small}px; padding: 10px; background: transparent; }}
@@ -211,7 +211,7 @@ QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
 #SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
 #SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
 #QuotaCard {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
-""" + t.extra_style('chat')
+""" + t.extra_style('chat'))
 
 
 class Bridge(QObject):
@@ -241,6 +241,36 @@ ICONS = {
     'shield': 'M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z',
     'agent': 'M12 8V4M8 4h8M6 8h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM9 13h.01M15 13h.01',
 }
+
+
+GAP = 14   # between messages of the conversation
+
+
+def heart_icon(filled: bool, color: str, size: int = 14):
+    """A drawn heart for fold rows and buttons: Windows fonts may show ♡ as another glyph."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+    from agentdock.ui.settings_page import heart_path
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = heart_path(QPointF(size, size * 1.15), size * 0.78)
+    painter.setPen(QPen(QColor(color), 2.2))
+    painter.setBrush(QColor(color) if filled else Qt.BrushStyle.NoBrush)
+    painter.drawPath(path)
+    painter.end()
+    pixmap.setDevicePixelRatio(2)
+    return QIcon(pixmap)
+
+
+def fold_mark(button, shown: bool) -> str:
+    """The fold sign of a row: a drawn heart in the sweet look (as the icon), ▸ / ▾ otherwise (in the text)."""
+    if theme.CUTE:
+        button.setIcon(heart_icon(shown, theme.ACCENT or '#e0529a'))
+        return ''
+    button.setIcon(QIcon())
+    return theme.t('fold_open' if shown else 'fold_closed') + ' '
 
 
 def paint_decor(widget, name: str, event, *args) -> None:
@@ -498,6 +528,7 @@ class Sidebar(QFrame):
         layout.setContentsMargins(12, 14, 12, 12)
         layout.setSpacing(10)
         self.new_button = button(theme.t('chat_new'), primary=True)
+        self.new_button.setIcon(heart_icon(False, 'white', 15) if theme.CUTE else QIcon())
         self.new_button.clicked.connect(lambda: window.show_new())
         layout.addWidget(self.new_button)
         self.search = QLineEdit()
@@ -760,7 +791,7 @@ class ReasoningRow(QWidget):
 
     def update_part(self, part: dict) -> None:
         self.part = part
-        self.toggle.setText(theme.t('fold_open' if self.toggle.isChecked() else 'fold_closed') + ' 思考過程')
+        self.toggle.setText(fold_mark(self.toggle, self.toggle.isChecked()) + '思考過程')
         source = f":::note\n{part.get('text', '')}\n:::"   # muted, smaller: it is not the answer
         if self.text.source != source:
             self.text.source = source
@@ -808,8 +839,8 @@ class ToolRow(QWidget):
         text = f'{head}  {summary}' if summary else head
         if len(text) > 90:
             text = text[:89] + '…'
-        self.arrow = theme.t('fold_open' if self.toggle.isChecked() else 'fold_closed')
-        self.toggle.setText(f'{self.arrow} {text}{mark}')
+        self.arrow = fold_mark(self.toggle, self.toggle.isChecked())
+        self.toggle.setText(f'{self.arrow}{text}{mark}')
         diff = diff_of(part)
         hidden = {'old_string', 'new_string', 'oldString', 'newString', 'edits'} if diff else set()
         lines = []
@@ -953,6 +984,11 @@ class MessageWidget(QWidget):
         self.item = item
         self.actions: QWidget | None = None
         self.retry: QPushButton | None = None
+        # Steps of one answer (thinking, tools, text) are drawn as one card: see ConversationView._regroup.
+        self.joined = (False, False)
+        self.copy_text = None
+        if item['kind'] != 'assistant':
+            self.layout_.setContentsMargins(0, GAP, 0, 0)
         if item['kind'] == 'user':
             row = QHBoxLayout()
             row.addStretch(1)
@@ -997,15 +1033,43 @@ class MessageWidget(QWidget):
             self.layout_.addLayout(row)
             self.setVisible(bool(text))   # a normal finish needs no line, nor its spacing
         else:
-            if theme.decorated('reply'):
-                self.layout_.setContentsMargins(54, 14, 18, 12)   # room for the card and its avatar
             self._add_actions(right=False, edit=False)
+            self._margins()
             self.update_item(item)
+
+    def _margins(self) -> None:
+        top, bottom = self.joined
+        gap = 0 if top else GAP
+        if theme.decorated('reply'):   # room for the card and its avatar
+            self.layout_.setContentsMargins(54, gap + (4 if top else 14), 18, 4 if bottom else 12)
+        else:
+            self.layout_.setContentsMargins(0, gap if not top else 6, 0, 0)
+
+    def set_join(self, top: bool, bottom: bool) -> None:
+        """Part of one answer with the step above / below: no gap, no avatar, no copy row in between."""
+        if (top, bottom) == self.joined:
+            return
+        self.joined = (top, bottom)
+        self._margins()
+        if self.actions is not None:
+            policy = self.actions.sizePolicy()
+            policy.setRetainSizeWhenHidden(not bottom)
+            self.actions.setSizePolicy(policy)
+            if bottom:
+                self.actions.hide()
+        self.update()
 
     def paintEvent(self, event):  # noqa: N802
         super().paintEvent(event)
-        if self.item.get('kind') == 'assistant':
-            paint_decor(self, 'reply', event)
+        if self.item.get('kind') == 'assistant' and theme.decorated('reply'):
+            from PySide6.QtCore import QRectF
+            from PySide6.QtGui import QPainter
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            top, bottom = self.joined
+            rect = QRectF(self.rect()).adjusted(0, 0 if top else GAP, 0, 0)
+            theme.decorate('reply', painter, rect, top, bottom)
+            painter.end()
 
     def _add_actions(self, right: bool, edit: bool) -> None:
         """Copy (and edit) under a message, shown while the pointer is over it; the space stays reserved."""
@@ -1016,7 +1080,7 @@ class MessageWidget(QWidget):
         if right:
             row.addStretch(1)
         copy = mini_button('複製')
-        copy.clicked.connect(lambda: copy_to_clipboard(self.plain_text(), copy))
+        copy.clicked.connect(lambda: copy_to_clipboard(self.copy_text() if self.copy_text else self.plain_text(), copy))
         row.addWidget(copy)
         if edit:
             change = mini_button('編輯')
@@ -1040,7 +1104,7 @@ class MessageWidget(QWidget):
         return '\n\n'.join(p['text'] for p in self.item.get('parts', []) if p['type'] == 'text' and p['text'])
 
     def enterEvent(self, event):  # noqa: N802
-        if self.actions is not None:
+        if self.actions is not None and not self.joined[1]:
             self.actions.show()
         super().enterEvent(event)
 
@@ -1118,6 +1182,8 @@ class ConversationView(QWidget):
         self._pending_items: set[str] = set()
         self._flush = QTimer(self, singleShot=True, interval=80)   # streaming text redraws at most ~12/s
         self._flush.timeout.connect(self._flush_items)
+        self._group = QTimer(self, singleShot=True, interval=0)
+        self._group.timeout.connect(self._regroup)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1164,13 +1230,14 @@ class ConversationView(QWidget):
         self.content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.items = QVBoxLayout(self.content)
         self.items.setContentsMargins(0, 0, 0, 0)
-        self.items.setSpacing(14)
+        self.items.setSpacing(0)   # each message keeps its own gap, so the steps of one answer can touch
         self.more = button('載入更早的訊息', flat=True)
         self.more.clicked.connect(self.load_older)
         self.items.addWidget(self.more, 0, Qt.AlignmentFlag.AlignHCenter)
         self.status = label('', muted=True)
         self.items.addWidget(self.status)
         self.requests = QVBoxLayout()
+        self.requests.setContentsMargins(0, 10, 0, 0)
         self.requests.setSpacing(10)
         self.items.addLayout(self.requests)
         self.items.addStretch(1)
@@ -1318,6 +1385,7 @@ class ConversationView(QWidget):
         for offset, item in enumerate(added):
             widget = self._widget(item)
             self.items.insertWidget(index + offset, widget)
+        self._group.start()
         self.older = older
         self.loading = False
         self.more.setEnabled(True)
@@ -1346,6 +1414,7 @@ class ConversationView(QWidget):
         if item['id'] not in self.widgets:
             widget = self._widget(item)
             self.items.insertWidget(self.items.indexOf(self.status), widget)
+            self._group.start()
             self._sync_retry()
         else:
             self._pending_items.add(item['id'])
@@ -1397,6 +1466,33 @@ class ConversationView(QWidget):
             if widget and widget.item['kind'] == 'assistant':
                 widget.update_item(widget.item)
         self._pending_items.clear()
+        self._regroup()
+
+    def _regroup(self) -> None:
+        """Consecutive shown assistant steps form one card; copying from it copies the whole answer."""
+        shown = [w for w in (self.items.itemAt(i).widget() for i in range(self.items.count()))
+                 if isinstance(w, MessageWidget)
+                 and not (w.isHidden() and w.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide))]
+        groups: list[list[MessageWidget]] = []
+        for i, widget in enumerate(shown):
+            mine = widget.item['kind'] == 'assistant'
+            top = mine and i > 0 and shown[i - 1].item['kind'] == 'assistant'
+            bottom = mine and i + 1 < len(shown) and shown[i + 1].item['kind'] == 'assistant'
+            widget.set_join(top, bottom)
+            if mine:
+                if top:
+                    groups[-1].append(widget)
+                else:
+                    groups.append([widget])
+        for members in groups:
+            for widget in members:
+                widget.copy_text = lambda g=members: '\n\n'.join(t for t in (w.plain_text() for w in g) if t)
+
+    def reload(self) -> None:
+        """Build the open conversation again (after the text size changed)."""
+        if self.key:
+            key, self.key = self.key, ''
+            self.open(key)
 
     # -- state -----------------------------------------------------------------
     def update_row(self) -> None:
@@ -3181,6 +3277,7 @@ class ChatWindow(QWidget):
         self.sidebar.restyle()
         self._frame_mode()
         self.sidebar.new_button.setText(theme.t('chat_new'))
+        self.sidebar.new_button.setIcon(heart_icon(False, 'white', 15) if theme.CUTE else QIcon())
         self.new_view.mascot.restyle()
         from agentdock.ui import cute
         cute.tint_caption(self)

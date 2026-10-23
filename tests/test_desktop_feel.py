@@ -543,3 +543,18 @@ def test_empty_codex_thought_leaves_no_empty_card(ui_app):
     assert not widget.isVisible()
     widget.update_item({**item, 'parts': item['parts'] + [{'type': 'text', 'key': 't', 'text': '你好'}]})
     assert widget.isVisible() and not widget.parts['r'].isVisible()
+
+
+def test_text_size_scales_every_style_sheet():
+    from agentdock.ui import theme
+    old = theme.TEXT_SCALE
+    try:
+        theme.TEXT_SCALE = 1.3
+        assert theme.sized('QLabel { font-size: 10px; } QPushButton { font-size:13px }') == \
+            'QLabel { font-size: 13px; } QPushButton { font-size: 17px }'
+        assert theme.px(20) == 26
+        theme.TEXT_SCALE = 1.0
+        assert theme.sized('a { font-size: 10px; }') == 'a { font-size: 10px; }'
+    finally:
+        theme.TEXT_SCALE = old
+

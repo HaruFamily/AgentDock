@@ -119,7 +119,7 @@ class Clickable(QWidget):
 def card_style() -> str:
     t = theme
     accent_ink = "white" if t.CUTE else t.CANVAS
-    return f"""
+    return t.sized(f"""
 QLabel#CardTitle {{ color: {t.ACCENT_DEEP}; font-size: 16px; font-weight: 800; }}
 QPushButton#CardTab {{ border: 1px solid {t.LINE}; background: {t.CARD}; color: {t.MUTED}; border-radius: {t.PILL}px;
                        padding: 5px 10px; font-size: 13px; font-weight: 700; min-height: 22px; }}
@@ -138,7 +138,7 @@ QLabel#CardErr {{ color: {t.DANGER}; font-size: 11px; }}
 QWidget#CardLink {{ border-radius: 10px; }}
 QWidget#CardLink:hover {{ background: {t.HOVER}; }}
 QWidget#CardPage {{ background: transparent; }}
-"""
+""")
 
 
 # ---------------------------------------------------------------------------- effects
@@ -943,7 +943,7 @@ class FloatingCard(QWidget):
             p.drawEllipse(status)
             f = QFont(p.font())
             f.setBold(True)
-            f.setPixelSize(15)
+            f.setPixelSize(theme.px(15))
             p.setFont(f)
             p.setPen(color)
             center = status.center()
@@ -965,7 +965,7 @@ class FloatingCard(QWidget):
             p.drawRoundedRect(badge, 10, 10)
             f = QFont(p.font())
             f.setBold(True)
-            f.setPixelSize(12)
+            f.setPixelSize(theme.px(12))
             p.setFont(f)
             p.setPen(QColor(self.notification_color or "white"))
             p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(badge_count) if badge_count < 100 else "99+")

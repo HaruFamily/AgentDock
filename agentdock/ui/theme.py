@@ -84,13 +84,30 @@ WORDS = {
     "no_quota": ("按 ⟳ 取得額度", "按 ⟳ 取得額度"),
     "bubble_more": ("展開完整回答", "展開完整回答"),
     "sent": ("已送出", "已送出"),
-    "chat_new": ("♡ 新對話", "＋ 新對話"),
+    "chat_new": ("新對話", "＋ 新對話"),   # the sweet look draws its heart as the button icon
     "fold_closed": ("♡", "▸"),
     "fold_open": ("♥", "▾"),
 }
 
 
 PRIVATE = None
+# How big text is everywhere (設定 → 一般 → 文字大小). Style sheets are written for 1.0 and scaled by sized().
+TEXT_SIZES = {"normal": ("標準", 1.0), "large": ("大", 1.15), "larger": ("特大", 1.3)}
+TEXT_SCALE = 1.0
+
+
+def sized(css: str) -> str:
+    """Every font-size in a style sheet, scaled to the chosen text size."""
+    if TEXT_SCALE == 1.0:
+        return css
+    import re
+    return re.sub(r"font-size:\s*(\d+(?:\.\d+)?)px",
+                  lambda m: f"font-size: {round(float(m.group(1)) * TEXT_SCALE)}px", css)
+
+
+def px(n: float) -> int:
+    """A size (font pixels, a width made for text) at the chosen text size."""
+    return round(n * TEXT_SCALE)
 
 
 def load_private(directory):
@@ -134,7 +151,7 @@ def apply(name: str) -> str:
             g[k] = v
     FONT_FAMILY = c["FONT"]
     CUTE = c["CUTE"]
-    STYLE = _build(c) + extra_style("app")
+    STYLE = sized(_build(c) + extra_style("app"))
     return STYLE
 
 

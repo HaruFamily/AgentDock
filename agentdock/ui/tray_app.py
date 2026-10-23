@@ -87,6 +87,7 @@ class TrayApp(Dock):
         local_theme = theme.load_private(self.data)
         from agentdock.ui import cute
         self.dresser = cute.install(app)   # dialogs, menus and tooltips follow the sweet look
+        theme.TEXT_SCALE = theme.TEXT_SIZES.get(self.ui.get('text_size', 'large'), theme.TEXT_SIZES['large'])[1]
         self.apply_theme(self.ui.get('theme', 'princess' if local_theme else 'clean'), save=False)
         self.dispatcher = Dispatcher(self.store.dispatch, notify=self.bus.notice.emit)
         self.projects = ProjectStore(self.data, emit=self.bus.changed.emit)
@@ -186,9 +187,20 @@ class TrayApp(Dock):
             items.insert(0, ('autostart', '開機自動啟動', winutil.autostart_get() is not None, self._autostart_toggled))
         self.general_page = GeneralPage(items)
         self.agents.set_page('general', self.general_page)
-        self.look_page = LookPage(theme.THEMES, theme.NAME)
+        self.look_page = LookPage(theme.THEMES, theme.NAME, {k: v[0] for k, v in theme.TEXT_SIZES.items()},
+                                  self.ui.get('text_size', 'large'))
         self.look_page.picked.connect(self.apply_theme)
+        self.look_page.size_picked.connect(self.set_text_size)
         self.agents.set_page('look', self.look_page)
+
+    def set_text_size(self, key: str) -> None:
+        if key not in theme.TEXT_SIZES:
+            return
+        self.ui['text_size'] = key
+        self._save_ui()
+        theme.TEXT_SCALE = theme.TEXT_SIZES[key][1]
+        self.apply_theme(theme.NAME, save=False)
+        self.chat.conversation.reload()   # messages already shown take the new size
 
     def set_notify(self, on: bool) -> None:
         self.ui['notify_attention'] = on

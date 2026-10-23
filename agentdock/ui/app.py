@@ -188,7 +188,7 @@ class Dock(QObject):
 
     def _use_font(self, family: str | None) -> None:
         font = QFont(family or "Microsoft JhengHei UI")
-        font.setPointSizeF(9.5)
+        font.setPointSizeF(9.5 * theme.TEXT_SCALE)
         self.app.setFont(font)
         if family:
             cfg = theme.THEMES["princess"]

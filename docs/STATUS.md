@@ -1,5 +1,7 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-23：對話區：items 間距 0，每則訊息自帶 GAP；_regroup 把相鄰的助理項目設成 joined（上下相接、只有第一張有兔子與蝴蝶結、只有最後一張保留複製列，copy_text 取整組）。文字大小存在 ui.json `text_size`（normal/large/larger＝1.0/1.15/1.3，預設 large），所有樣式表經 theme.sized()，QuestionText 與 App 字型用 px()／TEXT_SCALE；改大小時 ConversationView.reload()。QuotaFloat 在 resizeEvent 用 round_mask，甜蜜外觀用 draw_settings_card 畫底。fold_mark()／heart_icon() 取代 ♡ 字元。
+
 2026-10-23：MessageWidget.has_content()：沒有文字／思考／工具的助理項目不顯示（Codex 的 reasoning 常沒有 summary）；空的思考列隱藏。question_text.cjk_emphasis 讓中文標點旁的 ** 能收尾（CommonMark 的 flanking 規則），程式碼不動。
 
 2026-10-23：工具頁新增鬧鐘（`agentdock/tools/alarm/`：core.py 排程／文字／存檔，不匯入 Qt；__init__.py 清單、AlarmEditor、RingWindow、Bell（winsound 迴圈播放 C:\Windows\Media\Alarm01-10.wav，其他系統 beep））。每秒檢查；錯過超過 10 分鐘就跳過；響了先 rang()（單次的停用），貪睡 5 分鐘再啟用。新增 9 項測試。

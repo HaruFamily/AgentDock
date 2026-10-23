@@ -285,3 +285,27 @@ def test_new_project_dialog_and_pasted_files(window, tmp_path, monkeypatch):
     # Pasted files become attachments of the message.
     assert box.toPlainText() == '' and win.new_view.composer.files == [os.path.normpath(str(tmp_path / 'a b.txt'))]
     assert not win.new_view.composer.chips.isHidden()
+
+
+def test_steps_of_one_answer_share_one_card(window, tmp_path):
+    win, store, projects, notes, app = window
+    store.dispatch.track('opencode', 's9', owner='o', title='t', directory=str(tmp_path), state='done')
+    win.open_conversation('opencode:s9')
+    view = win.conversation
+    view.loading = True
+    view.history_loaded('opencode:s9', [
+        {'id': 'u1', 'type': 'user', 'text': '問'},
+        {'id': 'a0', 'type': 'assistant', 'content': [{'type': 'reasoning', 'text': ''}]},
+        {'id': 'a1', 'type': 'assistant', 'content': [{'type': 'text', 'text': '先查一下'}]},
+        {'id': 'a2', 'type': 'assistant', 'content': [{'type': 'tool', 'id': 'c', 'name': 'shell',
+                                                        'state': {'status': 'completed', 'input': {'command': 'ls'}}}]},
+        {'id': 'a3', 'type': 'assistant', 'content': [{'type': 'text', 'text': '答案'}]},
+        {'id': 'u2', 'type': 'user', 'text': '再問'}], None)
+    view._regroup()
+    widgets = view.widgets
+    first = next(w for i, w in widgets.items() if w.item['kind'] == 'assistant' and w.has_content())
+    shown = [w for w in widgets.values() if w.item['kind'] == 'assistant' and w.has_content()]
+    assert len(shown) == 3                                    # the empty thought takes no place at all
+    assert [w.joined for w in shown] == [(False, True), (True, True), (True, False)]
+    assert first.copy_text() == '先查一下\n\n答案'             # copying takes the whole answer
+    assert all(w.joined == (False, False) for w in widgets.values() if w.item['kind'] == 'user')

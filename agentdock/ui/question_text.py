@@ -88,7 +88,7 @@ def question_html(text):
     for kind, body in sections(text):
         doc = LocalTextDocument()
         font = QFont(QApplication.font())
-        font.setPixelSize(12 if kind == 'note' else 14)
+        font.setPixelSize(theme.px(12 if kind == 'note' else 15))
         doc.setDefaultFont(font)
         doc.setMarkdown(cjk_emphasis(body), QTextDocument.MarkdownFeature.MarkdownDialectGitHub |
                         QTextDocument.MarkdownFeature.MarkdownNoHTML)
@@ -101,7 +101,7 @@ def question_html(text):
                 style += f' color:{color}; background-color:{theme.ACCENT_SOFT};'
             return f'<span style="{style}">'
         html = re.sub(r'<span style="([^"]*)">', style_span, html)
-        size = 12 if kind == 'note' else 14
+        size = theme.px(12 if kind == 'note' else 15)
         if kind == 'warning':
             html = f'<table width="100%" cellspacing="0" cellpadding="8" bgcolor="{theme.WARN_BG}"><tr><td><b>注意</b>{html}</td></tr></table>'
         parts.append(f'<div style="color:{color}; font-size:{size}px;">{html}</div>')
