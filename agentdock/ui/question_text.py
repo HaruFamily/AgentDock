@@ -1,5 +1,6 @@
 """Theme-aware question Markdown, with no HTML or resource loading from input."""
 import re
+import unicodedata
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QFont, QTextBlockFormat, QTextCursor, QTextDocument, QTextOption
@@ -41,6 +42,47 @@ def sections(text):
     return [(kind, body) for kind, body in output if body.strip()]
 
 
+_STRONG = re.compile(r'\*\*(?=\S)(.+?)(?<=\S)\*\*')
+_CODE_SPAN = re.compile(r'(`+)(.+?)\1')
+
+
+def _mark(ch):
+    return unicodedata.category(ch)[0] in 'PS'
+
+
+def cjk_emphasis(text):
+    """`**工程化：**你` stays literal in CommonMark: a closing ** after punctuation must be followed by a space,
+    which Chinese never has. A zero-width space between the punctuation and the ** lets it close (and the
+    same for an opening ** before punctuation). Code is left alone."""
+    def strong(m):
+        inner = m.group(1)
+        if _mark(inner[0]):
+            inner = '\u200b' + inner
+        if _mark(inner[-1]):
+            inner += '\u200b'
+        return '**' + inner + '**'
+
+    def line_fix(line):
+        out, last = [], 0
+        for code in _CODE_SPAN.finditer(line):
+            out.append(_STRONG.sub(strong, line[last:code.start()]))
+            out.append(code.group(0))
+            last = code.end()
+        out.append(_STRONG.sub(strong, line[last:]))
+        return ''.join(out)
+
+    lines, fence = [], None
+    for line in text.split('\n'):
+        marker = re.match(r'^ {0,3}(`{3,}|~{3,})', line)
+        if marker:
+            run = marker.group(1)
+            fence = (run[0], len(run)) if fence is None else (None if run[0] == fence[0] and len(run) >= fence[1] else fence)
+            lines.append(line)
+            continue
+        lines.append(line if fence is not None or '**' not in line else line_fix(line))
+    return '\n'.join(lines)
+
+
 def question_html(text):
     parts = []
     for kind, body in sections(text):
@@ -48,7 +90,7 @@ def question_html(text):
         font = QFont(QApplication.font())
         font.setPixelSize(12 if kind == 'note' else 14)
         doc.setDefaultFont(font)
-        doc.setMarkdown(body, QTextDocument.MarkdownFeature.MarkdownDialectGitHub |
+        doc.setMarkdown(cjk_emphasis(body), QTextDocument.MarkdownFeature.MarkdownDialectGitHub |
                         QTextDocument.MarkdownFeature.MarkdownNoHTML)
         html = re.search(r'<body[^>]*>(.*)</body>', doc.toHtml(), re.S).group(1)
         html = re.sub(r'<img\b[^>]*>', '', html, flags=re.I)

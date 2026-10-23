@@ -1,5 +1,7 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-23：MessageWidget.has_content()：沒有文字／思考／工具的助理項目不顯示（Codex 的 reasoning 常沒有 summary）；空的思考列隱藏。question_text.cjk_emphasis 讓中文標點旁的 ** 能收尾（CommonMark 的 flanking 規則），程式碼不動。
+
 2026-10-23：工具頁新增鬧鐘（`agentdock/tools/alarm/`：core.py 排程／文字／存檔，不匯入 Qt；__init__.py 清單、AlarmEditor、RingWindow、Bell（winsound 迴圈播放 C:\Windows\Media\Alarm01-10.wav，其他系統 beep））。每秒檢查；錯過超過 10 分鐘就跳過；響了先 rang()（單次的停用），貪睡 5 分鐘再啟用。新增 9 項測試。
 
 2026-10-23：設定頁重做成桌面版的樣子：左邊分類（一般、外觀、Agent、MCP、擴充、備份），`ui/settings_page.py` 提供卡片、分類、開關、外觀縮圖；AgentsView(wide=True) 的 `_rebuild_wide` 畫 Agent 卡片（`agent_info.AgentFacts`：程式版本、預設模型、額度工具知道的帳號）與 MCP／擴充表（每個 Agent 一個開關，狀態 on／off／adding／removing／pending／alert／missing／disabled／system／na）。狀態判斷抽成 `_server_status`、`_library_status`、`_ext_status`、`_ext_library_status`，窄版卡片沿用。一般／外觀由 TrayApp 提供並與系統匣選單同步。本機主題可畫 draw_settings_card／draw_settings_nav／draw_switch。

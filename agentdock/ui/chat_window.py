@@ -1074,6 +1074,7 @@ class MessageWidget(QWidget):
                     self._insert(widget)
                 else:
                     widget.update_part(part)
+                widget.setVisible(bool(str(part.get('text') or '').strip()))   # Codex often keeps it hidden
             else:
                 if widget is None:
                     widget = ToolRow(part)
@@ -1086,6 +1087,22 @@ class MessageWidget(QWidget):
             err.setProperty('failed', True)
             self.parts['error'] = err
             self._insert(err)
+        # A step with nothing to show yet (an empty thought, a reply not started) gets no empty card.
+        if not self.has_content():
+            self.hide()
+        elif self.isHidden() and self.parentWidget() is not None:
+            self.show()
+
+    def has_content(self) -> bool:
+        if self.item.get('error'):
+            return True
+        for part in self.item.get('parts', []):
+            if part['type'] in ('text', 'reasoning'):
+                if str(part.get('text') or '').strip():
+                    return True
+            else:
+                return True
+        return False
 
 
 # --------------------------------------------------------------------------- conversation page

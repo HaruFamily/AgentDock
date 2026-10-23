@@ -521,3 +521,25 @@ def test_general_page_follows_the_tray_menu(ui_app):
     assert picked == ['b']
     looks.set_current('b')
     assert looks.tiles['b'].isChecked() and not looks.tiles['a'].isChecked()
+
+
+def test_bold_closes_after_chinese_punctuation(ui_app):
+    from agentdock.ui.question_text import cjk_emphasis, question_html
+    html = question_html('**工程化：**你進入酒館。**「你從北邊來？」**他問。')
+    assert '**' not in html and html.count('font-weight') >= 2
+    assert cjk_emphasis('`**a：**b` and **普通**') == '`**a：**b` and **普通**'   # code and plain bold untouched
+    assert cjk_emphasis('```\n**x：**y\n```') == '```\n**x：**y\n```'
+
+
+def test_empty_codex_thought_leaves_no_empty_card(ui_app):
+    from agentdock.ui.chat_window import MessageWidget
+    from PySide6.QtWidgets import QWidget, QVBoxLayout
+    holder = QWidget()
+    lay = QVBoxLayout(holder)
+    item = {'kind': 'assistant', 'id': 'm1', 'parts': [{'type': 'reasoning', 'key': 'r', 'text': ''}]}
+    widget = MessageWidget(item)
+    lay.addWidget(widget)
+    holder.show()
+    assert not widget.isVisible()
+    widget.update_item({**item, 'parts': item['parts'] + [{'type': 'text', 'key': 't', 'text': '你好'}]})
+    assert widget.isVisible() and not widget.parts['r'].isVisible()

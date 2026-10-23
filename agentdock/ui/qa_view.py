@@ -40,7 +40,8 @@ def breakable(text: str) -> str:
 def message_html(text: str) -> str:
     """Render Markdown without interpreting source HTML or loading inline images."""
     document = QTextDocument()
-    document.setMarkdown(text, QTextDocument.MarkdownFeature.MarkdownDialectGitHub |
+    from agentdock.ui.question_text import cjk_emphasis
+    document.setMarkdown(cjk_emphasis(text), QTextDocument.MarkdownFeature.MarkdownDialectGitHub |
                          QTextDocument.MarkdownFeature.MarkdownNoHTML)
     html = re.sub(r'<img\b[^>]*>', '', document.toHtml(), flags=re.IGNORECASE)
     def color_span(match):
