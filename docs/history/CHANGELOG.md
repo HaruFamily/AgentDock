@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：無框對話框先把整個圓角外形塗上 CANVAS 再交給 draw_dialog（使用者的 Windows 上對話框透明完全無效，蕾絲之間會露黑）。
+
 - 2026-10-23：資料夾只跟專案走：新對話選單只剩只聊天／專案／新增專案…（add_project(show=False) 後直接選它），沒有專案就是只聊天；cute.round_mask 把無框對話框、選單、提示框與主視窗裁成圓角（Windows 透明太晚時角落會變黑）；chinese_buttons 把 QDialogButtonBox 標準按鈕改中文。新增 1 項測試，完整 317 項通過。
 
 - 2026-10-23：新對話「只聊天」（ChatWindow.chat_dir／is_chat_dir＝data/chat；NewConversationView.set_chat_only／chat_only、CHAT_MODES 保守權限、標題列「只聊天」）。新增 1 項測試，完整 316 項通過。

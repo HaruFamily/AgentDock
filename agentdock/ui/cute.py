@@ -134,6 +134,13 @@ class Dresser(QObject):
         elif kind == QEvent.Type.Paint:
             painter = QPainter(obj)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            # Windows may not honour the transparency at all: fill the whole rounded shape first, so nothing
+            # the look leaves unpainted (between lace scallops, the corners) shows black.
+            from PySide6.QtGui import QColor, QPainterPath
+            shape = QPainterPath()
+            shape.addRoundedRect(QRectF(obj.rect()), float(obj.property('cute_round') or 26),
+                                 float(obj.property('cute_round') or 26))
+            painter.fillPath(shape, QColor(theme.CANVAS or '#ffffff'))
             hovered = close_rect(obj).contains(obj.mapFromGlobal(QCursor.pos()))
             theme.decorate('dialog', painter, QRectF(obj.rect()), obj.windowTitle(), QRectF(close_rect(obj)), hovered)
             painter.end()
