@@ -1,5 +1,7 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-23：工具頁新增鬧鐘（`agentdock/tools/alarm/`：core.py 排程／文字／存檔，不匯入 Qt；__init__.py 清單、AlarmEditor、RingWindow、Bell（winsound 迴圈播放 C:\Windows\Media\Alarm01-10.wav，其他系統 beep））。每秒檢查；錯過超過 10 分鐘就跳過；響了先 rang()（單次的停用），貪睡 5 分鐘再啟用。新增 9 項測試。
+
 2026-10-23：設定頁重做成桌面版的樣子：左邊分類（一般、外觀、Agent、MCP、擴充、備份），`ui/settings_page.py` 提供卡片、分類、開關、外觀縮圖；AgentsView(wide=True) 的 `_rebuild_wide` 畫 Agent 卡片（`agent_info.AgentFacts`：程式版本、預設模型、額度工具知道的帳號）與 MCP／擴充表（每個 Agent 一個開關，狀態 on／off／adding／removing／pending／alert／missing／disabled／system／na）。狀態判斷抽成 `_server_status`、`_library_status`、`_ext_status`、`_ext_library_status`，窄版卡片沿用。一般／外觀由 TrayApp 提供並與系統匣選單同步。本機主題可畫 draw_settings_card／draw_settings_nav／draw_switch。
 
 2026-10-23：設定頁只列對話視窗能用的四個 Agent（AgentManager.hidden_kinds＝RETIRED_KINDS：Claude Desktop／Cowork、GrokBot 不列出、不提供新增，登記保留在 agents.json）；Claude Code 改名 Claude（舊的預設名稱自動改）。工具頁 GrokBot 額度不受影響（直接讀 GrokBot 的登入）。

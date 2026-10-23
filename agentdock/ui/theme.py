@@ -179,6 +179,21 @@ def t(key: str, **kw) -> str:
     return (cute if CUTE else plain).format(**kw)
 
 
+def _chevron(color: str) -> str:
+    """A small down arrow for combo boxes in the look's colour (style sheets need a file)."""
+    import tempfile
+    from pathlib import Path
+    path = Path(tempfile.gettempdir()) / f"agentdock-chevron-{color.lstrip('#')}.svg"
+    try:
+        if not path.exists():
+            path.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8" viewBox="0 0 12 8">'
+                            f'<path d="M1.5 1.5 6 6l4.5-4.5" fill="none" stroke="{color}" stroke-width="1.8" '
+                            f'stroke-linecap="round" stroke-linejoin="round"/></svg>', encoding="utf-8")
+    except OSError:
+        return ""
+    return path.as_posix()
+
+
 def _build(c: dict) -> str:
     ACCENT, ACCENT_DEEP, ACCENT_SOFT, LAVENDER, ALERT, INK, MUTED, LINE, CANVAS, CARD, DANGER, OK, HOVER, DIM, ERR_BG, WARN_BG, WARN_INK, FONT = (
         c[k] for k in ("ACCENT", "ACCENT_DEEP", "ACCENT_SOFT", "LAVENDER", "ALERT", "INK", "MUTED", "LINE", "CANVAS", "CARD", "DANGER",
@@ -266,6 +281,17 @@ QWidget#SettingsPage QLabel#SectionTitle {{ font-size: 13px; letter-spacing: 1px
 QWidget#SettingsPage QFrame#Rule {{ background: transparent; }}
 QWidget#SettingsPage QWidget#Row {{ min-height: 28px; }}
 QWidget#SettingsPage QPushButton[glyph="true"] {{ min-width: 26px; min-height: 26px; }}
+QLabel#AlarmTime {{ color: {ACCENT_DEEP}; font-size: 30px; font-weight: 600; }}
+QLabel#AlarmTimeOff {{ color: {DIM}; font-size: 30px; font-weight: 600; }}
+QLabel#AlarmBig {{ color: {ACCENT_DEEP}; font-size: 56px; font-weight: 700; }}
+QLabel#AlarmLabel {{ color: {INK}; font-size: 16px; }}
+QWidget#AlarmRow {{ border-radius: 14px; }}
+QWidget#AlarmRow:hover {{ background: {HOVER}; }}
+QTimeEdit#AlarmTimeEdit {{ font-size: 26px; padding: 4px 10px; border: 1px solid {LINE}; border-radius: 14px; background: {CARD}; color: {ACCENT_DEEP}; selection-background-color: {ACCENT_SOFT}; selection-color: {ACCENT_DEEP}; }}
+QComboBox::drop-down {{ border: none; background: transparent; width: 24px; }}
+QComboBox::down-arrow {{ image: url("{_chevron(ACCENT_DEEP)}"); width: 12px; height: 8px; }}
+QPushButton[dayChip="true"] {{ min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px; padding: 0; border-radius: 15px; border: 1px solid {LINE}; background: {CARD}; color: {INK}; }}
+QPushButton[dayChip="true"]:checked {{ background: {ACCENT}; border-color: {ACCENT}; color: {CARD}; font-weight: 700; }}
 QLabel#AgentName {{ color: {ACCENT_DEEP}; font-size: 15px; font-weight: 700; }}
 QLabel#FactKey {{ color: {MUTED}; font-size: 12px; }}
 QLabel#FactValue {{ font-size: 13px; }}
