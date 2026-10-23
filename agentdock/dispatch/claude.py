@@ -601,8 +601,9 @@ class ClaudeClient(Adapter):
             session = self._sessions.get(sid)
         return session if session is not None and session.process.alive() else None
 
-    def learned(self, init: dict) -> None:
-        """Models and their effort levels from Claude Code's initialize response."""
+    def learned(self, init: dict, applied: dict | None = None) -> None:
+        """Models and their effort levels from Claude Code's initialize response; with get_settings'
+        `applied` also the model and effort Claude Code really uses when none is chosen."""
         models = [{'id': str(m.get('value')), 'label': model_label(m),
                    'efforts': [str(e) for e in m.get('supportedEffortLevels') or []]}
                   for m in init.get('models') or []
@@ -612,14 +613,25 @@ class ClaudeClient(Adapter):
         commands = [{'name': str(c['name']).lstrip('/'), 'description': str(c.get('description') or ''),
                      'hint': str(c.get('argumentHint') or '')}
                     for c in init.get('commands') or [] if isinstance(c, dict) and c.get('name')]
+        resolved = {str(m.get('value')): str(m.get('resolvedModel') or '') for m in init.get('models') or []
+                    if isinstance(m, dict) and m.get('value')}
+        actual = str((applied or {}).get('model') or resolved.get('default', ''))
+        defaults = {}
+        alias = next((v for v, r in resolved.items() if v != 'default' and actual and r == actual), '')
+        if alias:
+            defaults['model'] = alias
+        if (applied or {}).get('effort'):
+            defaults['effort'] = str(applied['effort'])
         learned = {**({'models': models} if models else {}), **({'commands': commands} if commands else {}),
-                   **({'model_default': current.group(1).strip()} if current else {})}
+                   **({'model_default': current.group(1).strip()} if current else {}),
+                   **({'defaults': {**self._options.get('defaults', {}), **defaults}} if defaults else {})}
         if learned:
             self._options = {**self._options, **learned, 'modes': MODES, 'mode_default': 'default'}
             self.remember(self._options)
 
     def options(self, row: dict | None, directory: str) -> dict:
-        if not self._options.get('models') and not self._probed and not (row and self._live(row['session_id'])):
+        known = self._options.get('models') and self._options.get('defaults', {}).get('effort')
+        if not known and not self._probed and not (row and self._live(row['session_id'])):
             self._probed = True   # once per run; a conversation's own start also brings the list
             self._probe(directory)
         return {'models': [], **self._options, 'modes': MODES, 'mode_default': 'default'}
@@ -632,8 +644,14 @@ class ClaudeClient(Adapter):
 
         def line(message: dict) -> None:
             response = message.get('response') or {}
-            if message.get('type') == 'control_response' and response.get('request_id') == 'probe':
-                box['init'] = response.get('response') if isinstance(response.get('response'), dict) else {}
+            if message.get('type') != 'control_response':
+                return
+            answer = response.get('response') if isinstance(response.get('response'), dict) else {}
+            if response.get('request_id') == 'probe':
+                box['init'] = answer
+            elif response.get('request_id') == 'settings':   # an older Claude Code answers with an error
+                box['applied'] = answer.get('applied') if isinstance(answer.get('applied'), dict) else {}
+            if 'init' in box and 'applied' in box:
                 got.set()
 
         args = [*self.command(), '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json',
@@ -644,11 +662,13 @@ class ClaudeClient(Adapter):
         try:
             process.send({'type': 'control_request', 'request_id': 'probe',
                           'request': {'subtype': 'initialize', 'hooks': None}})
+            # What Claude Code really uses (its settings, or its own default): model and effort.
+            process.send({'type': 'control_request', 'request_id': 'settings', 'request': {'subtype': 'get_settings'}})
             got.wait(timeout)
         finally:
             process.stop()
         if box.get('init'):
-            self.learned(box['init'])
+            self.learned(box['init'], box.get('applied'))
 
     def started(self, sid: str) -> None:
         with self._lock:

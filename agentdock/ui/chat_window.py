@@ -189,7 +189,6 @@ QPushButton#IconButton:hover {{ background: {t.HOVER}; }}
 QPushButton#RoundButton, QPushButton#StopButton {{ border: none; border-radius: 15px; padding: 0; background: {t.ACCENT}; }}
 QPushButton#RoundButton:hover, QPushButton#StopButton:hover {{ background: {t.ACCENT_DEEP}; }}
 QPushButton#RoundButton:disabled {{ background: {t.DIM}; }}
-#HomeTitle {{ font-size: 28px; font-weight: 700; }}
 QPushButton#RecentRow {{ border: none; background: transparent; border-radius: {small}px; padding: 0; text-align: left; }}
 QPushButton#RecentRow:hover {{ background: {t.HOVER}; }}
 #RecentTitle {{ font-size: 14px; }}
@@ -1564,31 +1563,34 @@ class SettingsBar(QObject):
             self.current['effort'] = value = ''   # the new model does not offer it
         self.choices['effort'] = self._listed([(e, EFFORT_LABELS.get(e, e)) for e in efforts], value)
 
-    def _default_mode(self) -> str:
-        """The Agent's own default among its modes: it stands for '' instead of a separate 預設 entry."""
-        default = str(self.options.get('mode_default') or '')
-        return default if default in [i for i, _t in self.choices['mode']] else ''
+    def _default(self, field: str) -> str:
+        """What the Agent really uses for `field` when nothing is chosen, if it said (one of the listed ids)."""
+        if field == 'mode':
+            value = str(self.options.get('mode_default') or '')
+        else:
+            value = (self.options.get('defaults') or {}).get(field) or ''
+            if isinstance(value, dict):   # efforts per model
+                value = value.get(self._shown('model')) or ''
+            value = str(value)
+        return value if value in [i for i, _t in self.choices[field]] else ''
 
     def _shown(self, field: str) -> str:
-        value = self.current[field]
-        return value or (self._default_mode() if field == 'mode' else '')
+        return self.current[field] or self._default(field)
 
     def _label(self, field: str) -> str:
         value = self._shown(field)
         return next((t for i, t in self.choices[field] if i == value), '') if value else ''
 
     def _default_text(self, field: str) -> str:
-        """預設模型 names the model it is, when the Agent says (Claude: 'currently Opus 5.5')."""
-        actual = str(self.options.get('model_default') or '') if field == 'model' else ''
-        return f'預設（{actual}）' if actual else self.DEFAULTS[field]
+        """Only when the Agent does not say what its default is."""
+        return self.DEFAULTS[field]
 
     def _render(self) -> None:
-        model = self._label('model') or str(self.options.get('model_default') or '') or self.DEFAULTS['model']
-        self.model_chip.setText(model)
+        self.model_chip.setText(self._label('model') or self._default_text('model'))
         self.model_chip.setVisible(bool(self.choices['model']))
-        self.effort_chip.setText(self._label('effort') or self.DEFAULTS['effort'])
+        self.effort_chip.setText(self._label('effort') or self._default_text('effort'))
         self.effort_chip.setVisible(bool(self.choices['effort']))
-        self.mode_chip.setText(self._label('mode') or self.DEFAULTS['mode'])
+        self.mode_chip.setText(self._label('mode') or self._default_text('mode'))
         self.mode_chip.setVisible(bool(self.choices['mode']))
         self._menus()
 
@@ -1600,8 +1602,8 @@ class SettingsBar(QObject):
             if not self.choices[field]:
                 continue
             group = QActionGroup(menu)
-            own = field == 'mode' and self._default_mode()
-            entries = self.choices[field] if own else [('', self._default_text(field))] + self.choices[field]
+            # A known default is just one of the choices; only an unknown one gets its own entry.
+            entries = self.choices[field] if self._default(field) else [('', self._default_text(field))] + self.choices[field]
             for item_id, text in entries:
                 action = menu.addAction(text, lambda f=field, v=item_id: self.pick(f, v))
                 action.setCheckable(True)
@@ -2016,44 +2018,23 @@ class Bubble(QFrame):
         super().paintEvent(event)
 
 
-MASCOT = 96   # height the local look's mascot gets above the new-conversation title
+MASCOT = 96   # height the local look's mascot gets above the new-conversation box
 
 
-class HeadingLabel(QLabel):
-    """The new-conversation title; the local look may put a ribbon behind it and a mascot above it."""
+class Mascot(QWidget):
+    """Above the new-conversation box, only when the local look draws one (draw_mascot). No title text:
+    the empty box says what to do."""
 
-    def paintEvent(self, event):  # noqa: N802
-        if theme.decorated('heading'):
-            from PySide6.QtCore import QRectF
-            from PySide6.QtGui import QPainter
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            top = MASCOT if theme.decorated('mascot') else 0
-            width = self.fontMetrics().horizontalAdvance(self.text())
-            band = QRectF(0, top, self.width(), self.height() - top)
-            theme.decorate('heading', painter, band, QRectF((self.width() - width) / 2, top, width, band.height()))
-            painter.end()
-        if theme.decorated('mascot'):
-            from PySide6.QtCore import QRectF
-            from PySide6.QtGui import QPainter
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            theme.decorate('mascot', painter, QRectF(0, 0, self.width(), MASCOT))
-            painter.end()
-        super().paintEvent(event)
-
-    def sizeHint(self):  # noqa: N802
-        hint = super().sizeHint()
-        extra = (24 if theme.decorated('heading') else 0) + (MASCOT if theme.decorated('mascot') else 0)
-        return QSize(hint.width(), hint.height() + extra)
-
-    def minimumSizeHint(self):  # noqa: N802
-        return self.sizeHint()
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(MASCOT)
+        self.restyle()
 
     def restyle(self) -> None:
-        # The text sits in the ribbon below the mascot: bottom-aligned, lifted by half the ribbon's extra.
-        self.setContentsMargins(0, 0, 0, 12 if theme.decorated('heading') else 0)
-        self.updateGeometry()
+        self.setVisible(theme.decorated('mascot'))
+
+    def paintEvent(self, event):  # noqa: N802
+        paint_decor(self, 'mascot', event)
 
 
 class RecentRow(QPushButton):
@@ -2089,7 +2070,7 @@ class RecentRow(QPushButton):
 
 
 class NewConversationView(QWidget):
-    """As in desktop chat apps: a heading, the message box, then where it runs (project or folder) and
+    """As in desktop chat apps: the message box, then where it runs (project or folder) and
     which Agent, and the latest conversations to jump back into."""
     RECENT = 3
 
@@ -2106,12 +2087,9 @@ class NewConversationView(QWidget):
         lay = QVBoxLayout(column)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        self.heading = heading = HeadingLabel(theme.t('chat_heading'))
-        heading.setObjectName('HomeTitle')
-        heading.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
-        heading.restyle()
-        lay.addWidget(heading)
-        lay.addSpacing(22)
+        self.mascot = Mascot()
+        lay.addWidget(self.mascot)
+        lay.addSpacing(12)
         self.composer = Composer(self, enter_sends=True, max_lines=12, min_lines=2)
         self.composer.setMaximumWidth(16777215)
         self.composer.submitted.connect(self.send)
@@ -3141,8 +3119,7 @@ class ChatWindow(QWidget):
         self.sidebar.restyle()
         self._frame_mode()
         self.sidebar.new_button.setText(theme.t('chat_new'))
-        self.new_view.heading.setText(theme.t('chat_heading'))
-        self.new_view.heading.restyle()
+        self.new_view.mascot.restyle()
         from agentdock.ui import cute
         cute.tint_caption(self)
         self.update()

@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：選項回報實際預設值（options `defaults`；Claude probe 加送 get_settings，learned(init, applied)；Codex isDefault／defaultReasoningEffort／config/read；Grok currentModelId），SettingsBar 以實際值顯示並不另列「預設…」；新對話頁拿掉標題文字（HeadingLabel 改為只畫吉祥物的 Mascot，移除 draw_heading 與 WORDS chat_heading）。假 claude 支援 get_settings。新增 1 項測試，完整 314 項通過。
+
 - 2026-10-23：模型與推理強度拆成兩顆晶片（SettingsBar.effort_chip）。完整 313 項通過。
 
 - 2026-10-23：TitleBar 與無框主視窗（_frame_mode、BORDER 9、_edges、startSystemMove／startSystemResize、WindowStateChange 更新邊距）；掛鉤 rail、reply（assistant MessageWidget）、code（CodeBlock）、mascot（HeadingLabel 上方）；theme.extra_style（STYLE_APP／STYLE_CHAT）；WORDS fold_closed／fold_open；可愛外觀窄欄圖示用 ACCENT。測試改為不依賴假 Claude 的事件時序。新增 1 項測試，完整 313 項通過。

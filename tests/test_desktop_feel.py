@@ -204,7 +204,11 @@ def test_claude_lists_models_before_any_conversation(window, monkeypatch):
     win.show_new(agent='claude-code', folder=str(work))
     bar = win.new_view.composer.settings
     wait(lambda: not bar.model_chip.isHidden(), app=app)
-    assert [m['id'] for m in store.dispatch.options['claude-code']['models']] == ['opus']
+    options = store.dispatch.options['claude-code']
+    assert [m['id'] for m in options['models']] == ['opus', 'haiku']
+    assert options['defaults'] == {'model': 'opus', 'effort': 'high'}   # what Claude Code really uses
+    wait(lambda: bar.model_chip.text() == 'Opus 9' and bar.effort_chip.text() == '高', app=app)
+    assert [a.text() for a in bar.model_chip.menu_.actions()] == ['Opus 9', 'Haiku 9']   # no separate 預設 entry
     assert win.new_view.agent_chip.text() == 'Claude'
     assert not list((work.parent / 'claude-config').glob('projects/*/*.jsonl'))   # nothing was started
 
@@ -229,22 +233,25 @@ def test_claude_model_names_carry_the_version():
     client = ClaudeClient(find=lambda: None)
     got = []
     client.remember = got.append
-    client.learned({'models': [
-        {'value': 'default', 'displayName': 'Default (recommended)',
+    init = {'models': [
+        {'value': 'default', 'resolvedModel': 'claude-opus-5-5', 'displayName': 'Default (recommended)',
          'description': 'Use the default model (currently Opus 5.5) · $4/$20 per Mtok', 'supportedEffortLevels': ['low']},
-        {'value': 'opus', 'displayName': 'Opus', 'description': 'Opus 5.5 · Best for everyday, complex tasks',
-         'supportedEffortLevels': ['low', 'high']},
-        {'value': 'custom', 'displayName': 'Custom', 'description': 'Something else entirely'}]})
+        {'value': 'opus', 'resolvedModel': 'claude-opus-5-5', 'displayName': 'Opus',
+         'description': 'Opus 5.5 · Best for everyday, complex tasks', 'supportedEffortLevels': ['low', 'medium', 'high']},
+        {'value': 'custom', 'displayName': 'Custom', 'description': 'Something else entirely'}]}
+    client.learned(init)
     options = got[-1]
-    assert [m['label'] for m in options['models']] == ['Opus 5.5', 'Custom'] and options['model_default'] == 'Opus 5.5'
+    assert [m['label'] for m in options['models']] == ['Opus 5.5', 'Custom'] and options['defaults'] == {'model': 'opus'}
     bar = SettingsBar()
     bar.set_options(options, {})
-    assert bar.model_chip.text() == 'Opus 5.5'
-    assert [a.text() for a in bar.model_chip.menu_.actions()][:2] == ['預設（Opus 5.5）', 'Opus 5.5']
-    assert bar.effort_chip.text() == '預設推理'
-    bar.pick('model', 'opus')
-    assert [a.text() for a in bar.effort_chip.menu_.actions()] == ['預設推理', '低', '高']
-
+    assert bar.model_chip.text() == 'Opus 5.5' and bar.values()['model'] == ''
+    assert [(a.text(), a.isChecked()) for a in bar.model_chip.menu_.actions()] == [('Opus 5.5', True), ('Custom', False)]
+    assert bar.effort_chip.text() == '預設推理'   # effort not known yet: Claude Code's get_settings tells it
+    client.learned(init, {'model': 'claude-opus-5-5', 'effort': 'medium'})
+    bar.set_options(got[-1], {})
+    assert bar.effort_chip.text() == '中' and [a.text() for a in bar.effort_chip.menu_.actions()] == ['低', '中', '高']
+    bar.pick('model', 'custom')
+    assert bar.model_chip.text() == 'Custom' and bar.effort_chip.isHidden()
 
 # --------------------------------------------------------------------------- the local look's decorations
 def test_local_look_paints_parts_of_the_chat_window(window, monkeypatch):
@@ -256,7 +263,7 @@ def test_local_look_paints_parts_of_the_chat_window(window, monkeypatch):
 
     def hook(name):
         return lambda painter, rect, *args: calls.append(name)
-    local = types.SimpleNamespace(**{f'draw_{n}': hook(n) for n in ('canvas', 'panel', 'box', 'heading')})
+    local = types.SimpleNamespace(**{f'draw_{n}': hook(n) for n in ('canvas', 'panel', 'box', 'mascot')})
     local.draw_box = lambda *_a: (_ for _ in ()).throw(RuntimeError('broken'))   # a failing hook never breaks painting
     monkeypatch.setattr(theme, 'PRIVATE', local)
     monkeypatch.setattr(theme, 'CUTE', True)
@@ -264,7 +271,7 @@ def test_local_look_paints_parts_of_the_chat_window(window, monkeypatch):
     win.show_new()
     win.repaint()
     app.processEvents()
-    assert {'canvas', 'panel', 'heading'} <= set(calls)
+    assert {'canvas', 'panel', 'mascot'} <= set(calls)
     assert win.sidebar.layout().contentsMargins().top() == 40
     assert 'background: transparent; border-right: none' in win.styleSheet()
 
@@ -345,3 +352,17 @@ def test_window_draws_its_own_title_bar(window, monkeypatch):
     win.show()
     win.refresh_theme()
     assert not win.frameless and win.titlebar.isHidden() and win.rail.y() == 0
+
+
+def test_codex_and_grok_report_their_real_defaults(window):
+    win, make, store, sender, notes, work, projects, state, app = window
+    for client, expected in (('codex', {'model': 'gpt-x', 'effort': {'gpt-x': 'high'}}),
+                             ('grok-cli', {'model': 'grok-a', 'effort': {}})):
+        got = []
+        sender.options(client, None, str(work), got.append)
+        wait(lambda: got and got[-1].get('defaults'), app=app)
+        assert got[-1]['defaults'] == expected
+    win.show_new(agent='codex', folder=str(work))
+    bar = win.new_view.composer.settings
+    wait(lambda: bar.model_chip.text() == 'GPT X', app=app)
+    assert bar.effort_chip.text() == '高' and bar.values() == {'model': '', 'effort': '', 'mode': ''}

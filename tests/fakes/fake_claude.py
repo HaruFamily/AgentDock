@@ -126,8 +126,18 @@ while True:
     if message.get('type') == 'control_request' and message['request'].get('subtype') == 'initialize':
         out({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': message['request_id'], 'response': {
             'commands': [{'name': 'review', 'description': 'Review the changes', 'argumentHint': ''}],
-            **({'models': [{'value': 'opus', 'displayName': 'Opus', 'supportedEffortLevels': ['low', 'high']}]}
+            **({'models': [{'value': 'default', 'resolvedModel': 'claude-opus-9', 'displayName': 'Default',
+                            'description': 'Use the default model (currently Opus 9)', 'supportedEffortLevels': ['low', 'high']},
+                           {'value': 'opus', 'resolvedModel': 'claude-opus-9', 'displayName': 'Opus',
+                            'description': 'Opus 9 · Best', 'supportedEffortLevels': ['low', 'high']},
+                           {'value': 'haiku', 'resolvedModel': 'claude-haiku-9', 'displayName': 'Haiku',
+                            'description': 'Haiku 9 · Fast', 'supportedEffortLevels': ['low']}]}
                if os.environ.get('FAKE_CLAUDE_MODELS') else {})}}})
-        out({'type': 'system', 'subtype': 'init', 'session_id': SID})
+        if SID:
+            out({'type': 'system', 'subtype': 'init', 'session_id': SID})
+    elif message.get('type') == 'control_request' and message['request'].get('subtype') == 'get_settings':
+        applied = {'model': 'claude-opus-9', 'effort': 'high'} if os.environ.get('FAKE_CLAUDE_MODELS') else {}
+        out({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': message['request_id'],
+                                                      'response': {'effective': {}, 'applied': applied}}})
     elif message.get('type') == 'user':
         turn(str(message['message']['content']))

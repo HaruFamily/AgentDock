@@ -457,13 +457,20 @@ class GrokClient(Adapter):
         result = self._call(self._ensure(), '_x.ai/models/list', {})
         listing = result.get('result') if isinstance(result.get('result'), dict) else result
         models = []
+        defaults: dict = {'effort': {}}
         for m in listing.get('availableModels') or []:
             efforts = ((m.get('_meta') or {}).get('reasoningEfforts') or []) if isinstance(m, dict) else []
+            chosen = next((e.get('value') for e in efforts if isinstance(e, dict)
+                           and (e.get('default') or e.get('isDefault') or e.get('current'))), None)
+            if chosen:
+                defaults['effort'][str(m.get('modelId'))] = str(chosen)
             models.append({'id': str(m.get('modelId')), 'label': str(m.get('name') or m.get('modelId')),
                            'efforts': [str(e.get('value')) for e in efforts if isinstance(e, dict) and e.get('value')],
                            'context': int(((m.get('_meta') or {}).get('totalContextTokens')) or 0)})
         self._models, self._default = models, str(listing.get('currentModelId') or '')
-        options = {'models': models, 'modes': MODES, 'mode_fixed': True, 'mode_default': 'ask'}
+        if self._default:
+            defaults['model'] = self._default
+        options = {'models': models, 'modes': MODES, 'mode_fixed': True, 'mode_default': 'ask', 'defaults': defaults}
         self.remember(options)
         return options
 

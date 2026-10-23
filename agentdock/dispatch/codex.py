@@ -542,12 +542,26 @@ class CodexClient(Adapter):
 
     def options(self, row: dict | None, directory: str) -> dict:
         models = []
+        defaults: dict = {'effort': {}}
         for m in self.call('model/list', {}).get('data') or []:
             if isinstance(m, dict) and not m.get('hidden'):
+                name = str(m.get('model') or m.get('id'))
+                if m.get('isDefault'):
+                    defaults['model'] = name
+                if m.get('defaultReasoningEffort'):
+                    defaults['effort'][name] = str(m['defaultReasoningEffort'])
                 models.append({'id': str(m.get('model') or m.get('id')), 'label': str(m.get('displayName') or m.get('id')),
                                'efforts': [str(e.get('reasoningEffort')) for e in m.get('supportedReasoningEfforts') or []
                                            if isinstance(e, dict) and e.get('reasoningEffort')]})
-        options = {'models': models, 'modes': MODES, 'mode_default': 'auto'}
+        try:   # the user's config.toml beats the built-in default
+            config = (self.call('config/read', {}) or {}).get('config') or {}
+        except Exception:
+            config = {}
+        if config.get('model') and any(m['id'] == config['model'] for m in models):
+            defaults['model'] = str(config['model'])
+        if config.get('model_reasoning_effort'):
+            defaults['effort'] = str(config['model_reasoning_effort'])
+        options = {'models': models, 'modes': MODES, 'mode_default': 'auto', 'defaults': defaults}
         self.remember(options)
         return options
 

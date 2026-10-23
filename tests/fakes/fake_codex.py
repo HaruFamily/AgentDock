@@ -164,7 +164,8 @@ while True:
         note('turn/completed', threadId=params['threadId'], turn={'id': turn, 'items': [], 'status': 'completed'})
     elif method == 'model/list':
         out({'id': mid, 'result': {'data': [
-            {'id': 'gpt-x', 'model': 'gpt-x', 'displayName': 'GPT X', 'hidden': False,
+            {'id': 'gpt-x', 'model': 'gpt-x', 'displayName': 'GPT X', 'hidden': False, 'isDefault': True,
+             'defaultReasoningEffort': 'high',
              'supportedReasoningEfforts': [{'reasoningEffort': 'low', 'description': ''},
                                            {'reasoningEffort': 'high', 'description': ''}]},
             {'id': 'old', 'model': 'old', 'displayName': 'Old', 'hidden': True, 'supportedReasoningEfforts': []}]}})
