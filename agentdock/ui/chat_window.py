@@ -34,6 +34,7 @@ from agentdock.ui.question_text import QuestionText
 from agentdock.ui.widgets import ElidedLabel, icon_button
 
 ROLE = Qt.ItemDataRole.UserRole
+CHAT_MODES = {'claude-code': 'plan', 'codex': 'read-only', 'opencode': 'plan'}   # 只聊天: propose, do not act
 AGENTS = (('opencode', 'OpenCode'), ('claude-code', 'Claude'), ('codex', 'Codex'), ('grok-cli', 'Grok'))
 RAIL = 56
 SIDEBAR = (220, 270, 460)   # narrowest, default and widest conversation list
@@ -1389,8 +1390,9 @@ class ConversationView(QWidget):
         self._commands(self.window_.store.dispatch.options.get(row['client'], {}))   # learned as it starts
         pid = self.window_.projects.project_of(row)
         project = self.window_.projects.get(pid) if pid else None
-        self.project_chip.setIcon(icon('folder', theme.MUTED or '#888888', 14))
-        self.project_chip.setText(project['name'] if project else '未分類')
+        chat = project is None and self.window_.is_chat_dir(row.get('directory', ''))
+        self.project_chip.setIcon(icon('chat' if chat else 'folder', theme.MUTED or '#888888', 14))
+        self.project_chip.setText(project['name'] if project else '只聊天' if chat else '未分類')
         self.project_chip.setToolTip(row.get('directory', ''))
         self.agent_chip.setText(row['source'])
         usage = row.get('context') or {}
@@ -2152,6 +2154,13 @@ class NewConversationView(QWidget):
         self.pid = pid
         self._place_changed()
 
+    def set_chat_only(self) -> None:
+        """Just talk: the Agent works in AgentDock's own empty data/chat folder, with a cautious mode."""
+        self.set_folder(str(self.window_.chat_dir()))
+
+    def chat_only(self) -> bool:
+        return self.project() is None and self.window_.is_chat_dir(self.folder_path)
+
     def project(self) -> dict | None:
         return self.window_.projects.get(self.pid) if self.pid else None
 
@@ -2161,10 +2170,16 @@ class NewConversationView(QWidget):
             self.place.setText(project['name'])
             self.place.setToolTip(project['root'])
             self.pick_agent(project.get('agent') or 'opencode')
+        elif self.chat_only():
+            self.place.setText('只聊天')
+            self.place.setToolTip('')
+            self.pick_agent(self.agent)
         else:
             self.place.setText(os.path.basename(self.folder_path.rstrip('\\/')) or self.folder_path or '專案或資料夾')
             self.place.setToolTip(self.folder_path)
             self.pick_agent(self.agent)
+        self.place.icon_name = 'chat' if self.chat_only() else 'folder'
+        self.place.restyle()
         self._place_menu()
 
     def _place_menu(self) -> None:
@@ -2174,6 +2189,10 @@ class NewConversationView(QWidget):
         group = QActionGroup(menu)
         projects = self.window_.projects.list()
         current = self.project()
+        chat = menu.addAction(icon('chat', theme.MUTED or '#888888', 14), '只聊天', self.set_chat_only)
+        chat.setCheckable(True)
+        chat.setChecked(self.chat_only())
+        group.addAction(chat)
         if projects:
             menu.addSection('專案')
             for p in projects:
@@ -2183,15 +2202,15 @@ class NewConversationView(QWidget):
                 action.setChecked(current is not None and p['id'] == current['id'])
                 action.setToolTip(p['root'])
                 group.addAction(action)
-        recent = [f for f in self.window_.store.dispatch.recent[:6]]
-        if self.folder_path and self.folder_path not in recent:
+        recent = [f for f in self.window_.store.dispatch.recent[:7] if not self.window_.is_chat_dir(f)][:6]
+        if self.folder_path and self.folder_path not in recent and not self.chat_only():
             recent.insert(0, self.folder_path)
         if recent:
             menu.addSection('資料夾')
             for folder in recent:
                 action = menu.addAction(folder, lambda f=folder: self.set_folder(f))
                 action.setCheckable(True)
-                action.setChecked(current is None and folder == self.folder_path)
+                action.setChecked(current is None and folder == self.folder_path and not self.chat_only())
                 group.addAction(action)
         menu.addSeparator()
         menu.addAction('選擇資料夾…', self.pick_folder)
@@ -2217,11 +2236,19 @@ class NewConversationView(QWidget):
         self.error.setVisible(not ready)
         self.composer.send.setEnabled(ready)
         options = self.window_.store.dispatch.options.get(kind, {})
-        self.composer.settings.set_options(options, self._saved())
+        self.composer.settings.set_options(options, self._chat_settings(kind, options, self._saved()))
         self.composer.commands = list(options.get('commands', []))
         self.composer.root = self._folder_now()
         if ready and changed:
             self.window_.request_options(kind, '', self._folder_now())
+
+    def _chat_settings(self, kind: str, options: dict, settings: dict) -> dict:
+        """In 只聊天 a mode the user did not choose becomes the Agent's cautious one (plan / read-only)."""
+        mode = CHAT_MODES.get(kind, '')
+        listed = [m.get('id') for m in options.get('modes', [])]
+        if self.chat_only() and not settings.get('mode') and mode in listed:
+            return {**settings, 'mode': mode}
+        return settings
 
     def _saved(self) -> dict:
         return dict((self.window_.ui_state.get('new_settings') or {}).get(self.agent) or {})
@@ -2235,7 +2262,7 @@ class NewConversationView(QWidget):
 
     def options_arrived(self, client: str, options: dict) -> None:
         if client == self.agent:
-            self.composer.settings.set_options(options, self._saved())
+            self.composer.settings.set_options(options, self._chat_settings(client, options, self._saved()))
             self.composer.commands = list(options.get('commands', []))
 
     def _folder_now(self) -> str:
@@ -2278,6 +2305,8 @@ class NewConversationView(QWidget):
             if not self.folder_path.strip() and not self.pick_folder():
                 return
             folder = self.folder_path.strip().strip('"')
+        if self.chat_only():
+            os.makedirs(folder, exist_ok=True)
         if not os.path.isdir(folder):
             self.error.setText('找不到這個資料夾。')
             self.error.show()
@@ -3093,6 +3122,14 @@ class ChatWindow(QWidget):
         else:
             index = 0 if step > 0 else len(keys) - 1
         self.open_conversation(keys[index])
+
+    def chat_dir(self) -> Path:
+        """The empty folder 只聊天 conversations share (in AgentDock's data, never in Git)."""
+        return Path(self.store.dispatch.file).parent / 'chat'
+
+    def is_chat_dir(self, folder: str) -> bool:
+        return bool(folder) and os.path.normcase(os.path.normpath(folder)) == \
+            os.path.normcase(os.path.normpath(str(self.chat_dir())))
 
     def target_for(self, kind: str) -> dict:
         # Without a registered profile the owner still matches what the client's hooks would use.

@@ -37,7 +37,7 @@ def test_new_page_picks_place_and_agent_from_chips(window, tmp_path):
     view.set_folder(str(other))
     assert view.place.text() == 'other' and view.project() is None
     menu = [a.text() for a in view.place.menu_.actions()]
-    assert menu[:2] == ['專案', 'Repo'] and str(other) in menu and menu[-2:] == ['選擇資料夾…', '新增專案…']
+    assert menu[:3] == ['只聊天', '專案', 'Repo'] and str(other) in menu and menu[-2:] == ['選擇資料夾…', '新增專案…']
     next(a for a in view.place.menu_.actions() if a.text() == 'Repo').trigger()
     assert view.project()['id'] == project['id'] and view.place.text() == 'Repo'
     next(a for a in view.agent_chip.menu_.actions() if a.text() == 'Codex').trigger()
@@ -400,3 +400,28 @@ def test_opencode_shows_the_model_it_really_uses(ui_app, tmp_path, monkeypatch):
         assert [a.text() for a in bar.effort_chip.menu_.actions()] == ['標準', '低', '高']
     finally:
         fake.close()
+
+
+def test_chat_only_uses_an_empty_folder_and_a_cautious_mode(window):
+    win, make, store, sender, notes, work, projects, state, app = window
+    store.dispatch.remember_options('codex', {'models': [], 'modes': [{'id': 'read-only', 'label': '唯讀'},
+                                                                       {'id': 'auto', 'label': '自動'}], 'mode_default': 'auto'})
+    win.show_new(agent='codex', folder=str(work))
+    view = win.new_view
+    assert view.composer.settings.mode_chip.text() == '自動'
+    next(a for a in view.place.menu_.actions() if a.text() == '只聊天').trigger()
+    assert view.chat_only() and view.place.text() == '只聊天'
+    assert view.composer.settings.mode_chip.text() == '唯讀'   # shown before sending
+    view.composer.text.setPlainText('hi')
+    view.send()
+    wait(lambda: win.current_key and done(store, win.current_key)(), app=app)
+    row = store.dispatch.get(win.current_key)
+    assert win.is_chat_dir(row['directory']) and (Path(store.dispatch.file).parent / 'chat').is_dir()
+    assert row['mode'] == 'read-only' and 'mode' not in (state.get('new_settings') or {}).get('codex', {})
+    wait(lambda: win.conversation.project_chip.text() == '只聊天', app=app)
+    # The shared folder is not offered again among the folders; choosing a folder drops the cautious mode.
+    win.show_new()
+    assert view.chat_only()   # the last place is kept
+    assert str(win.chat_dir()) not in [a.text() for a in view.place.menu_.actions()]
+    view.set_folder(str(work))
+    assert view.composer.settings.mode_chip.text() == '自動'
