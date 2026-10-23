@@ -72,7 +72,7 @@ def test_send_reply_and_continue(setup, client):
     wait(settled(store, key))
     row = store.dispatch.get(key)
     assert row['state'] == 'done' and row['reply'] == 'Hello there' and row['prompt'] == 'hello'
-    assert row['source'] == {'claude-code': 'Claude Code', 'codex': 'Codex', 'grok-cli': 'Grok'}[client] and row['directory'] == str(work)
+    assert row['source'] == {'claude-code': 'Claude', 'codex': 'Codex', 'grok-cli': 'Grok'}[client] and row['directory'] == str(work)
     # Live events build the same conversation the chat window shows.
     live = Transcript()
     for k, event in events:

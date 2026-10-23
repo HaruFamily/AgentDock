@@ -195,3 +195,29 @@ def test_jump_to_latest_appears_when_reading_back(window):
     app.processEvents()
     bar = view.scroll.verticalScrollBar()
     assert bar.value() == bar.maximum() and view.latest.isHidden()
+
+
+# --------------------------------------------------------------------------- Claude's models and the modes
+def test_claude_lists_models_before_any_conversation(window, monkeypatch):
+    win, make, store, sender, notes, work, projects, state, app = window
+    monkeypatch.setenv('FAKE_CLAUDE_MODELS', '1')
+    win.show_new(agent='claude-code', folder=str(work))
+    bar = win.new_view.composer.settings
+    wait(lambda: not bar.model_chip.isHidden(), app=app)
+    assert [m['id'] for m in store.dispatch.options['claude-code']['models']] == ['opus']
+    assert win.new_view.agent_chip.text() == 'Claude'
+    assert not list((work.parent / 'claude-config').glob('projects/*/*.jsonl'))   # nothing was started
+
+
+def test_mode_menu_uses_the_agents_own_default():
+    from agentdock.ui.chat_window import SettingsBar
+    bar = SettingsBar()
+    modes = [{'id': 'default', 'label': '詢問'}, {'id': 'plan', 'label': '計畫'}]
+    bar.set_options({'modes': modes, 'mode_default': 'default'}, {})
+    assert bar.mode_chip.text() == '詢問' and bar.values()['mode'] == ''
+    menu = [(a.text(), a.isChecked()) for a in bar.mode_chip.menu_.actions()]
+    assert menu == [('詢問', True), ('計畫', False)]   # no separate 預設權限
+    bar.pick('mode', 'plan')
+    assert bar.mode_chip.text() == '計畫'
+    bar.set_options({'modes': modes}, {})
+    assert [a.text() for a in bar.mode_chip.menu_.actions()][0] == '預設權限'

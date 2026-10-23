@@ -34,7 +34,7 @@ from agentdock.ui.question_text import QuestionText
 from agentdock.ui.widgets import ElidedLabel, icon_button
 
 ROLE = Qt.ItemDataRole.UserRole
-AGENTS = (('opencode', 'OpenCode'), ('claude-code', 'Claude Code'), ('codex', 'Codex'), ('grok-cli', 'Grok'))
+AGENTS = (('opencode', 'OpenCode'), ('claude-code', 'Claude'), ('codex', 'Codex'), ('grok-cli', 'Grok'))
 RAIL = 56
 SIDEBAR = (220, 270, 460)   # narrowest, default and widest conversation list
 FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
@@ -1462,8 +1462,17 @@ class SettingsBar(QObject):
             self.current['effort'] = value = ''   # the new model does not offer it
         self.choices['effort'] = self._listed([(e, EFFORT_LABELS.get(e, e)) for e in efforts], value)
 
-    def _label(self, field: str) -> str:
+    def _default_mode(self) -> str:
+        """The Agent's own default among its modes: it stands for '' instead of a separate 預設 entry."""
+        default = str(self.options.get('mode_default') or '')
+        return default if default in [i for i, _t in self.choices['mode']] else ''
+
+    def _shown(self, field: str) -> str:
         value = self.current[field]
+        return value or (self._default_mode() if field == 'mode' else '')
+
+    def _label(self, field: str) -> str:
+        value = self._shown(field)
         return next((t for i, t in self.choices[field] if i == value), '') if value else ''
 
     def _render(self) -> None:
@@ -1487,15 +1496,17 @@ class SettingsBar(QObject):
                 if n:
                     menu.addSection('推理')
                 group = QActionGroup(menu)
-                for item_id, text in [('', self.DEFAULTS[field])] + self.choices[field]:
+                own = field == 'mode' and self._default_mode()
+                entries = self.choices[field] if own else [('', self.DEFAULTS[field])] + self.choices[field]
+                for item_id, text in entries:
                     action = menu.addAction(text, lambda f=field, v=item_id: self.pick(f, v))
                     action.setCheckable(True)
-                    action.setChecked(item_id == self.current[field])
+                    action.setChecked(item_id == self._shown(field))
                     group.addAction(action)
 
     def pick(self, field: str, value: str) -> None:
         """The user chose `value` for `field` (from a chip's menu)."""
-        if self.current[field] == value:
+        if self._shown(field) == value:
             return
         self.current[field] = value
         if field == 'model':

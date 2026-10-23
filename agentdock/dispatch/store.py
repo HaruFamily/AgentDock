@@ -18,7 +18,7 @@ from agentdock.files import atomic_json, load_json
 FINAL = ('done', 'failed', 'interrupted')
 SETTINGS = ('model', 'effort', 'mode')
 STATES = ('running', 'unknown', *FINAL)
-SOURCES = {'opencode': 'OpenCode', 'claude-code': 'Claude Code', 'codex': 'Codex', 'grok-cli': 'Grok'}
+SOURCES = {'opencode': 'OpenCode', 'claude-code': 'Claude', 'codex': 'Codex', 'grok-cli': 'Grok'}
 MAX_TEXT = 20000
 MAX_RECENT = 8
 
@@ -51,7 +51,8 @@ class DispatchStore:
             data = {}
         rows = data.get('rows') if isinstance(data.get('rows'), dict) else {}
         # Nothing saved proves that a client is still running.
-        self.rows = {k: {**r, 'state': 'unknown' if r.get('state') == 'running' else r.get('state', 'unknown')}
+        self.rows = {k: {**r, 'state': 'unknown' if r.get('state') == 'running' else r.get('state', 'unknown'),
+                         'source': SOURCES.get(r.get('client', ''), r.get('source', ''))}
                      for k, r in rows.items() if isinstance(r, dict) and r.get('session_id')}
         self.recent = [d for d in data.get('recent_dirs', []) if isinstance(d, str)][:MAX_RECENT]
         # Last known models / efforts / permission modes per client, for the pickers before a session exists.

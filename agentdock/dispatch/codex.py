@@ -547,7 +547,7 @@ class CodexClient(Adapter):
                 models.append({'id': str(m.get('model') or m.get('id')), 'label': str(m.get('displayName') or m.get('id')),
                                'efforts': [str(e.get('reasoningEffort')) for e in m.get('supportedReasoningEfforts') or []
                                            if isinstance(e, dict) and e.get('reasoningEffort')]})
-        options = {'models': models, 'modes': MODES}
+        options = {'models': models, 'modes': MODES, 'mode_default': 'auto'}
         self.remember(options)
         return options
 

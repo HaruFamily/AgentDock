@@ -463,7 +463,7 @@ class GrokClient(Adapter):
                            'efforts': [str(e.get('value')) for e in efforts if isinstance(e, dict) and e.get('value')],
                            'context': int(((m.get('_meta') or {}).get('totalContextTokens')) or 0)})
         self._models, self._default = models, str(listing.get('currentModelId') or '')
-        options = {'models': models, 'modes': MODES, 'mode_fixed': True}
+        options = {'models': models, 'modes': MODES, 'mode_fixed': True, 'mode_default': 'ask'}
         self.remember(options)
         return options
 

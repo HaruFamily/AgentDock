@@ -10,7 +10,8 @@ import sys
 import uuid
 
 LOG = os.environ.get('FAKE_CLAUDE_LOG')
-SID = sys.argv[sys.argv.index('--session-id') + 1] if '--session-id' in sys.argv else sys.argv[sys.argv.index('--resume') + 1]
+SID = (sys.argv[sys.argv.index('--session-id') + 1] if '--session-id' in sys.argv
+       else sys.argv[sys.argv.index('--resume') + 1] if '--resume' in sys.argv else '')   # '' = only asked to initialize
 
 
 def log(entry):
@@ -124,7 +125,9 @@ while True:
     message = read()
     if message.get('type') == 'control_request' and message['request'].get('subtype') == 'initialize':
         out({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': message['request_id'], 'response': {
-            'commands': [{'name': 'review', 'description': 'Review the changes', 'argumentHint': ''}]}}})
+            'commands': [{'name': 'review', 'description': 'Review the changes', 'argumentHint': ''}],
+            **({'models': [{'value': 'opus', 'displayName': 'Opus', 'supportedEffortLevels': ['low', 'high']}]}
+               if os.environ.get('FAKE_CLAUDE_MODELS') else {})}}})
         out({'type': 'system', 'subtype': 'init', 'session_id': SID})
     elif message.get('type') == 'user':
         turn(str(message['message']['content']))

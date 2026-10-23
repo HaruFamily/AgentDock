@@ -382,7 +382,7 @@ def test_new_conversation_sends_settings_and_attachments(window, tmp_path):
     row = store.dispatch.get(win.current_key)
     assert (row['model'], row['effort'], row['mode']) == ('sonnet', 'low', 'plan')
     log = lines(Path(store.dispatch.file).parent.parent / 'claude.log')
-    argv = next(l['argv'] for l in log if 'argv' in l)
+    argv = next(l['argv'] for l in log if 'argv' in l and '--session-id' in l['argv'])
     assert argv[argv.index('--model') + 1] == 'sonnet' and argv[argv.index('--effort') + 1] == 'low'
     assert argv[argv.index('--permission-mode') + 1] == 'plan'
     content = next(l for l in log if l.get('type') == 'user')['message']['content']

@@ -203,7 +203,8 @@ class OpenCodeService:
         agents = [{'id': str(a['id']), 'label': str(a.get('name') or a['id'])}
                   for a in (self.request('GET', '/api/agent' + query) or {}).get('data', [])
                   if a.get('mode') in ('primary', 'all') and not a.get('hidden')]
-        return {'models': models, 'modes': agents}
+        default = next((a['id'] for a in agents if a['id'] == 'build'), '')
+        return {'models': models, 'modes': agents, **({'mode_default': default} if default else {})}
 
     def interrupt(self, session_id: str) -> bool:
         return bool((self.request('POST', f'/api/session/{_q(session_id)}/interrupt') or {}).get('interrupted'))

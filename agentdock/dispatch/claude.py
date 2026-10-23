@@ -29,7 +29,7 @@ SKIP_USER = re.compile(r'^\s*<(local-command-|command-name|command-message|comma
                        r'system-reminder|task-notification|bash-|user-prompt-submit-hook)')
 DENIED = 'The user denied this in AgentDock.'
 MODES = [{'id': 'default', 'label': '詢問'}, {'id': 'acceptEdits', 'label': '自動接受編輯'}, {'id': 'plan', 'label': '計畫'},
-         {'id': 'auto', 'label': '自動判斷'}, {'id': 'bypassPermissions', 'label': '全部允許'}]
+         {'id': 'bypassPermissions', 'label': '全部允許'}]
 SKIPPED = 'The user skipped this question.'
 
 
@@ -560,6 +560,7 @@ class ClaudeClient(Adapter):
         self._fresh: set[str] = set()
         self._closed = False
         self._options: dict = {}
+        self._probed = False
 
     def command(self) -> list[str]:
         found = self._find()
@@ -597,17 +598,47 @@ class ClaudeClient(Adapter):
         """Models and their effort levels from Claude Code's initialize response."""
         models = [{'id': str(m.get('value')), 'label': str(m.get('displayName') or m.get('value')),
                    'efforts': [str(e) for e in m.get('supportedEffortLevels') or []]}
-                  for m in init.get('models') or [] if isinstance(m, dict) and m.get('value')]
+                  for m in init.get('models') or []
+                  if isinstance(m, dict) and m.get('value') and m.get('value') != 'default']   # 預設模型 already
         commands = [{'name': str(c['name']).lstrip('/'), 'description': str(c.get('description') or ''),
                      'hint': str(c.get('argumentHint') or '')}
                     for c in init.get('commands') or [] if isinstance(c, dict) and c.get('name')]
         learned = {**({'models': models} if models else {}), **({'commands': commands} if commands else {})}
         if learned:
-            self._options = {**self._options, **learned, 'modes': MODES}
+            self._options = {**self._options, **learned, 'modes': MODES, 'mode_default': 'default'}
             self.remember(self._options)
 
     def options(self, row: dict | None, directory: str) -> dict:
-        return {'models': [], **self._options, 'modes': MODES}
+        if not self._options.get('models') and not self._probed and not (row and self._live(row['session_id'])):
+            self._probed = True   # once per run; a conversation's own start also brings the list
+            self._probe(directory)
+        return {'models': [], **self._options, 'modes': MODES, 'mode_default': 'default'}
+
+    def _probe(self, directory: str, timeout: float = 30.0) -> None:
+        """Models are only in Claude Code's initialize response: before any conversation has run, start
+        claude just for that answer and close it again (no message is sent, so no session is made)."""
+        got = threading.Event()
+        box: dict = {}
+
+        def line(message: dict) -> None:
+            response = message.get('response') or {}
+            if message.get('type') == 'control_response' and response.get('request_id') == 'probe':
+                box['init'] = response.get('response') if isinstance(response.get('response'), dict) else {}
+                got.set()
+
+        args = [*self.command(), '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json',
+                '--permission-prompt-tool', 'stdio']
+        env = child_env({'CLAUDE_CODE_ENTRYPOINT': 'sdk-py'}, drop=('CLAUDECODE',))
+        cwd = directory if directory and os.path.isdir(directory) else os.path.expanduser('~')
+        process = ChildProcess(args, cwd, env, line, lambda _code, _err: got.set(), 'Claude Code')
+        try:
+            process.send({'type': 'control_request', 'request_id': 'probe',
+                          'request': {'subtype': 'initialize', 'hooks': None}})
+            got.wait(timeout)
+        finally:
+            process.stop()
+        if box.get('init'):
+            self.learned(box['init'])
 
     def started(self, sid: str) -> None:
         with self._lock:
