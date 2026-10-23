@@ -472,3 +472,52 @@ def test_settings_lists_only_the_agents_the_chat_talks_to(tmp_path):
     m.reorder(['a'])   # saving keeps the hidden registration as it was
     saved = json.loads((tmp_path / 'agents.json').read_text(encoding='utf-8'))
     assert [(d['name'], d['kind']) for d in saved] == [('Claude', 'claude-code'), ('Claude Desktop / Cowork', 'claude-desktop')]
+
+
+def test_agent_facts_say_model_account_and_program():
+    from agentdock.agent_info import AgentFacts, account_text, model_text
+    from agentdock.tools.tokengauge.gauge import Account, ProviderResult
+    options = {'models': [{'id': 'opus', 'label': 'Opus 5.5'}], 'defaults': {'model': 'opus', 'effort': {'opus': 'xhigh'}}}
+    assert model_text(options) == 'Opus 5.5 · 很高'
+    assert model_text({'models': [], 'defaults': {'model': 'x/y'}, 'effort_unset': '標準'}) == 'x/y · 標準'
+    assert model_text({}) == ''
+    assert account_text(ProviderResult('claude', 'Claude', [Account('Pin', plan='Max 20x')])) == ('Pin · Max 20x', False)
+    assert account_text(ProviderResult('claude', 'Claude', [Account(None)])) == ('已登入', False)
+    assert account_text(ProviderResult('claude', 'Claude', error='需要重新登入')) == ('需要重新登入', True)
+    assert account_text(ProviderResult('grok', 'Grok', missing=True)) == ('', False)
+    facts = AgentFacts(lambda kind: options if kind == 'claude-code' else {},
+                       lambda key: ProviderResult(key, key, [Account('Pin')]) if key == 'claude' else None)
+    facts.versions = {'claude-code': '2.1.288', 'codex': None}
+    assert facts('claude-code') == {'program': '2.1.288', 'model': 'Opus 5.5 · 很高', 'account': 'Pin', 'account_problem': False}
+    assert facts('codex') == {'program': None}
+    assert facts('opencode') == {}   # version not looked up yet: nothing claimed
+
+
+def test_program_version_reads_the_first_version(tmp_path):
+    import sys
+    from agentdock.agent_info import program_version
+    script = tmp_path / 'fake.py'
+    script.write_text("print('2.1.288 (Claude Code)')", encoding='utf-8')
+    exe = tmp_path / 'fake'
+    exe.write_text(f'#!/bin/sh\n"{sys.executable}" "{script}"\n', encoding='utf-8')
+    exe.chmod(0o755)
+    if sys.platform != 'win32':
+        assert program_version(str(exe)) == '2.1.288'
+    assert program_version(str(tmp_path / 'missing')) == ''
+
+
+def test_general_page_follows_the_tray_menu(ui_app):
+    from agentdock.ui.settings_page import GeneralPage, LookPage
+    seen = []
+    page = GeneralPage([('notify', '需要處理時跳出通知', True, seen.append)])
+    page.switches['notify'].click()
+    assert seen == [False]
+    page.set_on('notify', True)          # changed from the tray menu: no echo back
+    assert page.switches['notify'].isChecked() and seen == [False]
+    looks = LookPage({'a': {'label': 'A'}, 'b': {'label': 'B'}}, 'a')
+    picked = []
+    looks.picked.connect(picked.append)
+    looks.tiles['b'].click()
+    assert picked == ['b']
+    looks.set_current('b')
+    assert looks.tiles['b'].isChecked() and not looks.tiles['a'].isChecked()

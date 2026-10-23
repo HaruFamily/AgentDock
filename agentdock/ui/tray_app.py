@@ -110,6 +110,7 @@ class TrayApp(Dock):
         self.tools_page = ToolsPage(self.quota, bool(self.ui.get('quota_float')), extra)
         self.chat.add_page('tools', self.tools_page)
         self.chat.add_page('settings', self.agents)
+        self._settings_pages()
         self.chat.page_changed.connect(self._page_changed)
         self.tools_page.float_toggled.connect(self.set_quota_float)
         if self.quota is not None:
@@ -168,6 +169,47 @@ class TrayApp(Dock):
         self._quota_activity()
         if name == 'settings':
             QTimer.singleShot(0, self.agents.check_restarts)
+            self.facts.refresh_versions([p.kind for p in self.manager.list()], self.agents.facts_ready.emit)
+
+    # ------------------------------------------------------------------ settings pages
+    def _settings_pages(self) -> None:
+        """一般 and 外觀 of the settings page: the same switches as the tray menu, kept in step with it."""
+        from agentdock.agent_info import AgentFacts
+        from agentdock.ui.settings_page import GeneralPage, LookPage
+        self.facts = AgentFacts(lambda kind: self.store.dispatch.options.get(kind, {}),
+                                lambda key: getattr(self.quota, 'results', {}).get(key))
+        self.agents.agent_info = self.facts
+        items = [('notify', '需要處理時跳出通知', bool(self.ui.get('notify_attention', True)), self.set_notify)]
+        if self.quota is not None:
+            items.append(('quota_float', '額度浮動視窗', bool(self.ui.get('quota_float')), self.set_quota_float))
+        if winutil.IS_WINDOWS:
+            items.insert(0, ('autostart', '開機自動啟動', winutil.autostart_get() is not None, self._autostart_toggled))
+        self.general_page = GeneralPage(items)
+        self.agents.set_page('general', self.general_page)
+        self.look_page = LookPage(theme.THEMES, theme.NAME)
+        self.look_page.picked.connect(self.apply_theme)
+        self.agents.set_page('look', self.look_page)
+
+    def set_notify(self, on: bool) -> None:
+        self.ui['notify_attention'] = on
+        self._save_ui()
+        if getattr(self, '_notify_action', None) is not None and self._notify_action.isChecked() != on:
+            self._notify_action.blockSignals(True)
+            self._notify_action.setChecked(on)
+            self._notify_action.blockSignals(False)
+        if getattr(self, 'general_page', None) is not None:
+            self.general_page.set_on('notify', on)
+
+    def _autostart_toggled(self, on: bool) -> None:
+        self.set_autostart(on)
+        on = winutil.autostart_get() is not None
+        for widget in (getattr(self, '_autostart_action', None),):
+            if widget is not None and widget.isChecked() != on:
+                widget.blockSignals(True)
+                widget.setChecked(on)
+                widget.blockSignals(False)
+        if getattr(self, 'general_page', None) is not None:
+            self.general_page.set_on('autostart', on)
 
     def _quota_activity(self) -> None:
         if self.quota is not None:
@@ -196,6 +238,8 @@ class TrayApp(Dock):
                 widget.blockSignals(True)
                 widget.setChecked(on)
                 widget.blockSignals(False)
+        if getattr(self, 'general_page', None) is not None:
+            self.general_page.set_on('quota_float', on)
         self._quota_activity()
         if save:
             self.ui['quota_float'] = on
@@ -221,7 +265,8 @@ class TrayApp(Dock):
         menu.addAction(self._float_action)
         notify = QAction('需要處理時跳出通知', menu, checkable=True)
         notify.setChecked(self.ui.get('notify_attention', True))
-        notify.toggled.connect(lambda on: (self.ui.__setitem__('notify_attention', on), self._save_ui()))
+        notify.toggled.connect(self.set_notify)
+        self._notify_action = notify
         menu.addAction(notify)
         looks = menu.addMenu('外觀')
         group = QActionGroup(looks)
@@ -236,7 +281,8 @@ class TrayApp(Dock):
         if winutil.IS_WINDOWS:
             auto = QAction('開機自動啟動', menu, checkable=True)
             auto.setChecked(winutil.autostart_get() is not None)
-            auto.toggled.connect(self.set_autostart)
+            auto.toggled.connect(self._autostart_toggled)
+            self._autostart_action = auto
             menu.addAction(auto)
         menu.addSeparator()
         menu.addAction(QAction('結束 AgentDock', menu, triggered=self.quit))
@@ -298,6 +344,9 @@ class TrayApp(Dock):
             self.quota_float.restyle()
         for key, action in getattr(self, '_theme_actions', {}).items():
             action.setChecked(key == theme.NAME)
+        if getattr(self, 'look_page', None) is not None:
+            self.look_page.set_current(theme.NAME)
+            self.agents.restyle()
         if self.tray is not None:
             self._sync_tray()
         if save:

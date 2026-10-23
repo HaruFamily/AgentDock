@@ -8,15 +8,15 @@
 - **系統匣**：圖示角標顯示待授權＋待回答數，有新回覆時亮點；待授權、待回答會跳 Windows 通知（可在系統匣選單關閉），點通知打開那段對話。
   選單：對話視窗、新對話、額度浮動視窗、通知開關、外觀、開機自動啟動（開機時只在系統匣啟動）、結束。
 - **工具**：額度（每家每個視窗剩餘多少）與額度浮動視窗開關；額度浮動視窗是唯一的浮動小窗，可拖到任何位置。`agentdock/tools/` 的 Python 工具也列在這頁。
-- **外觀**：預設黑色與螢光綠的極簡風格；可從本機 `data/private_theme.py` 載入額外主題（可替對話視窗的背景、清單、輸入框、標題、訊息、送出鈕與所有對話框畫蕾絲與緞帶等裝飾；Windows 11 的標題列也會換成主題色），從系統匣「外觀」切換。本機主題不提交 Git、不納入設定匯出。Ctrl+Alt+H 立即切回極簡。
+- **外觀**：預設黑色與螢光綠的極簡風格；可從本機 `data/private_theme.py` 載入額外主題（可替對話視窗的背景、清單、輸入框、標題、訊息、送出鈕與所有對話框畫蕾絲與緞帶等裝飾；Windows 11 的標題列也會換成主題色），從「設定 → 外觀」或系統匣「外觀」切換。本機主題不提交 Git、不納入設定匯出。Ctrl+Alt+H 立即切回極簡。
 - **Inbox 已停用**：對話都在視窗裡原生處理，不再透過 `ask_user`／`report_to_user` MCP。舊設定檔裡的 Inbox MCP 與 inbox-activity 擴充會在「設定 → 全部更新」預覽後移除；移除前若有 Agent 呼叫 ask_user，會收到「已停用、請直接詢問使用者」的錯誤。
 - 舊的浮動卡片暫時保留一版：`data/ui.json` 設 `"shell": "card"` 可退回（含 Inbox）。
-- **Agent 與 MCP**：上半部是「MCP 庫」，每個 MCP 只定義一次（遠端網址、uvx/npx 套件、GitHub Release 下載、自訂指令）；
-  下半部是各 Agent（對話視窗能用的四個：OpenCode、Claude、Codex、Grok CLI），用「＋ MCP」加入、「−」移除、勾選啟停。Claude Desktop／Cowork 與 GrokBot 已不列出也不再提供新增（舊的登記仍保存在 `data/agents.json`，只是不顯示、不再管理）。
-  變更會累積，最後一次預覽、備份、寫入。
-  Agent 設定檔裡的 MCP 若被客戶端更新或其他程式移除，會標示「被移除了」，可一鍵補回。
-- **擴充庫**：MCP 以外的 hook／plugin（例如 [rtk](https://github.com/rtk-ai/rtk)），同樣在各 Agent 用「＋」加入。
-  Claude、Codex 寫入 PreToolUse hook，OpenCode 放 plugin。
+- **設定**：左邊是分類（一般、外觀、Agent、MCP、擴充、備份），和 Claude／Codex 桌面版一樣一次看一頁。
+  - 一般：開機自動啟動、需要處理時跳出通知、額度浮動視窗（和系統匣選單同步）。外觀：點一下就換。
+  - Agent：對話視窗能用的四個（OpenCode、Claude、Codex、Grok CLI）各一張卡片：程式版本（找不到會標出來）、預設模型與推理強度、登入的帳號與方案、MCP／擴充數量與需要處理的事。Claude Desktop／Cowork 與 GrokBot 已不列出也不再提供新增（舊的登記仍保存在 `data/agents.json`）。
+  - MCP：每個 MCP 一列（只定義一次：遠端網址、uvx/npx 套件、GitHub Release 下載、自訂指令），右邊每個 Agent 一個開關。點開關就排入加入／移除，再點一次復原；要更新、被其他程式移除、已停用的會直接寫在那一列。
+  - 擴充：MCP 以外的 hook／plugin（例如 [rtk](https://github.com/rtk-ai/rtk)），一樣每個 Agent 一個開關；Claude、Codex 寫入 hook，OpenCode 放 plugin，不支援的 Agent 沒有開關。
+  - 變更會累積在下方，最後一次預覽、備份、寫入。
 
 ## 使用
 
@@ -37,7 +37,7 @@
 - `docs/history/local-backups/`（不進 Git）：本機歷史備份。分享整個資料夾時，請排除它與 `data/`。
 
 換一台電腦：pull 後打開 AgentDock，MCP 庫中標示「需下載」或「缺少祕密」的項目照提示補上即可。
-敏感設定可從設定頁底部的「設定選單 → 進階／備份與還原」匯出為加密的 `.adsecrets`，再於新電腦匯入（本機已有的值不會被覆寫）。
+敏感設定可從「設定 → 備份」匯出為加密的 `.adsecrets`，再於新電腦匯入（本機已有的值不會被覆寫）。
 
 ## 資料夾
 

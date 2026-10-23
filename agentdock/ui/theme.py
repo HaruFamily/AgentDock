@@ -266,6 +266,13 @@ QWidget#SettingsPage QLabel#SectionTitle {{ font-size: 13px; letter-spacing: 1px
 QWidget#SettingsPage QFrame#Rule {{ background: transparent; }}
 QWidget#SettingsPage QWidget#Row {{ min-height: 28px; }}
 QWidget#SettingsPage QPushButton[glyph="true"] {{ min-width: 26px; min-height: 26px; }}
+QLabel#AgentName {{ color: {ACCENT_DEEP}; font-size: 15px; font-weight: 700; }}
+QLabel#FactKey {{ color: {MUTED}; font-size: 12px; }}
+QLabel#FactValue {{ font-size: 13px; }}
+QLabel#FactAlert {{ color: {WARN_INK}; font-size: 12px; }}
+QLabel#ColumnHead {{ color: {ACCENT_DEEP}; font-size: 12px; font-weight: 600; }}
+QLabel#SettingName {{ font-size: 14px; }}
+QScrollArea#SettingsScroll, QScrollArea#SettingsScroll > QWidget > QWidget {{ background: transparent; border: none; }}
 QFrame#SettingsFooter {{ background: {CARD}; border-top: 1px solid {LINE}; border-radius: 10px; }}
 QWidget#Row {{ border-radius: 10px; }}
 QWidget#Row:hover {{ background: {HOVER}; }}

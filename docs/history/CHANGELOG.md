@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：設定頁分類導覽＋Agent 卡片＋MCP／擴充開關表（settings_page.py、agent_info.py、AgentsView._rebuild_wide）；一般／外觀頁與系統匣同步；備份頁取代「設定選單 → 進階」。新增 4 項測試。
+
 - 2026-10-23：agents.RETIRED_KINDS、AgentManager.hidden_kinds／visible()／rename_old_defaults()（list、inspect 只回可見的，存檔保留隱藏的）；TrayApp 設定；AgentDialog 不提供退場的類型；KINDS 與 HOOK_KINDS 的 Claude Code 改為 Claude。新增 1 項測試，完整 318 項通過。
 
 - 2026-10-23：無框對話框先把整個圓角外形塗上 CANVAS 再交給 draw_dialog（使用者的 Windows 上對話框透明完全無效，蕾絲之間會露黑）。

@@ -84,6 +84,7 @@ Inbox 可送任務給 OpenCode 2.x 並在卡片上授權、回答、接續與停
 - 本機主題也可提供 `STYLE_APP`／`STYLE_CHAT`（字串或回傳字串的函式），可愛外觀時接在全域與對話視窗樣式表之後（`theme.extra_style`）。WORDS 的 fold_closed／fold_open 是收合符號（可愛外觀 ♡／♥）。
 - `ui/cute.py`：App 層級的事件過濾器（TrayApp 安裝）。本機主題有 draw_dialog 時，所有 QDialog（含 QMessageBox、QInputDialog，不含原生檔案對話框）在 Polish 時改為無框透明，由主題畫外框、標題與關閉鈕，標題列可拖曳、點關閉＝reject；可愛外觀下 QMenu 與提示框改透明視窗，圓角才不會露出方角；QMessageBox 按鈕改中文，可愛外觀用 draw_icon 取代系統圖示。`tint_caption()` 在 Windows 11 用 DWM 把主視窗標題列與邊框換成主題色並圓角。檔案缺少、無效或 DEVICE 不符合本機名稱時退回極簡；私人檔案不納入 Git 或設定匯出。
   本機主題可使用額外字型，字型快取放在 data/fonts。新問題通知仍由 app.py 負責。
+- `ui/settings_page.py`：對話視窗設定頁的零件（Card、NavButton、Switch、ThemeTile、GeneralPage、LookPage），只負責畫；`agents_view.AgentsView(wide=True)` 用它們組出分類頁。`agent_info.py`（不匯入 PySide6）提供 Agent 卡片的程式版本（背景執行 `--version`，CREATE_NO_WINDOW）、預設模型與帳號。
 - `agents_view._track_known()`：ui.json 的 `known_mcp` 記住各 Agent 設定檔裡的 MCP 名稱；少掉的（不是經 AgentDock 移除的）標成「被移除了」並排入「全部更新」的補回。
 - `secretbox.py`：祕密檔匯出／匯入（scrypt＋AES-256-GCM，只補缺少的項目）。`library.split_local()` 讓本機絕對路徑跟祕密一樣只存 data/secrets.json，
   `recover_secrets()` 在缺少時從 Agent 設定補回。

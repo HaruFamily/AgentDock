@@ -15,7 +15,9 @@ from agentdock import clients
 from agentdock.agents import ACCOUNT_MCP_KINDS, KINDS, QAI_NAMES, RETIRED_KINDS, AgentManager, default_path
 from agentdock.extensions import PRESETS, UNSUPPORTED, ExtensionManager, merge_summary
 from agentdock.library import DEFAULT_ASSET, LOCAL_PATH, QAI_KEY, TYPES, Library
+from agentdock.ui import theme
 from agentdock.ui.qa_view import button, chip, label
+from agentdock.ui.settings_page import SettingsNav
 from agentdock.ui.widgets import DRAG_MIME, ElidedLabel, RibbonBar, Row, icon_button, muted
 
 
@@ -616,6 +618,7 @@ def _type_rank(t: str) -> int:
 # ============================================================================ main view
 class AgentsView(QWidget):
     summary_changed = Signal(str, bool)  # one line for the floating card, alert
+    facts_ready = Signal()               # agent_info learned something (from a worker thread)
 
     SECTIONS = (("agents", "Agent"), ("library", "MCP 庫"), ("extensions", "擴充庫"))
 
@@ -628,6 +631,9 @@ class AgentsView(QWidget):
         # otherwise the narrow floating-card page with all sections stacked.
         self.wide = wide
         self.setProperty("wide", wide)
+        # kind -> {"program": version | None (not found), "model": ..., "account": ...}; given by the tray app
+        self.agent_info: Callable[[str], dict[str, Any]] | None = None
+        self.facts_ready.connect(lambda: self.refresh() if self.isVisible() else None)
         self.manager = manager
         self.library = library
         self.on_changed = on_changed
@@ -664,41 +670,11 @@ class AgentsView(QWidget):
         backup_menu.addAction("匯入敏感設定（加密）…", lambda: self.guard(self._import_secrets))
         self.settings_menu_button.setMenu(settings_menu)
         settings_actions.addWidget(self.settings_menu_button)
-        if wide:
-            settings_footer.hide()
-            self.settings_menu_button.setText("進階")
-            head = QHBoxLayout()
-            head.setContentsMargins(32, 24, 32, 8)
-            head.setSpacing(8)
-            title = QLabel("設定")
-            title.setObjectName("PageTitle")
-            head.addWidget(title)
-            head.addSpacing(16)
-            self.tabs: dict[str, QPushButton] = {}
-            for key, text in self.SECTIONS:
-                tab = button(text)
-                tab.setProperty("seg", True)
-                tab.setCheckable(True)
-                tab.clicked.connect(lambda _c=False, k=key: self.show_section(k))
-                head.addWidget(tab)
-                self.tabs[key] = tab
-            head.addStretch(1)
-            head.addWidget(self.settings_menu_button)
-            column_head = QWidget()
-            column_head.setLayout(head)
-            column_head.setMaximumWidth(1024)
-            top = QHBoxLayout()
-            top.addStretch(1)
-            top.addWidget(column_head, 100)
-            top.addStretch(1)
         self.notice = QLabel("")
         self.notice.setObjectName("Toast")
         self.notice.setWordWrap(True)
         self.notice.hide()
         self._notice_timer.timeout.connect(self.notice.hide)
-        if wide:
-            root.addLayout(top)
-        root.addWidget(self.notice)
         scroll = QScrollArea()
         self.scroll = scroll
         self._keep_scroll: int | None = None
@@ -712,50 +688,155 @@ class AgentsView(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.body = QWidget()
-        if wide:
-            centre = QHBoxLayout(self.body)
-            centre.setContentsMargins(32, 8, 32, 20)
-            centre.addStretch(1)
-            column = QWidget()
-            column.setMaximumWidth(960)
-            centre.addWidget(column, 100)
-            centre.addStretch(1)
-            self.lay = QVBoxLayout(column)
-            self.lay.setContentsMargins(0, 0, 0, 0)
-        else:
-            self.lay = QVBoxLayout(self.body)
-            self.lay.setContentsMargins(10, 10, 10, 14)
-        self.lay.setSpacing(20)
-        scroll.setWidget(self.body)
-        root.addWidget(scroll, 1)
-        self.bar = RibbonBar()
-        self.bar.setObjectName("ActionBar")
-        bl = QHBoxLayout(self.bar)
-        bl.setContentsMargins(14, 8, 12, 8)
-        self.bar_label = QLabel("")
-        self.bar_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.clear_btn = button("清除", flat=True)
         self.clear_btn.clicked.connect(self._clear_ops)
         self.update_btn = button("全部更新")
         self.update_btn.clicked.connect(lambda: self.guard(self._update_all))
         self.apply_btn = button("預覽並套用", primary=True)
         self.apply_btn.clicked.connect(lambda: self.guard(self._apply))
-        bl.addWidget(self.bar_label, 1)
-        bl.addWidget(self.clear_btn)
-        bl.addWidget(self.update_btn)
-        bl.addWidget(self.apply_btn)
+        self.bar_label = QLabel("")
+        self.bar_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         if wide:
-            self.bar.setMaximumWidth(1024)
-            holder = QHBoxLayout()
-            holder.setContentsMargins(32, 0, 32, 12)
-            holder.addStretch(1)
-            holder.addWidget(self.bar, 100)
-            holder.addStretch(1)
-            root.addLayout(holder)
+            settings_footer.hide()
+            self._build_wide(root, scroll)
         else:
+            root.addWidget(self.notice)
+            self.lay = QVBoxLayout(self.body)
+            self.lay.setContentsMargins(10, 10, 10, 14)
+            self.lay.setSpacing(20)
+            scroll.setWidget(self.body)
+            root.addWidget(scroll, 1)
+            self.bar = RibbonBar()
+            self.bar.setObjectName("ActionBar")
+            bl = QHBoxLayout(self.bar)
+            bl.setContentsMargins(14, 8, 12, 8)
+            bl.addWidget(self.bar_label, 1)
+            bl.addWidget(self.clear_btn)
+            bl.addWidget(self.update_btn)
+            bl.addWidget(self.apply_btn)
             root.addWidget(self.bar)
         root.addWidget(settings_footer)
         self.refresh()
+
+    # ------------------------------------------------------------------ wide page (conversation window)
+    WIDE_SECTIONS = (("general", "一般"), ("look", "外觀"), ("agents", "Agent"), ("library", "MCP"),
+                     ("extensions", "擴充"), ("backup", "備份"))
+
+    def _build_wide(self, root: QVBoxLayout, scroll: QScrollArea) -> None:
+        """Categories on the left like the desktop apps' settings; one page at a time on the right."""
+        from agentdock.ui.settings_page import Card, NavButton
+        outer = QHBoxLayout()
+        outer.setContentsMargins(20, 18, 0, 0)
+        outer.setSpacing(18)
+        root.addLayout(outer, 1)
+        self.nav = SettingsNav()
+        nav_lay = QVBoxLayout(self.nav)
+        nav_lay.setContentsMargins(*((22, 30, 22, 26) if theme.decorated("panel") else (8, 12, 8, 12)))
+        nav_lay.setSpacing(4)
+        title = QLabel("設定")
+        title.setObjectName("PageTitle")
+        nav_lay.addWidget(title)
+        nav_lay.addSpacing(12)
+        self.tabs: dict[str, NavButton] = {}
+        for key, text in self.WIDE_SECTIONS:
+            tab = NavButton(text)
+            tab.clicked.connect(lambda _c=False, k=key: self.show_section(k))
+            nav_lay.addWidget(tab)
+            self.tabs[key] = tab
+        nav_lay.addStretch(1)
+        self.nav.setFixedWidth(210)
+        outer.addWidget(self.nav)
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(8)
+        outer.addLayout(right, 1)
+        right.addWidget(self.notice)
+        centre = QHBoxLayout(self.body)
+        centre.setContentsMargins(6, 4, 26, 24)
+        column = QWidget()
+        column.setMaximumWidth(1000)
+        centre.addWidget(column, 100)
+        centre.addStretch(1)
+        col = QVBoxLayout(column)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        self.pages_lay = QVBoxLayout()
+        self.pages_lay.setContentsMargins(0, 0, 0, 0)
+        col.addLayout(self.pages_lay)
+        content = QWidget()
+        self.lay = QVBoxLayout(content)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(14)
+        col.addWidget(content)
+        col.addStretch(1)
+        scroll.setWidget(self.body)
+        scroll.setObjectName("SettingsScroll")
+        right.addWidget(scroll, 1)
+        self.bar = Card(layout="h")
+        self.bar.setObjectName("SettingsActions")
+        self.bar.lay.addWidget(self.bar_label, 1)
+        self.bar.lay.addWidget(self.clear_btn)
+        self.bar.lay.addWidget(self.update_btn)
+        self.bar.lay.addWidget(self.apply_btn)
+        holder = QHBoxLayout()
+        holder.setContentsMargins(6, 0, 26, 16)
+        holder.addWidget(self.bar, 100)
+        holder.addStretch(1)
+        self.bar.setMaximumWidth(1000)
+        right.addLayout(holder)
+        self.extra_pages: dict[str, QWidget] = {}
+        self.set_page("backup", self._backup_page())
+
+    def set_page(self, key: str, widget: QWidget) -> None:
+        """A page that is not rebuilt with the Agent data (一般, 外觀, 備份)."""
+        old = self.extra_pages.pop(key, None)
+        if old is not None:
+            old.hide()
+            old.deleteLater()
+        self.extra_pages[key] = widget
+        order = [k for k, _t in self.WIDE_SECTIONS]
+        index = sum(1 for k in self.extra_pages if order.index(k) < order.index(key))
+        self.pages_lay.insertWidget(index, widget)
+        self.show_section(self.ui_state.get("settings_tab", "general"), save=False)
+
+    def restyle(self) -> None:
+        """After a change of look: cards take the new trim."""
+        nav_lay = self.nav.layout()
+        nav_lay.setContentsMargins(*((22, 30, 22, 26) if theme.decorated("panel") else (8, 12, 8, 12)))
+        self.nav.update()
+        for page in self.extra_pages.values():
+            if hasattr(page, "restyle"):
+                page.restyle()
+        for card in self.extra_pages.get("backup", QWidget()).findChildren(QFrame, "SettingsCard"):
+            card.restyle()
+        self.bar.restyle()
+        self.refresh()
+
+    def _backup_page(self) -> QWidget:
+        from agentdock.ui.settings_page import Card, setting_row
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        card = Card()
+        export = button("匯出…")
+        export.clicked.connect(lambda: self.guard(self._export_secrets))
+        imp = button("匯入…")
+        imp.clicked.connect(lambda: self.guard(self._import_secrets))
+        card.lay.addWidget(setting_row("敏感設定", self._pair(export, imp),
+                                       "MCP 的金鑰與本機路徑，用密碼加密成一個檔案，帶到另一台電腦匯入"))
+        lay.addWidget(card)
+        lay.addStretch(1)
+        return page
+
+    @staticmethod
+    def _pair(*widgets: QWidget) -> QWidget:
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        for w in widgets:
+            row.addWidget(w)
+        return holder
 
     # ------------------------------------------------------------------ helpers
     def info(self, text: str, error: bool = False, sticky: bool = False) -> None:
@@ -1041,6 +1122,9 @@ class AgentsView(QWidget):
             self._keep_timer.start()
 
     def _rebuild(self) -> None:
+        if self.wide:
+            self._rebuild_wide()
+            return
         self._clear_layout(self.lay)
         rows = self.manager.inspect()
         self.missing = self._track_known(rows)
@@ -1101,40 +1185,413 @@ class AgentsView(QWidget):
         extensions = self._extension_section()
         self.lay.addWidget(extensions)
         self.lay.addStretch()
-        if self.wide:
-            self._as_tabs({"agents": agents, "library": lib, "extensions": extensions})
         self._paint_bar()
         self._emit_summary(len(rows))
 
-    def _as_tabs(self, sections: dict[str, "Fold"]) -> None:
-        """Wide page: each section is a tab; its header keeps only the count and its buttons."""
-        self.sections = sections
-        for key, fold in sections.items():
-            fold.set_collapsed(False)
-            fold.locked = True
-            fold.arrow.hide()
-            fold.title.hide()
-            fold.setToolTip("")
-            text = dict(self.SECTIONS)[key]
-            if fold.badge_text:
-                text += " " + fold.badge_text.strip("()").replace("*", " •")
-            self.tabs[key].setText(text)
-            fold.set_meta(fold.badge_text.strip("()").replace("*", "") + " 項" if fold.badge_text else "")
-            if key != "agents":   # plain lists sit in one card, like each Agent
-                fold.body.setObjectName("WideList")
-                fold.body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-                fold.body_lay.setContentsMargins(14, 10, 10, 10)
-        self.show_section(self.ui_state.get("settings_tab", "agents"), save=False)
-
     def show_section(self, key: str, save: bool = True) -> None:
-        if key not in dict(self.SECTIONS):
-            key = "agents"
-        for name, fold in getattr(self, "sections", {}).items():
-            fold.setVisible(name == key)
-            self.tabs[name].setChecked(name == key)
+        if not self.wide:
+            return
+        if key not in dict(self.WIDE_SECTIONS):
+            key = "general"
+        pages = {**getattr(self, "sections", {}), **getattr(self, "extra_pages", {})}
+        if key not in pages and pages:
+            key = next(k for k, _t in self.WIDE_SECTIONS if k in pages)
+        for name, page in pages.items():
+            page.setVisible(name == key)
+        for name, tab in self.tabs.items():
+            tab.setChecked(name == key)
+            tab.setVisible(name in pages)
+        self.current_section = key
         if save and self.ui_state.get("settings_tab") != key:
             self.ui_state["settings_tab"] = key
             self.save_state()
+        self.scroll.verticalScrollBar().setValue(0) if save else None
+
+    # ------------------------------------------------------------------ wide pages
+    def _prepare_rows(self) -> list[dict[str, Any]]:
+        rows = self.manager.inspect()
+        self.missing = self._track_known(rows)
+        self._adopt_unknown(rows)
+        self.library.upgrade_commands()
+        self.library.localize_paths()
+        for row in rows:
+            for server in row["servers"]:
+                entry = self.library.get(server["name"])
+                if entry and entry.get("secrets"):
+                    self.library.recover_secrets(entry, server["config"])
+        return rows
+
+    def _rebuild_wide(self) -> None:
+        """Agent cards, then one table per library (MCP, 擴充) with a switch per Agent."""
+        self._clear_layout(self.lay)
+        rows = self._prepare_rows()
+        self.needs, self.new_versions, self.ext_needs = [], [], []
+        self._agent_alerts = 0
+        self.statuses: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            profile = self.manager.get(row["id"])
+            st: dict[str, dict[str, Any]] = {}
+            if not row["error"] and row["kind"] not in ACCOUNT_MCP_KINDS:
+                for server in row["servers"]:
+                    st[server["name"]] = self._server_status(profile, row, server)
+                for name in self.missing.get(row["id"], []):
+                    entry = self.library.get(name)
+                    if entry and not self._op_for(row["id"], name):
+                        self.needs.append({"profile": row["id"], "server": name, "op": "add",
+                                           "entry": self.library.render(entry, row["kind"], profile)})
+            self.statuses[row["id"]] = st
+        self.ext_statuses: dict[tuple[str, str], dict[str, Any] | None] = {}
+        for entry in self.library.extensions():
+            for row in rows:
+                if not row["error"]:
+                    self.ext_statuses[(row["id"], entry["key"])] = self._ext_status(entry, self.manager.get(row["id"]))
+        library = self._mcp_page(rows)
+        extensions = self._ext_page(rows)
+        agents = self._agents_page(rows)   # last: it counts what the tables found
+        for page in (agents, library, extensions):
+            self.lay.addWidget(page)
+        self.sections = {"agents": agents, "library": library, "extensions": extensions}
+        self.tabs["agents"].set_badge(self._agent_alerts)
+        self.tabs["library"].set_badge(self._lib_alerts)
+        self.tabs["extensions"].set_badge(self._ext_alerts)
+        if not self.ui_state.get("restart"):
+            self._restart_timer.stop()
+        self.show_section(self.ui_state.get("settings_tab", "general"), save=False)
+        self._paint_bar()
+        self._emit_summary(len(rows))
+
+    # -- Agent cards
+    def _agents_page(self, rows: list[dict[str, Any]]) -> QWidget:
+        from PySide6.QtWidgets import QGridLayout
+        page = QWidget()
+        grid = QGridLayout(page)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        cards = [self._agent_card(row) for row in rows]
+        free = [k for k in KINDS if k not in RETIRED_KINDS and k not in {r["kind"] for r in rows}]
+        if free or not rows:
+            cards.append(self._add_agent_card())
+        for i, card in enumerate(cards):
+            grid.addWidget(card, i // 2, i % 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        return page
+
+    def _agent_card(self, row: dict[str, Any]) -> QWidget:
+        from agentdock.ui.settings_page import Card
+        pid = row["id"]
+        profile = self.manager.get(pid)
+        card = Card()
+        card.setObjectName("SettingsCard")
+        card.setProperty("agent", pid)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        name = QLabel(row["name"])
+        name.setObjectName("AgentName")
+        head.addWidget(name)
+        if pid in self.ui_state.get("restart", {}):
+            tag = QPushButton("需重啟")
+            tag.setObjectName("RestartTag")
+            tag.setCursor(Qt.CursorShape.PointingHandCursor)
+            tag.setToolTip(f"設定已更新，重開 {row['name']} 後才會載入。偵測到重開（或已關閉）會自動消失；點一下可手動清除。")
+            tag.clicked.connect(lambda _=False: self._dismiss_restart(pid))
+            head.addWidget(tag)
+        head.addStretch(1)
+        more = icon_button("⋯", "更多")
+        menu = QMenu(more)
+        menu.addAction("編輯…", lambda p=profile: self._edit_agent(p))
+        menu.addAction("開啟設定檔位置", lambda r=row: self._reveal(r["path"]))
+        ids = [r.id for r in self.manager.list()]
+        if ids.index(pid) > 0:
+            menu.addAction("往前移", lambda: self.guard(lambda: self._move_agent(pid, -1)))
+        if ids.index(pid) < len(ids) - 1:
+            menu.addAction("往後移", lambda: self.guard(lambda: self._move_agent(pid, 1)))
+        menu.addSeparator()
+        menu.addAction("移除登錄", lambda: self.guard(lambda: self.manager.remove(pid)))
+        more.clicked.connect(lambda _=False, m=menu, b=more: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        more._menu = menu
+        head.addWidget(more)
+        card.lay.addLayout(head)
+        info = self.agent_info(row["kind"]) if callable(getattr(self, "agent_info", None)) else {}
+        facts: list[tuple[str, str, bool]] = []
+        if "program" in info:
+            program = info["program"]
+            facts.append(("程式", "找不到程式" if program is None else (program or "已安裝"), program is None))
+        if info.get("model"):
+            facts.append(("模型", info["model"], False))
+        if info.get("account"):
+            facts.append(("帳號", info["account"], bool(info.get("account_problem"))))
+        if row["error"]:
+            facts.append(("設定檔", f"有錯誤：{row['error']}", True))
+            self._agent_alerts += 1
+        else:
+            mcp = sum(1 for s in row["servers"] if not s["system"])
+            ext = sum(1 for e in self.library.extensions()
+                      if (self.ext_statuses.get((pid, e["key"])) or {}).get("state"))
+            facts.append(("MCP", f"{mcp} 個", False))
+            if any(self.ext_statuses.get((pid, e["key"])) is not None for e in self.library.extensions()):
+                facts.append(("擴充", f"{ext} 個", False))
+            alerts = sum(1 for st in self.statuses.get(pid, {}).values() if st["alert"] and not st["op"])
+            alerts += sum(1 for e in self.library.extensions()
+                          if (self.ext_statuses.get((pid, e["key"])) or {}).get("alert"))
+            gone = [n for n in self.missing.get(pid, []) if not self._op_for(pid, n)]
+            status = ([f"{alerts} 項可更新"] if alerts else []) + ([f"{'、'.join(gone)} 被移除了"] if gone else [])
+            if status:
+                facts.append(("狀態", " · ".join(status), True))
+            if alerts or gone or info.get("program", "") is None:
+                self._agent_alerts += 1
+        from PySide6.QtWidgets import QGridLayout
+        table = QGridLayout()
+        table.setHorizontalSpacing(14)
+        table.setVerticalSpacing(6)
+        for i, (key, value, alert) in enumerate(facts):
+            k = QLabel(key)
+            k.setObjectName("FactKey")
+            v = ElidedLabel(value)
+            v.setObjectName("FactAlert" if alert else "FactValue")
+            v.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            v.setToolTip(value if len(value) > 30 else "")
+            table.addWidget(k, i, 0)
+            table.addWidget(v, i, 1)
+        table.setColumnStretch(1, 1)
+        card.lay.addLayout(table)
+        card.lay.addStretch(1)
+        card.setToolTip(row["path"])
+        return card
+
+    def _add_agent_card(self) -> QWidget:
+        from agentdock.ui.settings_page import Card
+        card = Card()
+        add = button("＋ 新增 Agent", flat=True)
+        add.clicked.connect(self._new_agent)
+        card.lay.addStretch(1)
+        card.lay.addWidget(add, 0, Qt.AlignmentFlag.AlignCenter)
+        card.lay.addStretch(1)
+        return card
+
+    def _move_agent(self, pid: str, step: int) -> None:
+        ids = [p.id for p in self.manager.list()]
+        i = ids.index(pid)
+        j = max(0, min(len(ids) - 1, i + step))
+        ids.insert(j, ids.pop(i))
+        self.manager.reorder(ids)
+
+    @staticmethod
+    def _reveal(path: str) -> None:
+        from pathlib import Path
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        target = Path(path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.parent if not target.is_dir() else target)))
+
+    # -- tables
+    def _table(self, rows: list[dict[str, Any]], add_tip: str, on_add: Callable[[QWidget], None]):
+        """A card holding a grid: names on the left, one column per Agent, ⋯ on the right."""
+        from PySide6.QtWidgets import QGridLayout
+        from agentdock.ui.settings_page import Card
+        card = Card()
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(4)
+        add = icon_button("＋", add_tip)
+        add.clicked.connect(lambda _=False, b=add: on_add(b))
+        grid.addWidget(add, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        for c, row in enumerate(rows, start=1):
+            head = QLabel(row["name"])
+            head.setObjectName("ColumnHead")
+            head.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(head, 0, c, Qt.AlignmentFlag.AlignCenter)
+            grid.setColumnMinimumWidth(c, 76)
+        grid.setColumnStretch(0, 1)
+        card.lay.addLayout(grid)
+        return card, grid
+
+    def _name_cell(self, title: str, note: str, alerts: list[str], tip: str = "") -> QWidget:
+        cell = QWidget()
+        lay = QVBoxLayout(cell)
+        lay.setContentsMargins(0, 6, 0, 6)
+        lay.setSpacing(1)
+        name = ElidedLabel(title)
+        name.setObjectName("RowName")
+        name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay.addWidget(name)
+        if note:
+            meta = ElidedLabel(note)
+            meta.setObjectName("Meta")
+            meta.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            lay.addWidget(meta)
+        if alerts:
+            warn = QLabel(" · ".join(alerts))
+            warn.setObjectName("FactAlert")
+            warn.setWordWrap(True)
+            lay.addWidget(warn)
+        if tip:
+            cell.setToolTip(tip)
+        return cell
+
+    @staticmethod
+    def _actions_cell(build: Callable[[Callable[[QWidget], Any]], None]) -> QWidget:
+        holder = QWidget()
+        lay = QHBoxLayout(holder)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addStretch(1)
+        build(lay.addWidget)
+        return holder
+
+    def _mcp_page(self, rows: list[dict[str, Any]]) -> QWidget:
+        from agentdock.ui.settings_page import Switch
+        self._lib_by_type = False
+        self._lib_alerts = 0
+        card, grid = self._table(rows, "新增 MCP", lambda _b: self._new_mcp())
+        entries = sorted(self.library.entries(), key=lambda e: (e["type"] != "builtin", (e.get("name") or e["key"]).lower()))
+        names = [e["key"] for e in entries]
+        extra = sorted({s["name"] for r in rows for s in r["servers"]} - set(names), key=str.lower)
+        line = 1
+        for key in names + extra:
+            entry = self.library.get(key)
+            if entry:
+                lib = self._library_status(entry)
+                note, alerts = lib["note"], list(lib["problems"]) + ([f"有新版 {lib['latest']}"] if lib["latest"] else [])
+            else:
+                lib, note, alerts = None, "", []
+            system = False
+            said: dict[str, list[str]] = {}
+            for c, row in enumerate(rows, start=1):
+                state, words, tip = self._mcp_cell(row, key, entry)
+                system = system or state == "system"
+                if words:
+                    said.setdefault(words, []).append(row["name"])
+                cell = Switch(state)
+                cell.setToolTip(tip)
+                cell.clicked.connect(lambda _=False, r=row, k=key, b=cell: self.guard(lambda: self._mcp_click(r, k, b)))
+                grid.addWidget(cell, line, c, Qt.AlignmentFlag.AlignCenter)
+            alerts += [f"{'、'.join(names)} {words}" for words, names in said.items()]
+            if system and not entry:
+                note = "系統（由客戶端管理）"
+            self._lib_alerts += int(bool(alerts))
+            grid.addWidget(self._name_cell((entry or {}).get("name") or key, note, alerts,
+                                           (entry or {}).get("description", "")), line, 0)
+            if entry and entry["type"] != "builtin":
+                def build(add, e=entry, st=lib):
+                    if "需下載" in st["problems"] and e["key"] not in self.busy:
+                        dl = button("下載", flat=True)
+                        dl.clicked.connect(lambda _=False: self._download(e))
+                        add(dl)
+                    more = icon_button("⋯", "更多")
+                    self._library_menu(e, st, more)
+                    add(more)
+                grid.addWidget(self._actions_cell(build), line, len(rows) + 1)
+            line += 1
+        if line == 1:
+            grid.addWidget(muted("還沒有 MCP"), 1, 0)
+        return card
+
+    def _mcp_cell(self, row: dict[str, Any], key: str, entry: dict[str, Any] | None) -> tuple[str, str, str]:
+        """(switch state, short words for the row, tooltip) of one MCP in one Agent."""
+        pid = row["id"]
+        if row["error"] or row["kind"] in ACCOUNT_MCP_KINDS:
+            return "na", "", ""
+        op = self._op_for(pid, key)
+        st = self.statuses.get(pid, {}).get(key)
+        if op:
+            state = {"add": "adding", "remove": "removing"}.get(op["op"], "pending")
+            words = {"add": "將加入", "remove": "將移除", "enable": "將啟用", "update": "待同步"}.get(op["op"], "")
+            return state, words, words
+        if st:
+            if st.get("system"):
+                return "system", "", st["note"]
+            if not st["enabled"]:
+                return "disabled", "已停用", "已停用"
+            if st["alert"]:
+                return "alert", "可更新", st["alert"]
+            return "on", "", ""
+        if key in self.missing.get(pid, []):
+            return "missing", "被移除了", "被其他程式從設定檔移除了（例如客戶端更新時重寫設定）"
+        if not entry or entry["type"] == "builtin":
+            return "na", "", ""
+        return "off", "", ""
+
+    def _mcp_click(self, row: dict[str, Any], key: str, anchor: QWidget) -> None:
+        pid = row["id"]
+        state = anchor.state
+        server = next((s for s in row["servers"] if s["name"] == key), None)
+        entry = self.library.get(key)
+        if state in ("adding", "removing", "pending"):
+            self._set_op(pid, key, None)
+        elif state == "off" and entry:
+            self._add_to_agent(row, entry)
+        elif state == "disabled":
+            self._set_op(pid, key, "enable")
+        elif state in ("on", "alert") and server:
+            self._remove_server(pid, key, server["config"])
+        elif state == "missing":
+            menu = QMenu(anchor)
+            if entry:
+                menu.addAction("補回", lambda: self.guard(lambda: self._add_to_agent(row, entry)))
+            menu.addAction("不要了", lambda: self._forget_missing(pid, key))
+            menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def _ext_page(self, rows: list[dict[str, Any]]) -> QWidget:
+        from agentdock.ui.settings_page import Switch
+        self._ext_alerts = 0
+
+        def add_menu(anchor: QWidget) -> None:
+            menu = QMenu(anchor)
+            have = {e["key"] for e in self.library.extensions()}
+            for preset in PRESETS:
+                act = menu.addAction(f"{preset['key']}（範本）", lambda p=preset: self.guard(lambda: self._add_preset(p)))
+                act.setEnabled(preset["key"] not in have)
+            menu.addAction("自訂…", self._new_extension)
+            menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+        card, grid = self._table(rows, "新增擴充", add_menu)
+        line = 1
+        for entry in sorted(self.library.extensions(), key=lambda e: e["key"].lower()):
+            key = entry["key"]
+            if key in self.ext_pending_delete:
+                grid.addWidget(self._name_cell(key, "套用後從擴充庫刪除", []), line, 0)
+                line += 1
+                continue
+            lib = self._ext_library_status(entry)
+            alerts = list(lib["problems"]) + ([f"有新版 {lib['latest']}"] if lib["latest"] else [])
+            said = {}
+            for c, row in enumerate(rows, start=1):
+                st = self.ext_statuses.get((row["id"], key))
+                if st is None:
+                    state, words, tip = "na", "", ""
+                elif st["op"]:
+                    state = "adding" if st["op"]["op"] == "install" else "removing"
+                    words = tip = st["note"]
+                elif st["state"]:
+                    state = "alert" if st["alert"] else "on"
+                    words, tip = ("可更新" if st["alert"] else ""), st["alert"] or st["kind"]
+                else:
+                    state, words, tip = "off", "", ""
+                if words:
+                    said.setdefault(words, []).append(row["name"])
+                cell = Switch(state)
+                cell.setToolTip(tip)
+                cell.clicked.connect(lambda _=False, r=row, k=key, b=cell: self._ext_click(r, k, b))
+                grid.addWidget(cell, line, c, Qt.AlignmentFlag.AlignCenter)
+            alerts += [f"{'、'.join(names)} {words}" for words, names in said.items()]
+            self._ext_alerts += int(bool(alerts))
+            grid.addWidget(self._name_cell(key, lib["note"], alerts, lib["tip"]), line, 0)
+            grid.addWidget(self._actions_cell(lambda add, e=entry, st=lib: self._ext_library_actions(e, st, add)),
+                           line, len(rows) + 1)
+            line += 1
+        if line == 1:
+            grid.addWidget(muted("還沒有擴充"), 1, 0)
+        return card
+
+    def _ext_click(self, row: dict[str, Any], key: str, anchor: QWidget) -> None:
+        state = anchor.state
+        if state in ("adding", "removing"):
+            self._set_ext_op(row["id"], key, None)
+        elif state == "off":
+            self._set_ext_op(row["id"], key, "install")
+        elif state in ("on", "alert"):
+            self._set_ext_op(row["id"], key, "uninstall")
 
     def _paint_bar(self) -> None:
         pending_needs = [n for n in self.needs if not self._op_for(n["profile"], n["server"])]
@@ -1279,17 +1736,15 @@ class AgentsView(QWidget):
         GrokBotMcpDialog(self, self.library, profile,
                         self.manager.directory / "grokbot-backups").exec()
 
-    def _server_row(self, profile: Any, row: dict[str, Any], server: dict[str, Any]) -> tuple[QWidget, int]:
+    def _server_status(self, profile: Any, row: dict[str, Any], server: dict[str, Any]) -> dict[str, Any]:
+        """What one MCP of one Agent looks like right now; records what "全部更新" should do about it."""
         pid, name = row["id"], server["name"]
         op = self._op_for(pid, name)
         if op and op["op"] == "remove":
-            line = Row(name, note="將移除", dim=True, strike=True)
-            undo = icon_button("↶", "復原")
-            undo.clicked.connect(lambda: self._set_op(pid, name, None))
-            line.add(undo)
-            return line, 0
+            return {"op": op, "note": "將移除", "alert": "", "dim": True, "strike": True, "enabled": server["enabled"]}
         if server["system"]:
-            return Row(name, note="系統（由客戶端管理）", dim=True), 0
+            return {"op": op, "note": "系統（由客戶端管理）", "alert": "", "dim": True, "system": True,
+                    "enabled": server["enabled"]}
         entry = self.library.get(name)
         alert, note = "", ""
         if server["qai"] and self.library.inbox_retired:
@@ -1314,7 +1769,23 @@ class AgentsView(QWidget):
             note = "將啟用"
         elif not server["enabled"]:
             note = "停用"
-        line = Row(name, note=note, alert=alert, dim=not server["enabled"] and not op)
+        return {"op": op, "note": note, "alert": alert, "dim": not server["enabled"] and not op,
+                "strike": False, "enabled": server["enabled"]}
+
+    def _server_row(self, profile: Any, row: dict[str, Any], server: dict[str, Any]) -> tuple[QWidget, int]:
+        pid, name = row["id"], server["name"]
+        st = self._server_status(profile, row, server)
+        op = st["op"]
+        if op and op["op"] == "remove":
+            line = Row(name, note=st["note"], dim=True, strike=True)
+            undo = icon_button("↶", "復原")
+            undo.clicked.connect(lambda: self._set_op(pid, name, None))
+            line.add(undo)
+            return line, 0
+        if st.get("system"):
+            return Row(name, note=st["note"], dim=True), 0
+        alert = st["alert"]
+        line = Row(name, note=st["note"], alert=alert, dim=st["dim"])
         if not server["enabled"] and not op:
             on = icon_button("啟用", "重新啟用這個 MCP")
             on.setProperty("small", True)
@@ -1329,7 +1800,8 @@ class AgentsView(QWidget):
         line.add(minus)
         return line, int(bool(alert))
 
-    def _library_row(self, entry: dict[str, Any]) -> QWidget:
+    def _library_status(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Note and problems of one MCP library entry; a newer release is remembered for "全部更新"."""
         key, kind = entry["key"], entry["type"]
         installed = self.library.installed_exe(entry) if kind in ("github", "download") else None
         state = self.library.install_state(entry)
@@ -1351,6 +1823,33 @@ class AgentsView(QWidget):
             note = "" if getattr(self, "_lib_by_type", False) else TYPES[kind]
         if latest:
             note += f" → {latest}"
+        return {"note": note, "problems": problems, "latest": latest, "installed": installed, "state": state}
+
+    def _library_menu(self, entry: dict[str, Any], st: dict[str, Any], anchor: QPushButton) -> QMenu:
+        key, kind = entry["key"], entry["type"]
+        latest, installed, state = st["latest"], st["installed"], st["state"]
+        menu = QMenu(anchor)
+        if kind in ("github", "download") and key not in self.busy:
+            if latest:
+                menu.addAction(f"更新到 {latest}", lambda e=entry: self._download(e, update=True))
+            if not installed:
+                menu.addAction("下載", lambda e=entry: self._download(e))
+            if installed and kind == "github" and not state.get("path"):
+                menu.addAction("檢查更新", lambda e=entry: self._check_updates([e], force=True))
+            if installed:
+                menu.addAction("重新下載", lambda e=entry: self._download(e))
+            menu.addSeparator()
+        menu.addAction("測試（各 Agent 目前的設定）", lambda k=key: self._test_mcp(k))
+        menu.addAction("編輯…", lambda e=entry: self._edit_mcp(e))
+        menu.addAction("刪除…", lambda k=key: self.guard(lambda: self._delete_mcp(k)))
+        anchor.clicked.connect(lambda _=False, m=menu, b=anchor: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        anchor._menu = menu
+        return menu
+
+    def _library_row(self, entry: dict[str, Any]) -> QWidget:
+        key, kind = entry["key"], entry["type"]
+        st = self._library_status(entry)
+        note, problems, latest = st["note"], st["problems"], st["latest"]
         pending_profiles = {o["profile"] for o in self.ops + self.needs
                             if o["server"] == key and o["op"] in ("add", "update")}
         if pending_profiles:
@@ -1365,21 +1864,7 @@ class AgentsView(QWidget):
         if kind == "builtin":
             return line
         more = icon_button("⋯", "更多")
-        menu = QMenu(more)
-        if kind in ("github", "download") and key not in self.busy:
-            if latest:
-                menu.addAction(f"更新到 {latest}", lambda e=entry: self._download(e, update=True))
-            if not installed:
-                menu.addAction("下載", lambda e=entry: self._download(e))
-            if installed and kind == "github" and not state.get("path"):
-                menu.addAction("檢查更新", lambda e=entry: self._check_updates([e], force=True))
-            if installed:
-                menu.addAction("重新下載", lambda e=entry: self._download(e))
-            menu.addSeparator()
-        menu.addAction("測試（各 Agent 目前的設定）", lambda k=key: self._test_mcp(k))
-        menu.addAction("編輯…", lambda e=entry: self._edit_mcp(e))
-        menu.addAction("刪除…", lambda k=key: self.guard(lambda: self._delete_mcp(k)))
-        more.clicked.connect(lambda _=False, m=menu, b=more: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        self._library_menu(entry, st, more)
         if "需下載" in problems and key not in self.busy:
             dl = button("下載", flat=True)
             dl.clicked.connect(lambda _=False, e=entry: self._download(e))
@@ -1588,29 +2073,45 @@ class AgentsView(QWidget):
                 if self.ext.status(e, profile) is False and not self._ext_op(profile.id, e["key"])
                 and not (self.library.inbox_retired and e["key"] in self.library.RETIRED_EXTENSIONS)]
 
+    def _ext_status(self, entry: dict[str, Any], profile: Any) -> dict[str, Any] | None:
+        """One extension in one Agent; None when that Agent type cannot take it. Records "全部更新" work."""
+        key, op = entry["key"], self._ext_op(profile.id, entry["key"])
+        state = self.ext.status(entry, profile)
+        if state is None:
+            return None
+        kind = "plugin" if profile.kind == "opencode" else "hook"
+        out: dict[str, Any] = {"op": op, "state": state, "kind": kind, "alert": "", "note": kind}
+        if op and op["op"] == "install":
+            out["note"] = f"將加入 {kind}"
+        elif op:
+            out["note"] = "將移除"
+        elif state:
+            problems = self.library.ext_problems(entry)
+            alert = ("、".join(problems) + "：Agent 執行時會找不到它") if problems else ""
+            if self.library.inbox_retired and key in self.library.RETIRED_EXTENSIONS:
+                alert = "Inbox 已停用，會在「全部更新」時移除"
+                self.ext_needs.append({"profile": profile.id, "ext": key, "op": "uninstall"})
+            elif not self.ext.in_sync(entry, profile):
+                alert = alert or f"{kind} 和新版不同，會在「全部更新」時更新"
+                self.ext_needs.append({"profile": profile.id, "ext": key, "op": "install"})
+            out["alert"] = alert
+        return out
+
     def _extension_rows(self, profile: Any) -> list[QWidget]:
         out: list[QWidget] = []
         by_type = self._sort("agent_mcp") == "type"
         for entry in sorted(self.library.extensions(), key=lambda e: (_type_rank(e["type"]) if by_type else 0, e["key"].lower())):
-            key, op = entry["key"], self._ext_op(profile.id, entry["key"])
-            state = self.ext.status(entry, profile)
-            if state is None or not (state or op):
+            key = entry["key"]
+            st = self._ext_status(entry, profile)
+            if st is None or not (st["state"] or st["op"]):
                 continue
-            kind = "plugin" if profile.kind == "opencode" else "hook"
+            op, kind = st["op"], st["kind"]
             if op and op["op"] == "install":
-                line = Row(key, note=f"將加入 {kind}")
+                line = Row(key, note=st["note"])
             elif op:
-                line = Row(key, note="將移除", dim=True, strike=True)
+                line = Row(key, note=st["note"], dim=True, strike=True)
             else:
-                problems = self.library.ext_problems(entry)
-                alert = ("、".join(problems) + "：Agent 執行時會找不到它") if problems else ""
-                if self.library.inbox_retired and key in self.library.RETIRED_EXTENSIONS:
-                    alert = "Inbox 已停用，會在「全部更新」時移除"
-                    self.ext_needs.append({"profile": profile.id, "ext": key, "op": "uninstall"})
-                elif not self.ext.in_sync(entry, profile):
-                    alert = alert or f"{kind} 和新版不同，會在「全部更新」時更新"
-                    self.ext_needs.append({"profile": profile.id, "ext": key, "op": "install"})
-                line = Row(key, note=kind, alert=alert)
+                line = Row(key, note=kind, alert=st["alert"])
             if entry.get("description"):
                 line.setToolTip(entry["description"])
             if op:
@@ -1656,10 +2157,8 @@ class AgentsView(QWidget):
         sec.set_badge(f"({len(entries)}{'*' if alerts else ''})", alert=bool(alerts))
         return sec
 
-    def _extension_library_row(self, entry: dict[str, Any]) -> tuple[QWidget, int]:
+    def _ext_library_status(self, entry: dict[str, Any]) -> dict[str, Any]:
         key, t = entry["key"], entry["type"]
-        if key in self.ext_pending_delete:
-            return Row(key, note="套用後從擴充庫刪除", dim=True, strike=True), 0
         installed = self.library.installed_exe(entry) if t in ("github", "download") else None
         ours = self.library.managed_by_agentdock(entry)
         latest = None if entry.get('integration') == 'codebase-memory' else self.library.cached_update(entry)
@@ -1678,45 +2177,60 @@ class AgentsView(QWidget):
             note = '沿用 MCP' + (f' · {note}' if note else '')
         if latest:
             note += f" → {latest}"
-        alert = "、".join(problems + ([f"有新版 {latest}"] if latest else []))
-        line = Row(key, note=note, alert=alert)
-        line.note.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         agents = "、".join(KINDS[k].split(" /")[0] for k in entry.get("hooks", {}))
         tip = [entry.get("description", ""),
                f"使用中：{found}" + ("" if ours else "（更新時 AgentDock 會用新版取代它）") if found else "",
                f"可加入：{agents}" if agents else ""]
         tip += [v for k, v in UNSUPPORTED.items() if k not in entry.get("hooks", {})]
-        line.setToolTip("\n".join(x for x in tip if x))
+        return {"note": note, "problems": problems, "latest": latest, "installed": installed, "ours": ours,
+                "found": found, "version": version, "tip": "\n".join(x for x in tip if x)}
+
+    def _ext_library_actions(self, entry: dict[str, Any], st: dict[str, Any], add: Callable[[QWidget], Any]) -> None:
+        """The inline button (更新 / 下載 / 加入 PATH) and the ⋯ menu of an extension."""
+        key, t = entry["key"], entry["type"]
+        latest, installed, problems = st["latest"], st["installed"], st["problems"]
         more = icon_button("⋯", "更多")
         menu = QMenu(more)
-        if t == "github" and version:
+        if t == "github" and st["version"]:
             menu.addAction("檢查更新", lambda e=entry: self._check_updates([e], force=True))
         if t in ("github", "download") and key not in self.busy:
             if latest:
                 menu.addAction(f"更新到 {latest}", lambda e=entry: self._download(e, update=True))
-            elif not installed and not found:
+            elif not installed and not st["found"]:
                 menu.addAction("下載", lambda e=entry: self._download(e))
-            elif ours:
+            elif st["ours"]:
                 menu.addAction("重新下載", lambda e=entry: self._download(e))
         menu.addSeparator()
         menu.addAction("編輯…", lambda e=entry: self._edit_extension(e))
         menu.addAction("刪除…", lambda k=key: self.guard(lambda: self._delete_extension(k)))
         more.clicked.connect(lambda _=False, m=menu, b=more: m.exec(b.mapToGlobal(b.rect().bottomLeft())))
+        more._menu = menu
         if key not in self.busy and latest and t == "github":
             up = button("更新", flat=True)
             up.clicked.connect(lambda _=False, e=entry: self._download(e, update=True))
-            line.add(up)
+            add(up)
         elif key not in self.busy:
             if "需下載" in problems:
                 dl = button("下載", flat=True)
                 dl.clicked.connect(lambda _=False, e=entry: self._download(e))
-                line.add(dl)
+                add(dl)
             elif "未加入 PATH" in problems:
                 path_btn = button("加入 PATH", flat=True)
                 path_btn.setToolTip("把它複製到 AgentDock 的 data\\bin，並把該資料夾加入使用者 PATH")
                 path_btn.clicked.connect(lambda _=False, e=entry: self.guard(lambda: self._publish(e)))
-                line.add(path_btn)
-        line.add(more)
+                add(path_btn)
+        add(more)
+
+    def _extension_library_row(self, entry: dict[str, Any]) -> tuple[QWidget, int]:
+        key = entry["key"]
+        if key in self.ext_pending_delete:
+            return Row(key, note="套用後從擴充庫刪除", dim=True, strike=True), 0
+        st = self._ext_library_status(entry)
+        alert = "、".join(st["problems"] + ([f"有新版 {st['latest']}"] if st["latest"] else []))
+        line = Row(key, note=st["note"], alert=alert)
+        line.note.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        line.setToolTip(st["tip"])
+        self._ext_library_actions(entry, st, line.add)
         return line, int(bool(alert))
 
     def _publish(self, entry: dict[str, Any]) -> None:
@@ -1732,7 +2246,8 @@ class AgentsView(QWidget):
 
     def _add_preset(self, preset: dict[str, Any]) -> None:
         self.library.save_extension(preset)
-        next_step = '在 Agent 的「＋」加入並預覽套用。' if preset['type'] == 'command' else '下載後在 Agent 的「＋」加入。'
+        where = '打開 Agent 的開關' if self.wide else '在 Agent 的「＋」加入'
+        next_step = f'{where}並預覽套用。' if preset['type'] == 'command' else f'下載後{where}。'
         self.info(f"已加入擴充庫：{preset['key']}。{next_step}")
 
     def _new_extension(self) -> None:

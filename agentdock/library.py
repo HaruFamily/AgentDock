@@ -628,7 +628,7 @@ class Library:
         elif t in ("github", "download"):
             exe = self.installed_exe(entry)
             if not exe:
-                raise ValueError(f"{key} 尚未下載，請先在 MCP 庫按「下載」。")
+                raise ValueError(f"{key} 尚未下載，請先按它的「下載」。")
             command = str(exe)
         else:
             command = self._expand(entry["command"], key)
@@ -636,7 +636,7 @@ class Library:
         secrets = self.secrets()
         missing = [s for s in entry.get("secrets", []) if not secrets.get(s)]
         if missing:
-            raise ValueError(f"{key} 缺少祕密：{'、'.join(missing)}。請在 MCP 庫編輯並填入。")
+            raise ValueError(f"{key} 缺少祕密：{'、'.join(missing)}。請編輯這個 MCP 並填入。")
         env.update({s: secrets[s] for s in entry.get("secrets", [])})
         return {"command": command, "args": args, "env": env}
 

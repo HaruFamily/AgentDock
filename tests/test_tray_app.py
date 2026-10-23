@@ -3,6 +3,7 @@ import json
 import os
 
 import pytest
+from PySide6.QtWidgets import QLabel
 
 from agentdock.broker import RETIRED, Broker
 from agentdock.dispatch.store import owner_for
@@ -168,25 +169,50 @@ def test_settings_remove_retired_inbox_instead_of_migrating(tmp_path, ui_app, na
     assert not any(e['key'] == 'inbox-activity' for e in view._addable_extensions(manager.get(profile.id)))
 
 
-def test_wide_settings_show_one_section_per_tab(tmp_path, ui_app):
+def test_wide_settings_have_categories_and_one_switch_per_agent(tmp_path, ui_app):
+    import json
     from agentdock.agents import AgentManager
     from agentdock.library import Library
     from agentdock.ui.agents_view import AgentsView
+    from agentdock.ui.settings_page import Switch
     manager, library = AgentManager(tmp_path / 'data'), Library(tmp_path / 'repo', tmp_path / 'data')
-    manager.add('Codex', 'codex', str(tmp_path / 'config.toml'))
+    library.inbox_retired = True   # as in the tray app
+    cfg = tmp_path / '.claude.json'
+    cfg.write_text(json.dumps({'mcpServers': {'mine': {'command': 'a', 'args': ['b']}}}), encoding='utf-8')
+    claude = manager.add('Claude', 'claude-code', str(cfg))
+    codex = manager.add('Codex', 'codex', str(tmp_path / 'config.toml'))
     state, saved = {}, []
     view = AgentsView(manager, library, ui_state=state, save_state=lambda: saved.append(1), wide=True)
-    view.resize(1100, 800)
+    view.agent_info = lambda kind: {'program': '2.1.0' if kind == 'claude-code' else None, 'model': 'Opus 5.5 · 中'}
+    view.resize(1200, 800)
     view.show()
-    assert set(view.tabs) == {'agents', 'library', 'extensions'} and view.tabs['agents'].isChecked()
-    assert view.sections['agents'].isVisible() and not view.sections['library'].isVisible()
+    assert list(view.tabs) == ['general', 'look', 'agents', 'library', 'extensions', 'backup']
+    assert view.tabs['agents'].isChecked() and view.tabs['general'].isHidden()   # 一般/外觀 come from the tray app
+    assert view.extra_pages['backup'].isHidden() and not view.tabs['backup'].isHidden()
     view.tabs['library'].click()
     assert view.sections['library'].isVisible() and not view.sections['agents'].isVisible()
     assert state['settings_tab'] == 'library' and saved
-    lib = view.sections['library']
-    lib.head.itemAt(0).widget()  # header still holds the buttons
-    view.refresh()                # a rebuild keeps the chosen tab and keeps sections open
-    assert view.sections['library'].isVisible() and not view.sections['library'].collapsed
-    assert view.sections['library'].locked and not view.settings_menu_button.isHidden()
+    view.refresh()                 # a rebuild keeps the chosen category
+    assert view.sections['library'].isVisible()
+
+    def cells():   # one switch per Agent for the adopted MCP "mine"
+        return [w for w in view.sections['library'].findChildren(Switch) if w.isVisibleTo(view)]
+    assert [c.state for c in cells()] == ['on', 'off']
+    cells()[1].click()             # add to Codex: queued, shown as waiting, the bar offers to apply
+    assert [o['op'] for o in view.ops] == ['add'] and o_profile(view) == codex.id
+    assert [c.state for c in cells()] == ['on', 'adding'] and view.apply_btn.isVisibleTo(view)
+    cells()[1].click()             # clicking a waiting change undoes it
+    assert not view.ops and [c.state for c in cells()] == ['on', 'off']
+    cells()[0].click()             # remove from Claude
+    assert view.ops[0]['op'] == 'remove' and view.ops[0]['profile'] == claude.id
+    texts = [w.text() for w in view.sections['library'].findChildren(QLabel)]
+    assert any('Claude 將移除' in t for t in texts)
+    view.tabs['agents'].click()
+    facts = [w.text() for w in view.sections['agents'].findChildren(QLabel)]
+    assert '2.1.0' in facts and '找不到程式' in facts and 'Opus 5.5 · 中' in facts
     narrow = AgentsView(manager, library)
     assert not hasattr(narrow, 'tabs') and narrow.property('wide') is False
+
+
+def o_profile(view):
+    return view.ops[0]['profile']
