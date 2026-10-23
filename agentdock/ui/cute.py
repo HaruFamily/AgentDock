@@ -18,6 +18,29 @@ MARGINS = (30, 58, 30, 26)   # room for the lace trim and the drawn title
 CLOSE = 26
 
 
+def round_mask(widget: QWidget, radius: float) -> None:
+    """Cut the window itself to its rounded shape. Windows paints a transparent window's corners black when
+    its transparency came too late; outside the mask there is nothing left to paint."""
+    from PySide6.QtGui import QPainterPath, QRegion
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(widget.rect()), radius, radius)
+    widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+
+BUTTON_WORDS = {'Ok': '確定', 'Cancel': '取消', 'Yes': '是', 'No': '否', 'Close': '關閉', 'Save': '儲存',
+                'Discard': '不儲存', 'Retry': '重試', 'Apply': '套用', 'Abort': '中止', 'Ignore': '略過'}
+
+
+def chinese_buttons(dialog: QWidget) -> None:
+    """Qt ships no Chinese for its standard buttons (OK / Cancel / Yes / No …)."""
+    from PySide6.QtWidgets import QDialogButtonBox
+    for box in dialog.findChildren(QDialogButtonBox):
+        for button in box.buttons():
+            name = box.standardButton(button).name
+            if name in BUTTON_WORDS:
+                button.setText(BUTTON_WORDS[name])
+
+
 def close_rect(widget: QWidget) -> QRect:
     return QRect(widget.width() - MARGINS[2] - CLOSE + 4, 20, CLOSE, CLOSE)
 
@@ -43,8 +66,10 @@ class Dresser(QObject):
                 widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
                 widget.setStyleSheet((widget.styleSheet() or '') + '\nQDialog { background: transparent; }')
                 widget.setMouseTracking(True)
+                widget.setProperty('cute_round', 26)
         elif isinstance(widget, QMenu) or widget.windowType() == Qt.WindowType.ToolTip:
             if theme.CUTE:
+                widget.setProperty('cute_round', 16 if isinstance(widget, QMenu) else 12)
                 # Without a transparent window the corners outside the rounded border stay square.
                 widget.setWindowFlags(widget.windowFlags() | Qt.WindowType.FramelessWindowHint
                                       | Qt.WindowType.NoDropShadowWindowHint)
@@ -87,6 +112,11 @@ class Dresser(QObject):
             return False
         if kind == QEvent.Type.Show and isinstance(obj, QMessageBox) and not obj.property('cute_words'):
             self._message_box(obj)
+        if kind == QEvent.Type.Show and isinstance(obj, QDialog) and not obj.property('cute_buttons'):
+            obj.setProperty('cute_buttons', True)
+            chinese_buttons(obj)
+        if kind == QEvent.Type.Resize and isinstance(obj, QWidget) and obj.isWindow() and obj.property('cute_round'):
+            round_mask(obj, float(obj.property('cute_round')))
         if not isinstance(obj, QDialog) or not self.dressed(obj):
             return False
         if kind == QEvent.Type.Show and not obj.property('cute_margins'):

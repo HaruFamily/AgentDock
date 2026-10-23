@@ -513,7 +513,7 @@ class Sidebar(QFrame):
         adopt.clicked.connect(lambda: window.import_conversations())
         head.addWidget(adopt)
         add = icon_button('＋', '新增專案')
-        add.clicked.connect(window.add_project)
+        add.clicked.connect(lambda: window.add_project())
         head.addWidget(add)
         layout.addLayout(head)
         self.tree = ConversationTree()
@@ -2137,15 +2137,16 @@ class NewConversationView(QWidget):
             self.pid = project if (project == UNSORTED or self.window_.projects.get(project)) else UNSORTED
         elif self.pid != UNSORTED and not self.window_.projects.get(self.pid):
             self.pid = UNSORTED
-        if not self.folder_path and self.window_.store.dispatch.recent:
-            self.folder_path = self.window_.store.dispatch.recent[0]
+        if not self.folder_path:
+            self.folder_path = str(self.window_.chat_dir())   # no project: just talk
         self._place_changed()
         self.error.hide()
         self.refresh_recent()
         self.composer.text.setFocus()
 
     def set_folder(self, folder: str) -> None:
-        """Work in a folder outside the projects."""
+        """Work in a folder outside the projects: only to continue next to an older conversation (Ctrl+N);
+        new work in a folder goes through a project."""
         self.folder_path = os.path.normpath(folder) if folder else ''
         self.pid = UNSORTED
         self._place_changed()
@@ -2175,7 +2176,7 @@ class NewConversationView(QWidget):
             self.place.setToolTip('')
             self.pick_agent(self.agent)
         else:
-            self.place.setText(os.path.basename(self.folder_path.rstrip('\\/')) or self.folder_path or '專案或資料夾')
+            self.place.setText(os.path.basename(self.folder_path.rstrip('\\/')) or self.folder_path)
             self.place.setToolTip(self.folder_path)
             self.pick_agent(self.agent)
         self.place.icon_name = 'chat' if self.chat_only() else 'folder'
@@ -2202,19 +2203,15 @@ class NewConversationView(QWidget):
                 action.setChecked(current is not None and p['id'] == current['id'])
                 action.setToolTip(p['root'])
                 group.addAction(action)
-        recent = [f for f in self.window_.store.dispatch.recent[:7] if not self.window_.is_chat_dir(f)][:6]
-        if self.folder_path and self.folder_path not in recent and not self.chat_only():
-            recent.insert(0, self.folder_path)
-        if recent:
-            menu.addSection('資料夾')
-            for folder in recent:
-                action = menu.addAction(folder, lambda f=folder: self.set_folder(f))
-                action.setCheckable(True)
-                action.setChecked(current is None and folder == self.folder_path and not self.chat_only())
-                group.addAction(action)
+        if not current and not self.chat_only() and self.folder_path:   # an older conversation's own folder
+            action = menu.addAction(icon('folder', theme.MUTED or '#888888', 14),
+                                    os.path.basename(self.folder_path.rstrip('\\/')) or self.folder_path)
+            action.setCheckable(True)
+            action.setChecked(True)
+            action.setToolTip(self.folder_path)
+            group.addAction(action)
         menu.addSeparator()
-        menu.addAction('選擇資料夾…', self.pick_folder)
-        menu.addAction('新增專案…', self.window_.add_project)
+        menu.addAction('新增專案…', self._new_project)
 
     # -- which Agent -------------------------------------------------------------
     def pick_agent(self, kind: str) -> None:
@@ -2269,6 +2266,12 @@ class NewConversationView(QWidget):
         project = self.project()
         return project['root'] if project else self.folder_path.strip().strip('"')
 
+    def _new_project(self) -> None:
+        """A folder to work in becomes a project; the new conversation then goes there."""
+        project = self.window_.add_project(show=False)
+        if project:
+            self.set_project(project['id'])
+
     def pick_folder(self) -> bool:
         start = self.folder_path if os.path.isdir(self.folder_path) else os.path.expanduser('~')
         chosen = QFileDialog.getExistingDirectory(self, '選擇資料夾', start)
@@ -2302,8 +2305,8 @@ class NewConversationView(QWidget):
         if project:
             folder = project['root']
         else:
-            if not self.folder_path.strip() and not self.pick_folder():
-                return
+            if not self.folder_path.strip():
+                self.folder_path = str(self.window_.chat_dir())
             folder = self.folder_path.strip().strip('"')
         if self.chat_only():
             os.makedirs(folder, exist_ok=True)
@@ -2957,16 +2960,18 @@ class ChatWindow(QWidget):
             self.show_page(name)
 
     # -- actions -----------------------------------------------------------------
-    def add_project(self) -> None:
+    def add_project(self, show: bool = True) -> dict | None:
         dialog = ProjectDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+            return None
         try:
             project = self.projects.add(dialog.name.text() or os.path.basename(dialog.root.text()), dialog.root.text())
         except ValueError as e:
             self.notify(str(e))
-            return
-        self.show_project(project['id'])
+            return None
+        if show:
+            self.show_project(project['id'])
+        return project
 
     def move_conversation(self, key: str, project: str) -> None:
         self.store.dispatch.set_project(key, project)
@@ -3222,7 +3227,16 @@ class ChatWindow(QWidget):
         b = self._border()
         self.outer.setContentsMargins(b, b, b, b)
         self._place_rail()
+        self._shape()
         self.update()
+
+    def _shape(self) -> None:
+        """The frameless window's rounded corners, cut out so Windows cannot paint them black."""
+        if self._border():
+            from agentdock.ui import cute
+            cute.round_mask(self, 22)
+        else:
+            self.clearMask()
 
     def _place_rail(self) -> None:
         b = self._border()
@@ -3280,6 +3294,7 @@ class ChatWindow(QWidget):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._place_rail()
+        self._shape()
         palette = getattr(self, 'palette_', None)
         if palette is not None and palette.isVisible():
             palette.open()

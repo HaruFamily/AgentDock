@@ -37,7 +37,9 @@ def test_new_page_picks_place_and_agent_from_chips(window, tmp_path):
     view.set_folder(str(other))
     assert view.place.text() == 'other' and view.project() is None
     menu = [a.text() for a in view.place.menu_.actions()]
-    assert menu[:3] == ['只聊天', '專案', 'Repo'] and str(other) in menu and menu[-2:] == ['選擇資料夾…', '新增專案…']
+    # Folders come only from projects; an older conversation's own folder is shown while it is in use.
+    assert menu[:3] == ['只聊天', '專案', 'Repo'] and 'other' in menu and menu[-1] == '新增專案…'
+    assert '選擇資料夾…' not in menu
     next(a for a in view.place.menu_.actions() if a.text() == 'Repo').trigger()
     assert view.project()['id'] == project['id'] and view.place.text() == 'Repo'
     next(a for a in view.agent_chip.menu_.actions() if a.text() == 'Codex').trigger()
@@ -303,6 +305,7 @@ def test_dialogs_lose_the_square_system_frame(ui_app, monkeypatch):
         ui_app.processEvents()
         assert dialog.windowFlags() & Qt.WindowType.FramelessWindowHint and '刪除對話' in painted
         assert dialog.layout().contentsMargins().top() >= cute.MARGINS[1]
+        assert not dialog.mask().isEmpty()   # cut to its rounded shape: no black corners on Windows
         closed = []
         dialog.rejected.connect(lambda: closed.append(1))
         from PySide6.QtTest import QTest
@@ -312,6 +315,14 @@ def test_dialogs_lose_the_square_system_frame(ui_app, monkeypatch):
         box.show()
         ui_app.processEvents()
         assert box.button(QMessageBox.StandardButton.Yes).text() == '是' and box.button(QMessageBox.StandardButton.No).text() == '否'
+        from PySide6.QtWidgets import QDialogButtonBox
+        asking = QDialog()
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        QVBoxLayout(asking).addWidget(buttons)
+        asking.show()
+        ui_app.processEvents()
+        assert [b.text() for b in buttons.buttons()] == ['確定', '取消']
+        asking.hide()
         box.hide()
         # Without the local hook the system frame stays.
         monkeypatch.setattr(theme, 'PRIVATE', None)
@@ -419,9 +430,26 @@ def test_chat_only_uses_an_empty_folder_and_a_cautious_mode(window):
     assert win.is_chat_dir(row['directory']) and (Path(store.dispatch.file).parent / 'chat').is_dir()
     assert row['mode'] == 'read-only' and 'mode' not in (state.get('new_settings') or {}).get('codex', {})
     wait(lambda: win.conversation.project_chip.text() == '只聊天', app=app)
-    # The shared folder is not offered again among the folders; choosing a folder drops the cautious mode.
+    # A new conversation without a project is 只聊天; a folder (an older conversation's) drops the cautious mode.
     win.show_new()
     assert view.chat_only()   # the last place is kept
     assert str(win.chat_dir()) not in [a.text() for a in view.place.menu_.actions()]
     view.set_folder(str(work))
     assert view.composer.settings.mode_chip.text() == '自動'
+
+
+def test_a_new_conversation_without_a_project_just_talks(window, monkeypatch):
+    from agentdock.ui import chat_window as cw
+    win, make, store, sender, notes, work, projects, state, app = window
+    fresh = make(ui={})
+    fresh.show_new()
+    view = fresh.new_view
+    assert view.chat_only() and view.place.text() == '只聊天'
+    menu = [a.text() for a in view.place.menu_.actions()]
+    assert menu == ['只聊天', '', '新增專案…']   # no folders of its own; folders come with projects
+    # 新增專案… makes the project and the new conversation goes there, without leaving the page.
+    monkeypatch.setattr(cw.ProjectDialog, 'exec', lambda self: (self.root.setText(str(work)), self.name.setText('Work'),
+                                                             cw.QDialog.DialogCode.Accepted)[2])
+    view._new_project()
+    assert view.project()['name'] == 'Work' and fresh.pages.currentWidget() is view
+    fresh.hide()

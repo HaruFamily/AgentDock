@@ -367,13 +367,13 @@ def test_new_conversation_sends_settings_and_attachments(window, tmp_path):
                                                      'modes': [{'id': 'plan', 'label': '計畫'}]})
     win.show_new()
     view = win.new_view
+    view.set_folder(str(work))   # not 只聊天, whose cautious mode would already show 計畫
     view.pick_agent('claude-code')
     bar = view.composer.settings
     bar.pick('model', 'sonnet')
     bar.pick('effort', 'low')
     bar.pick('mode', 'plan')
     assert state['new_settings']['claude-code'] == {'model': 'sonnet', 'effort': 'low', 'mode': 'plan'}
-    view.set_folder(str(work))
     view.composer.add_files([str(work / 'shot.png'), str(work / 'notes.txt'), str(work / 'missing.txt')])
     assert [Path(f).name for f in view.composer.files] == ['shot.png', 'notes.txt']
     view.composer.text.setPlainText('look')
