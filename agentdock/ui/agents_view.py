@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QVBoxLayout, QWidget)
 
 from agentdock import clients
-from agentdock.agents import ACCOUNT_MCP_KINDS, KINDS, QAI_NAMES, AgentManager, default_path
+from agentdock.agents import ACCOUNT_MCP_KINDS, KINDS, QAI_NAMES, RETIRED_KINDS, AgentManager, default_path
 from agentdock.extensions import PRESETS, UNSUPPORTED, ExtensionManager, merge_summary
 from agentdock.library import DEFAULT_ASSET, LOCAL_PATH, QAI_KEY, TYPES, Library
 from agentdock.ui.qa_view import button, chip, label
@@ -61,8 +61,10 @@ class AgentDialog(QDialog):
         form = QFormLayout(self)
         self.name = QLineEdit()
         self.kind = QComboBox()
+        current = getattr(profile, "kind", "")
         for key, text in KINDS.items():
-            self.kind.addItem(text, key)
+            if key not in RETIRED_KINDS or key == current:
+                self.kind.addItem(text, key)
         self.path = QLineEdit()
         browse = button("瀏覽…")
         browse.clicked.connect(self._browse)
@@ -263,7 +265,7 @@ class McpDialog(QDialog):
 class ExtensionDialog(QDialog):
     """Add or edit an extension: same field-by-field form as MCP, plus how it plugs into each Agent type."""
     FIELDS = {"github": ["repo", "asset", "tag", "exe"], "download": ["download_url", "exe"], "command": ["command"]}
-    HOOK_KINDS = {"claude-code": "Claude Code", "codex": "Codex", "grok-cli": "Grok CLI"}
+    HOOK_KINDS = {"claude-code": "Claude", "codex": "Codex", "grok-cli": "Grok CLI"}
 
     def __init__(self, parent: QWidget | None, library: Library, entry: dict[str, Any] | None = None) -> None:
         super().__init__(parent, _top())

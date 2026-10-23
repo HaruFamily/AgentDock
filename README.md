@@ -12,11 +12,11 @@
 - **Inbox 已停用**：對話都在視窗裡原生處理，不再透過 `ask_user`／`report_to_user` MCP。舊設定檔裡的 Inbox MCP 與 inbox-activity 擴充會在「設定 → 全部更新」預覽後移除；移除前若有 Agent 呼叫 ask_user，會收到「已停用、請直接詢問使用者」的錯誤。
 - 舊的浮動卡片暫時保留一版：`data/ui.json` 設 `"shell": "card"` 可退回（含 Inbox）。
 - **Agent 與 MCP**：上半部是「MCP 庫」，每個 MCP 只定義一次（遠端網址、uvx/npx 套件、GitHub Release 下載、自訂指令）；
-  下半部是各 Agent（Codex、OpenCode、Claude Code、Claude Desktop/Cowork），用「＋ MCP」加入、「−」移除、勾選啟停。
+  下半部是各 Agent（對話視窗能用的四個：OpenCode、Claude、Codex、Grok CLI），用「＋ MCP」加入、「−」移除、勾選啟停。Claude Desktop／Cowork 與 GrokBot 已不列出也不再提供新增（舊的登記仍保存在 `data/agents.json`，只是不顯示、不再管理）。
   變更會累積，最後一次預覽、備份、寫入。
   Agent 設定檔裡的 MCP 若被客戶端更新或其他程式移除，會標示「被移除了」，可一鍵補回。
 - **擴充庫**：MCP 以外的 hook／plugin（例如 [rtk](https://github.com/rtk-ai/rtk)），同樣在各 Agent 用「＋」加入。
-  Claude Code、Codex 寫入 PreToolUse hook，OpenCode 放 plugin；Claude Desktop／Cowork 沒有 hook 機制，不適用。
+  Claude、Codex 寫入 PreToolUse hook，OpenCode 放 plugin。
 
 ## 使用
 

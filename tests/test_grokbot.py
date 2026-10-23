@@ -35,11 +35,12 @@ def test_grokbot_dialog_and_card(tmp_path, monkeypatch, ui_app):
 
     monkeypatch.setattr('pathlib.Path.home', lambda: tmp_path)
     dialog = AgentDialog(None)
-    dialog.kind.setCurrentIndex(dialog.kind.findData('grokbot'))
-    assert dialog.name.text() == 'GrokBot'
-    assert dialog.path.text() == str(tmp_path / '.grokbot' / 'settings.json')
+    assert dialog.kind.findData('grokbot') == -1   # no longer offered for new registrations
     manager = AgentManager(tmp_path / 'data')
-    manager.add('GrokBot', 'grokbot', dialog.path.text())
+    profile = manager.add('GrokBot', 'grokbot', str(tmp_path / '.grokbot' / 'settings.json'))
+    edit = AgentDialog(None, profile)   # an existing one can still be edited
+    assert edit.kind.currentData() == 'grokbot'
+    edit.close()
     view = AgentsView(manager, Library(tmp_path / 'repo', tmp_path / 'data'))
     card = view._agent_group(manager.inspect()[0])
     assert any(w.text() == '管理 MCP' for w in card.findChildren(QPushButton))

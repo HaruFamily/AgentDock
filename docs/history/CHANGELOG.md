@@ -1,5 +1,7 @@
 # 版本歷史
 
+- 2026-10-23：agents.RETIRED_KINDS、AgentManager.hidden_kinds／visible()／rename_old_defaults()（list、inspect 只回可見的，存檔保留隱藏的）；TrayApp 設定；AgentDialog 不提供退場的類型；KINDS 與 HOOK_KINDS 的 Claude Code 改為 Claude。新增 1 項測試，完整 318 項通過。
+
 - 2026-10-23：無框對話框先把整個圓角外形塗上 CANVAS 再交給 draw_dialog（使用者的 Windows 上對話框透明完全無效，蕾絲之間會露黑）。
 
 - 2026-10-23：資料夾只跟專案走：新對話選單只剩只聊天／專案／新增專案…（add_project(show=False) 後直接選它），沒有專案就是只聊天；cute.round_mask 把無框對話框、選單、提示框與主視窗裁成圓角（Windows 透明太晚時角落會變黑）；chinese_buttons 把 QDialogButtonBox 標準按鈕改中文。新增 1 項測試，完整 317 項通過。

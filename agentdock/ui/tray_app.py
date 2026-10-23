@@ -13,7 +13,7 @@ from PySide6.QtCore import QObject, QPoint, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from agentdock.agents import AgentManager
+from agentdock.agents import RETIRED_KINDS, AgentManager
 from agentdock.broker import Broker
 from agentdock.dispatch.projects import ProjectStore
 from agentdock.dispatch.runner import Dispatcher
@@ -79,6 +79,8 @@ class TrayApp(Dock):
         self.store = QuestionStore(self.data)
         self.store.subscribe(self._store_event)
         self.manager = AgentManager(self.data)
+        self.manager.hidden_kinds = RETIRED_KINDS   # only the Agents the chat window talks to
+        self.manager.rename_old_defaults()
         self.library = Library(ROOT, self.data)
         self.library.inbox_retired = True
         self.broker = Broker(self.data, self.store, on_show=lambda _id: self.bus.show_requested.emit(), inbox=False)

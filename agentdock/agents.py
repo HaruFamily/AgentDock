@@ -21,7 +21,10 @@ import tomlkit
 from agentdock.files import atomic_json, atomic_write, backup_path, load_json, prune_backups, read_text
 
 Kind = Literal["codex", "opencode", "claude-code", "claude-desktop", "grokbot", "grok-cli"]
-KINDS: dict[str, str] = {"codex": "Codex", "opencode": "OpenCode", "claude-code": "Claude Code", "claude-desktop": "Claude Desktop / Cowork", "grokbot": "GrokBot", "grok-cli": "Grok CLI"}
+KINDS: dict[str, str] = {"codex": "Codex", "opencode": "OpenCode", "claude-code": "Claude", "claude-desktop": "Claude Desktop / Cowork", "grokbot": "GrokBot", "grok-cli": "Grok CLI"}
+# Apps the chat window cannot talk to: still understood, no longer listed or offered in the settings page.
+RETIRED_KINDS = frozenset({"claude-desktop", "grokbot"})
+OLD_NAMES = {"claude-code": "Claude Code"}   # the default name an older AgentDock gave; shown as KINDS now
 TOML_KINDS = {"codex", "grok-cli"}
 ACCOUNT_MCP_KINDS = {"grokbot"}
 QAI_NAMES = ("inbox", "agentchat", "agentdock-qa", "agentdock_qa", "agent_interaction")  # current name first, then legacy
@@ -215,13 +218,26 @@ class AgentManager:
         directory.mkdir(parents=True, exist_ok=True)
         self.file = directory / "agents.json"
         self.profiles = [Profile.from_dict(d) for d in load_json(self.file, [])]
+        self.hidden_kinds: frozenset[str] = frozenset()   # the app sets RETIRED_KINDS; their rows stay saved
+
+    def visible(self) -> list[Profile]:
+        return [p for p in self.profiles if p.kind not in self.hidden_kinds]
+
+    def rename_old_defaults(self) -> None:
+        """Registrations still named as an older AgentDock called them get today's name (Claude Code → Claude)."""
+        changed = False
+        for p in self.profiles:
+            if OLD_NAMES.get(p.kind) == p.name:
+                p.name, changed = KINDS[p.kind], True
+        if changed:
+            self._save(self.profiles)
 
     def _save(self, profiles: list[Profile]) -> None:
         atomic_json(self.file, [p.__dict__ for p in profiles])
         self.profiles = profiles
 
     def list(self) -> list[Profile]:
-        return [copy.copy(p) for p in self.profiles]
+        return [copy.copy(p) for p in self.visible()]
 
     def get(self, pid: str) -> Profile:
         for p in self.profiles:
@@ -289,7 +305,7 @@ class AgentManager:
 
     def inspect(self) -> list[dict[str, Any]]:
         result = []
-        for p in self.profiles:
+        for p in self.visible():
             path = Path(p.path)
             try:
                 data = _parse(p.kind, read_text(path))

@@ -453,3 +453,22 @@ def test_a_new_conversation_without_a_project_just_talks(window, monkeypatch):
     view._new_project()
     assert view.project()['name'] == 'Work' and fresh.pages.currentWidget() is view
     fresh.hide()
+
+
+def test_settings_lists_only_the_agents_the_chat_talks_to(tmp_path):
+    import json
+    from agentdock.agents import RETIRED_KINDS, AgentManager
+    (tmp_path / 'c.json').write_text('{}', encoding='utf-8')
+    (tmp_path / 'd.json').write_text('{}', encoding='utf-8')
+    (tmp_path / 'agents.json').write_text(json.dumps([
+        {'id': 'a', 'name': 'Claude Code', 'kind': 'claude-code', 'path': str(tmp_path / 'c.json')},
+        {'id': 'b', 'name': 'Claude Desktop / Cowork', 'kind': 'claude-desktop', 'path': str(tmp_path / 'd.json')}]),
+        encoding='utf-8')
+    m = AgentManager(tmp_path)
+    m.hidden_kinds = RETIRED_KINDS
+    m.rename_old_defaults()
+    assert [(p.name, p.kind) for p in m.list()] == [('Claude', 'claude-code')]
+    assert [r['kind'] for r in m.inspect()] == ['claude-code']
+    m.reorder(['a'])   # saving keeps the hidden registration as it was
+    saved = json.loads((tmp_path / 'agents.json').read_text(encoding='utf-8'))
+    assert [(d['name'], d['kind']) for d in saved] == [('Claude', 'claude-code'), ('Claude Desktop / Cowork', 'claude-desktop')]
