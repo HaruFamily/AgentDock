@@ -1,5 +1,9 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-24：晨光・暖橘在使用者的 Windows（深色模式）有很多黑色：樣式表沒蓋到的地方用了 Windows 深色調色盤。現在 Dock.apply_theme 設 app palette（theme.palette()）與 colorScheme（theme.is_dark()），tint_caption 對所有外觀設標題列顏色與 DWMWA_USE_IMMERSIVE_DARK_MODE，Dresser 對系統框對話框也 tint，選單／提示都 round_mask。
+
+2026-10-24：使用者要對話區像 Claude／Codex 桌面版，不要聊天室效果：本機主題不再有 draw_reply（回答不畫卡片與兔子），draw_bubble 沒有尾巴，#ToolRow 無框透明。分組（_regroup）仍用來決定間距與整段複製。
+
 2026-10-23：對話區：items 間距 0，每則訊息自帶 GAP；_regroup 把相鄰的助理項目設成 joined（上下相接、只有第一張有兔子與蝴蝶結、只有最後一張保留複製列，copy_text 取整組）。文字大小存在 ui.json `text_size`（normal/large/larger＝1.0/1.15/1.3，預設 large），所有樣式表經 theme.sized()，QuestionText 與 App 字型用 px()／TEXT_SCALE；改大小時 ConversationView.reload()。QuotaFloat 在 resizeEvent 用 round_mask，甜蜜外觀用 draw_settings_card 畫底。fold_mark()／heart_icon() 取代 ♡ 字元。
 
 2026-10-23：MessageWidget.has_content()：沒有文字／思考／工具的助理項目不顯示（Codex 的 reasoning 常沒有 summary）；空的思考列隱藏。question_text.cjk_emphasis 讓中文標點旁的 ** 能收尾（CommonMark 的 flanking 規則），程式碼不動。

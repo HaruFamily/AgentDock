@@ -105,6 +105,33 @@ def sized(css: str) -> str:
                   lambda m: f"font-size: {round(float(m.group(1)) * TEXT_SCALE)}px", css)
 
 
+def is_dark() -> bool:
+    """Whether the current look is a dark one (its canvas is darker than mid grey)."""
+    c = (CANVAS or "#ffffff").lstrip("#")
+    try:
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    except ValueError:
+        return False
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+
+
+def palette():
+    """A Qt palette in the look's colours. Without it Windows' dark mode paints whatever a style sheet
+    does not cover (menu and popup corners, list backgrounds, native dialogs) black in a light look."""
+    from PySide6.QtGui import QColor, QPalette
+    p = QPalette()
+    R = QPalette.ColorRole
+    for role, colour in ((R.Window, CANVAS), (R.WindowText, INK), (R.Base, CARD), (R.AlternateBase, HOVER),
+                         (R.Text, INK), (R.Button, CARD), (R.ButtonText, INK), (R.BrightText, DANGER),
+                         (R.Highlight, ACCENT_SOFT), (R.HighlightedText, ACCENT_DEEP), (R.ToolTipBase, CARD),
+                         (R.ToolTipText, INK), (R.PlaceholderText, MUTED), (R.Link, ACCENT_DEEP),
+                         (R.Light, CARD), (R.Midlight, HOVER), (R.Mid, LINE), (R.Dark, DIM), (R.Shadow, LINE)):
+        p.setColor(role, QColor(colour or "#888888"))
+    for role in (R.WindowText, R.Text, R.ButtonText):
+        p.setColor(QPalette.ColorGroup.Disabled, role, QColor(DIM or "#999999"))
+    return p
+
+
 def px(n: float) -> int:
     """A size (font pixels, a width made for text) at the chosen text size."""
     return round(n * TEXT_SCALE)

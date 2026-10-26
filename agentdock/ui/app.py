@@ -164,6 +164,12 @@ class Dock(QObject):
                 self._use_font(family)
         else:
             self._use_font(None)
+        try:   # Windows' own dark / light mode must follow the look, or light looks get black parts
+            from PySide6.QtCore import Qt as _Qt
+            self.app.styleHints().setColorScheme(_Qt.ColorScheme.Dark if theme.is_dark() else _Qt.ColorScheme.Light)
+        except (AttributeError, TypeError):
+            pass
+        self.app.setPalette(theme.palette())
         self.app.setStyleSheet(theme.STYLE)
         icon = QIcon(heart_icon(64))
         self.app.setWindowIcon(icon)

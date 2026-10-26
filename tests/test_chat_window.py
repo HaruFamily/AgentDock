@@ -309,3 +309,19 @@ def test_steps_of_one_answer_share_one_card(window, tmp_path):
     assert [w.joined for w in shown] == [(False, True), (True, True), (True, False)]
     assert first.copy_text() == '先查一下\n\n答案'             # copying takes the whole answer
     assert all(w.joined == (False, False) for w in widgets.values() if w.item['kind'] == 'user')
+
+
+def test_changing_to_a_framed_look_keeps_the_window_maximized(window, monkeypatch):
+    from agentdock.ui import theme
+    win, store, projects, notes, app = window
+    win.showMaximized()
+    app.processEvents()
+    assert win.isMaximized() and not win.frameless
+    monkeypatch.setattr(theme, 'decorated', lambda name: name == 'titlebar')   # a look that draws its own bar
+    win._frame_mode()
+    app.processEvents()
+    assert win.frameless and win.isMaximized() and win._border() == 0
+    monkeypatch.setattr(theme, 'decorated', lambda name: False)
+    win._frame_mode()
+    app.processEvents()
+    assert not win.frameless and win.isMaximized()

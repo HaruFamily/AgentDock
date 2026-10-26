@@ -68,8 +68,9 @@ class Dresser(QObject):
                 widget.setMouseTracking(True)
                 widget.setProperty('cute_round', 26)
         elif isinstance(widget, QMenu) or widget.windowType() == Qt.WindowType.ToolTip:
-            if theme.CUTE:
-                widget.setProperty('cute_round', 16 if isinstance(widget, QMenu) else 12)
+            if True:   # every look rounds them; the corners outside are cut away (no black corners)
+                menu = isinstance(widget, QMenu)
+                widget.setProperty('cute_round', (16 if menu else 12) if theme.CUTE else (10 if menu else 8))
                 # Without a transparent window the corners outside the rounded border stay square.
                 widget.setWindowFlags(widget.windowFlags() | Qt.WindowType.FramelessWindowHint
                                       | Qt.WindowType.NoDropShadowWindowHint)
@@ -115,6 +116,8 @@ class Dresser(QObject):
         if kind == QEvent.Type.Show and isinstance(obj, QDialog) and not obj.property('cute_buttons'):
             obj.setProperty('cute_buttons', True)
             chinese_buttons(obj)
+            if obj.isWindow() and not self.dressed(obj):
+                tint_caption(obj)   # a system-framed dialog: its title bar in the look's colours too
         if kind == QEvent.Type.Resize and isinstance(obj, QWidget) and obj.isWindow() and obj.property('cute_round'):
             round_mask(obj, float(obj.property('cute_round')))
         if not isinstance(obj, QDialog) or not self.dressed(obj):
@@ -171,7 +174,8 @@ def install(app: QApplication) -> Dresser:
 
 
 def tint_caption(widget: QWidget) -> None:
-    """Windows 11: the main window's own title bar and border in the look's colours (round corners).
+    """Windows 11: the main window's own title bar and border in the look's colours (round corners), light or
+    dark as the look is, whatever Windows' own mode.
     Older Windows ignores the attributes; other systems do nothing."""
     import sys
     if sys.platform != 'win32' or not widget.isWindow():
@@ -187,10 +191,12 @@ def tint_caption(widget: QWidget) -> None:
             c = QColor(name)
             return c.red() | (c.green() << 8) | (c.blue() << 16)
         cute = theme.CUTE
-        values = {33: 2 if cute else 0,                                  # corner preference: round
-                  34: colorref(theme.LINE if cute else None),            # border
-                  35: colorref(theme.HEADER_A if cute else None),        # caption
-                  36: colorref(theme.ACCENT_DEEP if cute else None)}     # caption text
+        dark = theme.is_dark()
+        values = {20: 1 if dark else 0,                                  # dark mode frame follows the look
+                  33: 2,                                                 # corner preference: round
+                  34: colorref(theme.LINE),                              # border
+                  35: colorref(theme.HEADER_A if cute else theme.CARD),  # caption
+                  36: colorref(theme.ACCENT_DEEP if cute else theme.INK)}   # caption text
         for attribute, value in values.items():
             v = ctypes.c_uint(value)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(v), ctypes.sizeof(v))

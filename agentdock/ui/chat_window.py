@@ -158,7 +158,8 @@ QPushButton#RowMore:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatSidebar QTreeWidget::branch {{ background: transparent; border: none; }}
 #SectionLabel {{ color: {t.MUTED}; font-size: 12px; }}
 #UserBubble {{ background: {bubble_bg}; border: {bubble_line}; border-radius: {bubble}px; }}
-#ToolRow {{ text-align: left; border: 1px solid {t.LINE}; border-radius: {pill}px; min-height: 20px; padding: 4px 12px; background: {t.CARD}; color: {t.MUTED}; }}
+#ToolRow {{ text-align: left; border: none; border-radius: {pill}px; min-height: 20px; padding: 3px 8px; background: transparent; color: {t.MUTED}; }}
+#ToolRow:hover {{ background: {t.HOVER}; color: {t.INK}; }}
 #ToolDetail {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; padding: 8px; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 12px; }}
 #Request {{ background: {t.WARN_BG}; border: {request_line}; border-radius: {mid}px; }}
 #Composer {{ background: {box_bg}; border: {box_line}; border-radius: {big}px; }}
@@ -997,7 +998,7 @@ class MessageWidget(QWidget):
             bubble.setMaximumWidth(620)
             bubble.setMinimumHeight(36)   # a one-line bubble stays round (radius at most half the height)
             inner = QVBoxLayout(bubble)
-            inner.setContentsMargins(*((18, 11, 26, 13) if theme.decorated('bubble') else (14, 10, 14, 10)))
+            inner.setContentsMargins(*((16, 10, 16, 11) if theme.decorated('bubble') else (14, 10, 14, 10)))
             # Not the shared label(): its ignored width policy would collapse a bubble to one column.
             self.user_text = QLabel(item['text'])
             self.user_text.setWordWrap(True)
@@ -3323,19 +3324,23 @@ class ChatWindow(QWidget):
     BORDER = 9
 
     def _border(self) -> int:
-        return self.BORDER if self.frameless and not self.isMaximized() else 0
+        return self.BORDER if self.frameless and not (self.isMaximized() or self.isFullScreen()) else 0
 
     def _frame_mode(self) -> None:
         """Frameless with the look's title bar and rounded, laced edge when it draws one; else the system's."""
         frameless = theme.decorated('titlebar')
         if frameless != self.frameless:
             shown = self.isVisible()
-            geometry = self.geometry()
+            # Changing window flags re-creates the window as a normal one: keep maximized / full screen.
+            state = self.windowState()
+            geometry = self.normalGeometry() if state & (Qt.WindowState.WindowMaximized
+                                                         | Qt.WindowState.WindowFullScreen) else self.geometry()
             self.frameless = frameless
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint, frameless)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, frameless)
             if shown:
                 self.setGeometry(geometry)
+                self.setWindowState(state & ~Qt.WindowState.WindowMinimized)
                 self.show()
         self.titlebar.setVisible(frameless)
         b = self._border()

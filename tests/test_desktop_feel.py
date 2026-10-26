@@ -558,3 +558,19 @@ def test_text_size_scales_every_style_sheet():
     finally:
         theme.TEXT_SCALE = old
 
+
+
+def test_light_looks_bring_a_light_palette(ui_app):
+    from PySide6.QtGui import QPalette
+    from agentdock.ui import theme
+    old = theme.NAME
+    try:
+        theme.apply('white_orange')
+        assert not theme.is_dark()
+        p = theme.palette()
+        assert p.color(QPalette.ColorRole.Window).name() == theme.CANVAS.lower()
+        assert p.color(QPalette.ColorRole.Base).lightness() > 200
+        theme.apply('clean')
+        assert theme.is_dark() and theme.palette().color(QPalette.ColorRole.Base).lightness() < 80
+    finally:
+        theme.apply(old)
