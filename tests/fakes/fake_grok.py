@@ -160,6 +160,18 @@ while True:
         sessions[sid] = kept
         save()
         out({'id': mid, 'result': {'newSessionId': sid, 'sourceSessionId': params['sourceSessionId']}})
+    elif method == '_x.ai/rewind/execute':
+        log({'rewind': params})
+        kept, prompts = [], -1
+        for entry in sessions.get(params['sessionId'], []):
+            if entry['update'].get('sessionUpdate') == 'user_message_chunk':
+                prompts += 1
+                if prompts >= params['targetPromptIndex']:
+                    break
+            kept.append(entry)
+        sessions[params['sessionId']] = kept
+        save()
+        out({'id': mid, 'result': {}})
     elif method == 'session/list':
         out({'id': mid, 'result': {'sessions': [{'sessionId': s, 'cwd': '/w', 'title': f'title {s[:4]}',
                                                  'updatedAt': '2026-10-01T10:00:00.000Z'} for s in sessions]}})

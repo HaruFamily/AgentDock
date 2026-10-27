@@ -306,8 +306,9 @@ def test_copy_edit_and_retry(window):
     buttons = {b.text(): b for b in user.actions.findChildren(QPushButton)}
     buttons['複製'].click()
     assert QApplication.clipboard().text() == 'FAIL now'
-    buttons['編輯'].click()
-    assert win.conversation.composer.text.toPlainText() == 'FAIL now'
+    buttons['編輯'].click()   # edited in the bubble itself, not in the box below
+    assert user.editor_box.toPlainText() == 'FAIL now' and win.conversation.composer.text.toPlainText() == ''
+    user.cancel_edit()
     # Retry sends the last message again.
     retry = next(w.retry for w in win.conversation.widgets.values() if w.retry is not None and w.retry.isVisibleTo(win))
     retry.click()

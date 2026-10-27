@@ -88,6 +88,7 @@ def test_send_reply_and_continue(setup, client):
         starts = [l for l in log if 'argv' in l]
         assert len(starts) == 1 and '--session-id' in starts[0]['argv'] and starts[0]['cwd'] == str(work)
         assert '--permission-prompt-tool' in starts[0]['argv'] and starts[0]['entrypoint'] == 'sdk-py'
+        assert '--allow-dangerously-skip-permissions' in starts[0]['argv']   # else 全部允許 is refused mid-session
         users = [l for l in log if l.get('type') == 'user']
         assert [u['message']['content'] for u in users] == ['hello', 'again']
         assert all(u['session_id'] == key.split(':', 1)[1] for u in users)

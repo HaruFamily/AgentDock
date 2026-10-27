@@ -171,6 +171,7 @@ QPushButton#RowMore:hover {{ background: {t.ACCENT_SOFT}; }}
 #ChatSidebar QTreeWidget::branch {{ background: transparent; border: none; }}
 #SectionLabel {{ color: {t.MUTED}; font-size: 12px; }}
 #UserBubble {{ background: {bubble_bg}; border: {bubble_line}; border-radius: {bubble}px; }}
+#EditBox {{ border: none; background: transparent; }}
 #ToolRow {{ text-align: left; border: none; border-radius: {pill}px; min-height: 20px; padding: 3px 8px; background: transparent; color: {t.MUTED}; font-size: 12px; }}
 #ToolRow:hover {{ background: {t.HOVER}; color: {t.INK}; }}
 #ToolDetail {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; padding: 8px; font-family: Consolas, 'JetBrains Mono', monospace; font-size: 12px; }}
@@ -215,6 +216,7 @@ QPushButton#RecentRow:hover {{ background: {t.HOVER}; }}
 #RecentAlert {{ color: {t.ALERT}; font-size: 12px; }}
 #DiffView {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; padding: 8px; }}
 #Reasoning {{ color: {t.MUTED}; }}
+#ProcessRule {{ background: {t.LINE}; border: none; margin: 4px 0 8px; }}
 #FindBar {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {small}px; }}
 QPushButton#LatestButton {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 16px; padding: 0; }}
 QPushButton#LatestButton:hover {{ border-color: {t.ACCENT}; }}
@@ -239,6 +241,8 @@ class Bridge(QObject):
     live = Signal(str, dict)
     started = Signal(str)
     deleted = Signal(str)
+    replaced = Signal(str, str)        # a conversation that started over in a new session: old key, new key
+    reload = Signal(str)               # show again what the client holds for this conversation
     options = Signal(str, str, dict)   # client, conversation key ('' for a new one), choices
     git = Signal(str, str, str)        # conversation key, repository root ('' when none), status summary
     sessions = Signal(str, list)       # client, its saved sessions

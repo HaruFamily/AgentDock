@@ -181,7 +181,7 @@ def turn_html(items: list[dict], codes: dict, live: bool = False) -> str:
             flush()
             if part['type'] == 'reasoning':
                 steps += 1
-                entries.append(('step', f'<details class="think"{" open" if live else ""} '
+                entries.append(('step', f'<details class="think"{" open data-live" if live else ""} '
                                         f'data-key="think-{html.escape(item["id"])}-{html.escape(part["key"])}">'
                                         f'<summary>思考過程</summary><div class="think-body">{markdown_html(text, codes)}'
                                         f'</div></details>'))
@@ -247,8 +247,9 @@ def user_html(item: dict, resolve=None) -> str:
     images_html = f'<div class="images">{"".join(images)}</div>' if images else ''
     files = images_html + ''.join(files)
     text = f'<div class="text">{html.escape(item.get("text", ""))}</div>' if item.get('text') else ''
-    actions = (_icon_link('copy', '複製', action_url('copy', 'u-' + item['id']))
-               + _icon_link('edit', '編輯', action_url('edit', item['id'])))
+    edit = (f'<a class="act" href="#" data-edit="{html.escape(item["id"])}" title="編輯" aria-label="編輯">'
+            f'<svg viewBox="0 0 24 24">{ICONS["edit"]}</svg></a>')   # edited in place: see startEdit
+    actions = _icon_link('copy', '複製', action_url('copy', 'u-' + item['id'])) + edit
     return f'<div class="bubble">{text}{files}</div><div class="actions">{actions}</div>'
 
 
@@ -336,6 +337,17 @@ body {{ color: {ink}; font: {size}px/1.75 "Segoe UI", "Microsoft JhengHei UI", "
 .bubble {{ background: {t.LAVENDER}; color: {strong}; border-radius: 18px; padding: 9px 16px; max-width: 82%; }}
 .bubble .text {{ white-space: pre-wrap; }}
 .bubble .file {{ color: {t.MUTED}; font-size: .88em; }}
+
+/* the user's message edited in place */
+.bubble.editing {{ width: 82%; box-sizing: border-box; }}
+.bubble.editing textarea {{ width: 100%; border: none; outline: none; resize: none; background: transparent;
+                            color: inherit; font: inherit; padding: 0; overflow: hidden; }}
+.edit-acts {{ display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }}
+.edit-acts button {{ border: none; border-radius: 8px; padding: 4px 12px; font: inherit; font-size: .9em;
+                     cursor: pointer; background: transparent; color: {t.MUTED}; }}
+.edit-acts button:hover {{ background: {soft}; }}
+.edit-acts button.send {{ background: {strong}; color: {t.CANVAS}; }}
+.unit.is-editing .actions {{ display: none; }}
 
 /* buttons under a message, shown while the pointer is over it */
 .actions {{ display: flex; gap: 2px; margin-top: 4px; opacity: 0; transition: opacity .12s; }}
@@ -435,6 +447,44 @@ function showLatest() { document.getElementById('latest').style.display = fromBo
 addEventListener('scroll', () => { stick = fromBottom() < 40; showLatest(); });
 addEventListener('resize', () => { if (stick) root.scrollTop = root.scrollHeight; showLatest(); });
 function toBottom() { stick = true; root.scrollTop = root.scrollHeight; showLatest(); }
+document.addEventListener('click', e => {
+  const link = e.target.closest('a[data-edit]');
+  if (link) { e.preventDefault(); startEdit(link.closest('.unit'), link.dataset.edit); }
+});
+// The bubble turns into a box holding the message; sending replaces it and everything after it.
+function startEdit(unit, id) {
+  const open = unit.querySelector('.editing textarea');
+  if (open) { open.focus(); return; }
+  const bubble = unit.querySelector('.bubble');
+  const box = document.createElement('div');
+  box.className = 'bubble editing';
+  box.innerHTML = '<textarea rows="1"></textarea><div class="edit-acts"><button class="cancel">取消</button>'
+    + '<button class="send">送出</button></div>';
+  const area = box.querySelector('textarea');
+  const text = bubble.querySelector('.text');
+  area.value = text ? text.textContent : '';
+  const fit = () => { area.style.height = 'auto'; area.style.height = area.scrollHeight + 'px'; };
+  const close = () => { box.remove(); bubble.style.display = ''; unit.classList.remove('is-editing'); };
+  const send = () => {
+    const value = area.value.trim();
+    if (!value) return;
+    close();
+    location.href = EDIT_URL + encodeURIComponent(JSON.stringify([id, value]));
+  };
+  area.addEventListener('input', fit);
+  area.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+    else if (e.key === 'Escape') close();
+  });
+  box.querySelector('.cancel').onclick = close;
+  box.querySelector('.send').onclick = send;
+  bubble.style.display = 'none';
+  bubble.after(box);
+  unit.classList.add('is-editing');
+  fit();
+  area.focus({preventScroll: true});
+  area.setSelectionRange(area.value.length, area.value.length);
+}
 function apply(order, kinds, parts, older, status) {
   const first = log.firstElementChild ? log.firstElementChild.id : '';
   const below = root.scrollHeight - root.scrollTop;
@@ -446,7 +496,8 @@ function apply(order, kinds, parts, older, status) {
     if (!el) { el = document.createElement('div'); el.id = id; }
     el.className = 'unit ' + kinds[id];
     if (id in parts) {
-      const open = new Set([...el.querySelectorAll('details[open]')].map(d => d.dataset.key));
+      // Thinking open only because the answer was live closes with it; what the reader opened stays.
+      const open = new Set([...el.querySelectorAll('details[open]:not([data-live])')].map(d => d.dataset.key));
       el.innerHTML = parts[id];
       for (const d of el.querySelectorAll('details')) if (open.has(d.dataset.key)) d.open = true;
     }
@@ -470,7 +521,7 @@ def page_html(column: int) -> str:
             f'<div id="page"><div id="older"><a href="{action_url("older")}">載入更早的訊息</a></div>'
             f'<div id="log"></div><div id="status"></div></div>'
             f'<div id="latest" onclick="toBottom()" title="最新訊息" aria-label="最新訊息">{down}</div><div id="fade"></div>'
-            f'<script>{SCRIPT}</script></body></html>')
+            f'<script>const EDIT_URL = {json.dumps(action_url("edit"))};{SCRIPT}</script></body></html>')
 
 
 # --------------------------------------------------------------------------- the Qt side

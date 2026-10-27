@@ -10,9 +10,31 @@ from agentdock.dispatch.runner import Dispatcher
 from agentdock.dispatch.opencode import OpenCodeService
 from agentdock.dispatch.transcript import Transcript, item_from_message, tool_summary
 from agentdock.qa.store import QuestionStore
+from agentdock.ui.chat_common import hidden
 from test_dispatch import OWNER, PASSWORD, FakeOpenCode
 
 TARGETS = lambda: [{'label': 'OpenCode', 'client': 'opencode', 'owner': OWNER}]
+
+
+def test_qt_message_shows_image_attachment(ui_app, tmp_path):
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QLabel
+    from agentdock.ui.chat_messages import MessageWidget
+
+    path = tmp_path / 'picture.png'
+    image = QImage(800, 600, QImage.Format.Format_RGB32)
+    image.fill(0xff6633)
+    assert image.save(str(path))
+    widget = MessageWidget({'kind': 'user', 'id': 'u', 'text': '',
+                            'files': ['picture.png', 'missing.txt']},
+                           resolve=lambda name: str(tmp_path / name))
+    labels = widget.findChildren(QLabel)
+    pictures = [label for label in labels if label.pixmap() and not label.pixmap().isNull()]
+    assert len(pictures) == 1
+    assert pictures[0].pixmap().width() == 320
+    assert pictures[0].pixmap().height() == 240
+    assert any(label.text() == '附件：missing.txt' for label in labels)
+    widget.close()
 
 
 @pytest.fixture
@@ -303,11 +325,18 @@ def test_steps_of_one_answer_share_one_card(window, tmp_path):
         {'id': 'u2', 'type': 'user', 'text': '再問'}], None)
     view._regroup()
     widgets = view.widgets
-    first = next(w for i, w in widgets.items() if w.item['kind'] == 'assistant' and w.has_content())
-    shown = [w for w in widgets.values() if w.item['kind'] == 'assistant' and w.has_content()]
-    assert len(shown) == 3                                    # the empty thought takes no place at all
-    assert [w.joined for w in shown] == [(False, True), (True, True), (True, False)]
+    first = widgets['a1']
+    # Done: the remark and the tool fold into one line on top, a rule over the answer (as on the web page).
+    assert '處理了 1 個步驟' in first.process.text() and all(hidden(p) for p in first.parts.values())
+    assert hidden(widgets['a2']) and not hidden(widgets['a3'].rule)
+    shown = [w for w in widgets.values() if w.item['kind'] == 'assistant' and not hidden(w)]
+    assert shown == [first, widgets['a3']]                    # the empty thought takes no place at all
+    assert [w.joined for w in shown] == [(False, True), (True, False)]
     assert first.copy_text() == '先查一下\n\n答案'             # copying takes the whole answer
+    first.process.click()
+    shown = [w for w in widgets.values() if w.item['kind'] == 'assistant' and not hidden(w)]
+    assert len(shown) == 3 and not any(hidden(p) for p in first.parts.values())
+    assert [w.joined for w in shown] == [(False, True), (True, True), (True, False)]
     assert all(w.joined == (False, False) for w in widgets.values() if w.item['kind'] == 'user')
 
 
@@ -324,6 +353,7 @@ def test_tools_in_a_row_fold_into_one_line(window, tmp_path):
                                         {'id': 'a4', 'type': 'assistant', 'content': [{'type': 'text', 'text': '答'}]}],
                         None)
     view._regroup()
+    view.widgets['a1'].process.click()                         # the finished answer's steps, opened
     rows = [w.parts[f'tool:c{i}'] for i in (1, 2, 3) for w in [view.widgets[f'a{i}']]]
     assert all(isinstance(r, ToolRow) for r in rows)
     assert rows[0].heads and '3 個工具' in rows[0].summary.text()
@@ -335,6 +365,7 @@ def test_tools_in_a_row_fold_into_one_line(window, tmp_path):
 
 
 def test_changing_to_a_framed_look_keeps_the_window_maximized(window, monkeypatch):
+    from PySide6.QtCore import Qt
     from agentdock.ui import theme
     win, store, projects, notes, app = window
     win.showMaximized()
@@ -348,3 +379,100 @@ def test_changing_to_a_framed_look_keeps_the_window_maximized(window, monkeypatc
     win._frame_mode()
     app.processEvents()
     assert not win.frameless and win.isMaximized()
+    # back to an opaque window: nothing left that makes Windows paint its background black
+    assert not win.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert not win.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+
+
+def test_editing_a_message_replaces_it_and_what_followed(window, tmp_path, fake):
+    win, store, projects, notes, app = window
+    win.show_new()
+    win.new_view.set_folder(str(tmp_path))
+    win.new_view.composer.text.setPlainText('one')
+    win.new_view.send()
+    pump(app, lambda: win.current_key and store.dispatch.get(win.current_key)['state'] == 'done')
+    key, view = win.current_key, win.conversation
+    view.composer.text.setPlainText('two')
+    view.send()
+    pump(app, lambda: store.dispatch.get(key)['prompt'] == 'two' and store.dispatch.get(key)['state'] == 'done')
+    pump(app, lambda: [i['kind'] for i in view.transcript.items].count('assistant') == 2)
+    second = [i for i in view.transcript.items if i['kind'] == 'user'][1]['id']
+    message = view.widgets[second]
+    from PySide6.QtWidgets import QPushButton
+    edit = next(b for b in message.actions.findChildren(QPushButton) if b.text() == '編輯')
+    edit.click()                                               # the bubble itself becomes the box
+    assert message.editor is not None and message.editor_box.toPlainText() == 'two'
+    assert message.bubble.isHidden() and view.composer.text.toPlainText() == ''
+    next(b for b in message.editor.findChildren(QPushButton) if b.text() == '取消').click()
+    assert message.editor is None and not message.bubble.isHidden()
+    edit.click()
+    message.editor_box.setPlainText('TWO')
+    next(b for b in message.editor.findChildren(QPushButton) if b.text() == '送出').click()
+    assert second not in view.widgets
+    assert [i['text'] for i in view.transcript.items if i['kind'] == 'user'] == ['one']
+    pump(app, lambda: any(p.get('text') == 'ok: TWO' for i in view.transcript.items if i['kind'] == 'assistant'
+                          for p in i['parts']))
+    assert [m['text'] for m in fake.messages['ses_1'] if m['type'] == 'user'] == ['one', 'TWO']
+    assert [i['text'] for i in view.transcript.items if i['kind'] == 'user'] == ['one', 'TWO']
+    assert notes == []
+
+
+def test_thinking_is_open_while_live_and_folds_when_done(window, tmp_path):
+    win, store, projects, notes, app = window
+    from agentdock.ui.chat_messages import ReasoningRow
+    store.dispatch.track('opencode', 's7', owner='o', title='t', directory=str(tmp_path), state='running')
+    win.open_conversation('opencode:s7')
+    view = win.conversation
+    view.loading = True
+    view.history_loaded('opencode:s7', [
+        {'id': 'u1', 'type': 'user', 'text': '問'},
+        {'id': 'a1', 'type': 'assistant', 'content': [{'type': 'reasoning', 'text': '想一想'}]},
+        {'id': 'a2', 'type': 'assistant', 'content': [{'type': 'text', 'text': '答案'}]}], None)
+    view._regroup()
+    think = next(p for p in view.widgets['a1'].parts.values() if isinstance(p, ReasoningRow))
+    assert think.toggle.isChecked() and not hidden(think)    # live: every step shows, thinking open
+    assert view.widgets['a1'].process is None
+    store.dispatch.update('opencode:s7', state='done')
+    view.update_row()
+    view._regroup()
+    head = view.widgets['a1']
+    assert '處理了 1 個步驟' in head.process.text() and not hidden(head.process)
+    assert hidden(think) and not think.toggle.isChecked()     # folded away, and closed when opened again
+    assert not hidden(view.widgets['a2'].rule)
+
+
+def test_editing_keeps_the_message_where_it_is(window, tmp_path):
+    win, store, projects, notes, app = window
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QPushButton
+    store.dispatch.track('opencode', 's6', owner='o', title='t', directory=str(tmp_path), state='done')
+    win.open_conversation('opencode:s6')
+    view = win.conversation
+    view.loading = True
+    history = []
+    for i in range(30):
+        history += [{'id': f'u{i}', 'type': 'user', 'text': f'question {i}'},
+                    {'id': f'a{i}', 'type': 'assistant', 'content': [{'type': 'text', 'text': 'answer ' * 40}]}]
+    view.history_loaded('opencode:s6', history, None)
+    view._regroup()
+    pump(app, lambda: view.scroll.verticalScrollBar().maximum() > 0)
+    for target, value in (('u29', None), ('u12', 'middle')):   # at the bottom, then scrolled up
+        bar = view.scroll.verticalScrollBar()
+        app.processEvents()
+        bar.setValue(bar.maximum() if value is None else bar.maximum() // 2)
+        app.processEvents()
+        message = view.widgets[target]
+        if value is not None:   # bring the message into view first, as a reader would
+            bar.setValue(bar.value() + message.mapTo(view.scroll.viewport(), QPoint(0, 0)).y() - 100)
+            app.processEvents()
+        top = message.mapTo(view.scroll.viewport(), QPoint(0, 0)).y()
+        edit = next(b for b in message.actions.findChildren(QPushButton) if b.text() == '編輯')
+        edit.click()
+        for _ in range(20):
+            app.processEvents()
+        assert message.editor is not None
+        assert abs(message.mapTo(view.scroll.viewport(), QPoint(0, 0)).y() - top) <= 2
+        message.cancel_edit()
+        for _ in range(20):
+            app.processEvents()
+        assert abs(message.mapTo(view.scroll.viewport(), QPoint(0, 0)).y() - top) <= 2

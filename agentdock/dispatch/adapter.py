@@ -85,6 +85,11 @@ class Adapter:
         """A new session holding the conversation up to and including `message_id`; returns its id."""
         raise ClientError(f'{self.name} 不支援分叉。')
 
+    def rewind(self, row: dict, message_id: str) -> bool:
+        """Drop the user message `message_id` and everything after it, in the same session. False when the
+        client cannot empty a session (it was the first message): the conversation starts over instead."""
+        raise ClientError(f'{self.name} 不支援編輯訊息。')
+
     def sessions(self) -> list[dict]:
         """Sessions kept by the client, newest first: {'id', 'title', 'directory', 'updated' (epoch seconds)}."""
         return []

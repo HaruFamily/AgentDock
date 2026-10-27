@@ -1,5 +1,21 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-28：編輯訊息改成在訊息泡泡上直接編輯（Qt：`MessageWidget.start_edit`／`edit_submitted`；網頁：頁面上的 `startEdit`，送出走 `edit` 動作帶 `[id, text]` JSON），移除輸入框的「編輯訊息 ✕」編輯模式；`ConversationView.submit_edit` 呼叫 `Dispatcher.edit`。
+
+2026-10-28：可愛外觀（Qt 畫的對話）對齊網頁顯示：一輪結束後步驟收成「處理了 N 個步驟」（`ConversationView._fold_process`、`MessageWidget.set_process`／`set_rule`），執行中思考過程展開、結束後收起（`ReasoningRow.set_live`，使用者點過就不再自動）。網頁版執行中自動展開的思考標 `data-live`，結束後不再被當成使用者展開而保留。
+
+2026-10-28：訊息的「編輯」改成真的編輯：送出時在原對話拿掉那則訊息與之後的內容再送新的（`Adapter.rewind`、`Dispatcher.edit`；Claude Code `--resume-session-at`、Codex `thread/revert`、Grok `_x.ai/rewind/execute`、OpenCode `revert/stage`＋`revert/commit`，都不還原檔案）。Claude Code 編輯第一則時改開新工作階段取代（Bridge.replaced）。輸入框編輯時上方有「編輯訊息 ✕」。
+
+2026-10-27：Claude Code 子行程加上 `--allow-dangerously-skip-permissions`：沒有它時對話中途切成「全部允許」會被 Claude Code 拒絕（bypass_not_launched），而 AgentDock 不顯示錯誤，仍每次詢問。這個參數只讓模式可切換，不會自行開啟。
+
+2026-10-27：MCP 庫中 Google OAuth 的 MCP（目前為 mcp-google-sheets，需本機祕密 CREDENTIALS_PATH、TOKEN_PATH）的「⋯」加入「登入 Google」（`agentdock/oauth_login.py`）。MCP 自己在 token 無法續期時會開登入，但客戶端約 30 秒就關掉它，token 永遠存不下來，每個 Agent 啟動都再跳一次。這裡以 `uvx --from google-auth-oauthlib` 在背景（CREATE_NO_WINDOW）跑同一流程，最多等 10 分鐘，成功才取代 token 檔。
+
+2026-10-27：登入終端機移除 PowerShell `-NoExit`，CLI 登入成功、取消或失敗結束後即關閉，不停留在命令提示。只關閉瀏覽器而 CLI 仍等待時不會自動中止登入。
+
+2026-10-27：設定 → Agent 的 Claude、Codex、Grok 卡片加入「登入」「切換帳號」。使用者點擊才開啟原生 CLI 登入終端機，切換先登出再登入；不保存憑證副本。登入完成後重啟 AgentDock，既有收發子行程才會讀取新登入。帳號操作使用可見主控台，與「在終端機接續」同為使用者主動操作的例外。
+
+2026-10-27：修正自訂外觀的 Qt 聊天訊息只顯示附件檔名：沿用對話的附件路徑解析器顯示等比例圖片預覽；找不到檔案或非圖片時保留附件名稱。
+
 2026-10-27：Git 視窗改成 VS Code／GitHub Desktop 的樣子（`ui/git_view.py`）：提交訊息與「提交 N 個檔案到 <分支>」在檔案清單上方；清單由 ChangeDelegate 自畫（彩色狀態字母、粗體檔名、淡灰資料夾、+/− 行數，滑鼠移上去出現 ＋／− 暫存或取消暫存，群組列的 ＋／− 作用於整組，取代「全部暫存」按鈕）；行數來自新的 gitops.numstat（`git diff --numstat`）。上方顯示「→ 上游 ↑N ↓N」，落後時「拉取 N 個提交」、領先時「推送 N 個提交」變成主按鈕，重新整理改成圖示。差異在網頁開啟時用 diff_page（GitHub 樣式：新舊行號、增刪底色、分段列、Pygments 依副檔名上色；超過 setHtml 上限就去掉顏色），否則仍是 QTextBrowser（測試讀它）。
 
 2026-10-27：chat_window.py（3300 行）依面板拆成 chat_common（常數、樣式表、圖示、小按鈕）、chat_sidebar、chat_messages（Qt 畫的訊息）、chat_composer、chat_conversation、chat_new、chat_dialogs，chat_window 只剩 ChatWindow 並轉匯出舊名稱（測試與 git_view 的匯入不變）。改哪塊只讀哪塊。標題列只留對話名稱與「⋯」（專案、Agent 標籤隱藏但仍更新），Git 狀態與上下文移到輸入框底列；輸入框內距縮小。網頁對話：Agent 工作中最新一段是 turn live（步驟照常顯示、思考展開），完成後最後一個工具／思考以前的內容（含中間的說明文字）收成最上面「處理了 N 個步驟」＋細線，下面才是答案；內文字級只隨文字大小放大一半，標題縮小。圖片附件：輸入框顯示縮圖（ImageChip），送出的訊息顯示圖片（ChatWindow.sent_files 記本次送出的路徑，其他找 data/attachments/chat；轉成 data: URL，頁面仍不讀檔）。Claude 的歷史只記「圖片」，無法還原。tests/test_dispatch.py::test_stop_running_task 偶爾逾時失敗（與這次無關，重跑會過）。

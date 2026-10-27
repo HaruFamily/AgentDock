@@ -491,3 +491,22 @@ def test_inbox_migration_keeps_enabled_state(tmp_path, kind, enabled):
     assert len(rows) == 1 and rows[0]['name'] == 'inbox'
     assert rows[0]['enabled'] is enabled
     view.close()
+
+
+def test_google_oauth_mcp_offers_login(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView
+    m, L = AgentManager(tmp_path / "data"), Library(tmp_path / "repo", tmp_path / "data")
+    L.save({"key": "sheets", "type": "uvx", "package": "mcp-google-sheets@latest", "description": "d",
+            "secrets": ["CREDENTIALS_PATH", "TOKEN_PATH"]})
+    L.save({"key": "other", "type": "uvx", "package": "other-mcp@latest", "description": "d"})
+    view = AgentsView(m, L)
+    titles = lambda key: [a.text() for a in view._library_menu(L.get(key), view._library_status(L.get(key)),
+                                                                QPushButton()).actions()]
+    assert "登入 Google" in titles("sheets") and "登入 Google" not in titles("other")
+    notices = []
+    monkeypatch.setattr(view, "info", lambda text, error=False, sticky=False: notices.append((text, error)))
+    view._google_login(L.get("sheets"))                    # no paths on this computer: nothing starts
+    assert notices[-1][1] and "sheets" not in view.busy

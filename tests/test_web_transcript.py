@@ -1,4 +1,6 @@
 """The conversation as a web page: what Python sends to it (WebEngine itself is not started here)."""
+import json
+
 from agentdock.ui import web_transcript as wt
 
 
@@ -45,6 +47,14 @@ def test_steps_of_an_answer_become_one_turn_with_folded_tools(ui_app):
     assert wt.units(items, 'e2')[1][2] == found[1][2] and wt.units(items, '')[3][2] != found[3][2]
 
 
+def test_user_message_is_edited_in_place(ui_app):
+    html_ = wt.user_html({'kind': 'user', 'id': 'u1', 'text': '問 <b>'})
+    assert 'data-edit="u1"' in html_ and wt.action_url('edit', 'u1') not in html_   # the page opens the box
+    page = wt.page_html(768)
+    assert 'function startEdit' in page and json.dumps(wt.action_url('edit')) in page
+    assert '!e.isComposing' in page   # Enter that picks an IME word does not send
+
+
 def test_page_has_no_remote_resources(ui_app):
     page = wt.page_html(768)
     assert 'http://' not in page and 'src=' not in page
@@ -64,6 +74,10 @@ def test_finished_answer_folds_its_steps_on_top(ui_app):
     assert 'process' not in live and live.index('先查一下') < live.index('答案')
     assert [k for _p, k, _s, _i in wt.units(items, running=True)] == ['turn live']
     assert [k for _p, k, _s, _i in wt.units(items)] == ['turn']
+    # Thinking open only because the answer was live is marked, so the page closes it once done.
+    thought = [{'kind': 'assistant', 'id': 'a0', 'error': '', 'parts': [{'type': 'reasoning', 'key': 'r0', 'text': '想'}]}]
+    assert '<details class="think" open data-live' in wt.turn_html(thought, {}, live=True)
+    assert 'data-live' not in wt.turn_html(thought, {}) and ':not([data-live])' in wt.SCRIPT
 
 
 def test_sent_pictures_show_in_the_message(ui_app, tmp_path):

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QMenu, QMessageBox,
@@ -91,6 +91,8 @@ class ReasoningRow(QWidget):
         self.toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.toggle.toggled.connect(self._toggled)
+        self.toggle.clicked.connect(lambda: setattr(self, 'touched', True))
+        self.touched = False   # once clicked, the reader decides whether it is open
         layout.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignLeft)
         self.text = QuestionText('')
         self.text.setObjectName('Reasoning')
@@ -112,6 +114,11 @@ class ReasoningRow(QWidget):
             self.text.refresh_theme()
         self.text.setVisible(shown)
         self.update_part(self.part)
+
+    def set_live(self, live: bool) -> None:
+        """Open while the Agent is thinking, closed once the answer is done (unless the reader chose)."""
+        if not self.touched and self.toggle.isChecked() != live:
+            self.toggle.setChecked(live)
 
 
 class ToolRow(QWidget):
@@ -292,11 +299,11 @@ class RichText(QWidget):
 
 class MessageWidget(QWidget):
     """One transcript item; rebuilt in place when its item changes."""
-    edit_requested = Signal(str)
+    edit_submitted = Signal(str, str)   # message id, the new text
     retry_requested = Signal()
     fork_requested = Signal(str)   # message id
 
-    def __init__(self, item: dict):
+    def __init__(self, item: dict, resolve=None):
         super().__init__()
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(0, 0, 0, 0)
@@ -309,12 +316,18 @@ class MessageWidget(QWidget):
         self.joined = (False, False)
         self.folded = False   # only tools folded into a summary shown in an earlier step
         self.copy_text = None
+        self.process: QPushButton | None = None   # '處理了 N 個步驟' on the first step of a finished answer
+        self.on_process = None
+        self.rule: QFrame | None = None           # between the folded steps and the answer
+        self.editor: QWidget | None = None        # the user's message being edited in place
+        self.keep_place = lambda change: change()  # the view keeps this message where it is on screen
         if item['kind'] != 'assistant':
             self.layout_.setContentsMargins(0, GAP, 0, 0)
         if item['kind'] == 'user':
             row = QHBoxLayout()
             row.addStretch(1)
-            bubble = Bubble()
+            bubble = self.bubble = Bubble()
+            self.bubble_row = row
             bubble.setObjectName('UserBubble')
             bubble.setMaximumWidth(620)
             bubble.setMinimumHeight(36)   # a one-line bubble stays round (radius at most half the height)
@@ -337,10 +350,20 @@ class MessageWidget(QWidget):
             inner.addWidget(self.user_text)
             self.user_text.setVisible(bool(item['text']))
             if item.get('files'):
-                files = QLabel('　'.join(f'附件：{name}' for name in item['files']))
-                files.setObjectName('FileNote')
-                files.setWordWrap(True)
-                inner.addWidget(files)
+                for name in item['files']:
+                    path = resolve(name) if resolve else ''
+                    pixmap = QPixmap(path) if path else QPixmap()
+                    attachment = QLabel()
+                    if not pixmap.isNull():
+                        attachment.setPixmap(pixmap.scaled(
+                            360, 240, Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation))
+                        attachment.setAccessibleName(name)
+                    else:
+                        attachment.setText(f'附件：{name}')
+                        attachment.setObjectName('FileNote')
+                        attachment.setWordWrap(True)
+                    inner.addWidget(attachment)
             row.addWidget(bubble, 0)
             self.layout_.addLayout(row)
             self._add_actions(right=True, edit=True)
@@ -410,7 +433,9 @@ class MessageWidget(QWidget):
         row.addWidget(copy)
         if edit:
             change = mini_button('編輯')
-            change.clicked.connect(lambda: self.edit_requested.emit(self.item.get('text', '')))
+            # No focus: hiding a focused button would hand focus on and scroll the list to it.
+            change.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            change.clicked.connect(self.start_edit)
             row.addWidget(change)
         else:
             fork = mini_button('分叉')
@@ -424,13 +449,67 @@ class MessageWidget(QWidget):
         self.actions.hide()
         self.layout_.addWidget(self.actions)
 
+    def start_edit(self) -> None:
+        """The bubble turns into a box holding the message; sending replaces it and everything after it."""
+        if self.editor is not None:
+            self.editor_box.setFocus()
+            return
+        self.keep_place(self._open_editor)
+
+    def _open_editor(self) -> None:
+        self.editor = Bubble()
+        self.editor.setObjectName('UserBubble')
+        inner = QVBoxLayout(self.editor)
+        inner.setContentsMargins(*((16, 10, 16, 10) if theme.decorated('bubble') else (14, 10, 14, 10)))
+        inner.setSpacing(6)
+        self.editor_box = text_box(12, enter_sends=True)
+        self.editor_box.setObjectName('EditBox')
+        self.editor_box.setPlainText(self.item.get('text', ''))
+        self.editor_box.submitted.connect(self._send_edit)
+        self.editor_box.key_hook = lambda e: e.key() == Qt.Key.Key_Escape and (self.cancel_edit() or True)
+        inner.addWidget(self.editor_box)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = mini_button('取消')
+        cancel.clicked.connect(self.cancel_edit)
+        send = mini_button('送出')
+        send.clicked.connect(self._send_edit)
+        buttons.addWidget(cancel)
+        buttons.addWidget(send)
+        inner.addLayout(buttons)
+        self.bubble.hide()
+        if self.actions is not None:
+            self.actions.hide()
+        self.bubble_row.insertWidget(self.bubble_row.indexOf(self.bubble), self.editor, 6)
+        self.editor_box.setFocus()
+        cursor = self.editor_box.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.editor_box.setTextCursor(cursor)
+
+    def cancel_edit(self) -> None:
+        if self.editor is not None:
+            self.keep_place(self._close_editor)
+
+    def _close_editor(self) -> None:
+        self.bubble_row.removeWidget(self.editor)
+        self.editor.hide()
+        self.editor.deleteLater()
+        self.editor = None
+        self.bubble.show()
+
+    def _send_edit(self) -> None:
+        text = self.editor_box.toPlainText().strip() if self.editor is not None else ''
+        if text:
+            self.cancel_edit()
+            self.edit_submitted.emit(self.item['id'], text)
+
     def plain_text(self) -> str:
         if self.item['kind'] == 'user':
             return self.item.get('text', '')
         return '\n\n'.join(p['text'] for p in self.item.get('parts', []) if p['type'] == 'text' and p['text'])
 
     def enterEvent(self, event):  # noqa: N802
-        if self.actions is not None and not self.joined[1]:
+        if self.actions is not None and not self.joined[1] and self.editor is None:
             self.actions.show()
         super().enterEvent(event)
 
@@ -438,6 +517,37 @@ class MessageWidget(QWidget):
         if self.actions is not None:
             self.actions.hide()
         super().leaveEvent(event)
+
+    def set_process(self, steps: int, opened: bool) -> None:
+        """The line the steps of a finished answer fold into (0 steps: none)."""
+        if not steps:
+            if self.process is not None:
+                self.process.hide()
+            return
+        if self.process is None:
+            self.process = QPushButton()
+            self.process.setObjectName('ToolRow')
+            self.process.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.process.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            self.process.clicked.connect(lambda: self.on_process and self.on_process())
+            self.layout_.insertWidget(0, self.process, 0, Qt.AlignmentFlag.AlignLeft)
+        self.process.setText(f'{fold_mark(self.process, opened)}處理了 {steps} 個步驟')
+        self.process.show()
+
+    def set_rule(self, before: str | None) -> None:
+        """A thin rule above the part `before` (the start of the answer), or none."""
+        if before is None or before not in self.parts:
+            if self.rule is not None:
+                self.rule.hide()
+            return
+        if self.rule is None:
+            self.rule = QFrame()
+            self.rule.setObjectName('ProcessRule')
+            self.rule.setFixedHeight(1)
+        else:
+            self.layout_.removeWidget(self.rule)
+        self.layout_.insertWidget(self.layout_.indexOf(self.parts[before]), self.rule)
+        self.rule.show()
 
     def _insert(self, widget: QWidget) -> None:
         index = self.layout_.indexOf(self.actions) if self.actions is not None else -1

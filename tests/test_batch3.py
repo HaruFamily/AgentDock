@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agentdock import gitops
-from agentdock.dispatch.claude import fork_transcript, list_transcripts, read_history
+from agentdock.dispatch.claude import fork_transcript, list_transcripts, read_history, rewind_point
 from agentdock.dispatch.grok import Record
 from agentdock.dispatch.runner import Dispatcher
 from agentdock.dispatch.transcript import Transcript
@@ -174,6 +174,98 @@ def test_opencode_fork_list_and_context(tmp_path):
     assert [m['id'] for m in fake.messages[new_sid]] == ['u1', 'a1', 'a1b']   # forked before the next prompt
     assert ('POST', 'api/session/ses_1/fork', {'before': 'u2'}) in fake.calls
     assert service.context('ses_1') == {'used': 115, 'model': 'p/m'}
+    sender.close()
+    fake.server.shutdown()
+
+
+# --------------------------------------------------------------------------- edit
+def test_claude_rewind_point(tmp_path):
+    path = write_transcript(tmp_path / 'p')
+    assert rewind_point(path, 'u2') == 'a2'   # the end of the turn before it
+    assert rewind_point(path, 'u1') is None   # nothing before the first message
+    meta = [{'type': 'user', 'uuid': 'n1', 'parentUuid': 'a1', 'isMeta': True, 'message': {'content': 'note'}},
+            {'type': 'user', 'uuid': 'u3', 'parentUuid': 'n1', 'message': {'content': 'third'}}]
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(''.join(json.dumps(e) + '\n' for e in meta))
+    assert rewind_point(path, 'u3') == 'a1'   # a note sent with the message goes with it
+    with pytest.raises(Exception):
+        rewind_point(path, 'a2')
+
+
+def user_texts(sender, key):
+    got = []
+    sender.history(key, None, lambda messages, older: got.append(messages), failed=got.append)
+    wait(lambda: got)
+    return [m.get('text') for m in got[0] if m['type'] == 'user']
+
+
+@pytest.mark.parametrize('client', ['codex', 'grok-cli'])
+def test_edit_replaces_the_message_in_place(setup, client):
+    store, sender, notes, events, started, work, tmp = setup
+    key = start(setup, client, 'one')
+    wait(settled(store, key))
+    sender.send(key, 'two')
+    wait(lambda: store.dispatch.get(key)['prompt'] == 'two' and store.dispatch.get(key)['state'] == 'done')
+    live = Transcript()
+    for _k, event in [e for e in events if e[0] == key]:
+        live.apply(event)
+    second = [i for i in live.items if i['kind'] == 'user'][1]['id']   # the id it had while streaming
+    sender.edit(key, second, 0, 'TWO')
+    wait(lambda: store.dispatch.get(key)['prompt'] == 'TWO' and store.dispatch.get(key)['state'] == 'done')
+    assert user_texts(sender, key) == ['one', 'TWO']
+    sender.edit(key, 'gone', 1, 'ONE')   # the first message: the session is emptied, not replaced
+    wait(lambda: store.dispatch.get(key)['prompt'] == 'ONE' and store.dispatch.get(key)['state'] == 'done')
+    assert user_texts(sender, key) == ['ONE']
+    assert notes == [] and list(store.dispatch.rows) == [key]
+    if client == 'grok-cli':
+        rewinds = [l['rewind'] for l in lines(tmp / 'grok.log') if 'rewind' in l]
+        assert [r['targetPromptIndex'] for r in rewinds] == [1, 0]
+        assert {r['mode'] for r in rewinds} == {'conversation_only'}
+
+
+def test_claude_edit_resumes_before_the_message(setup, monkeypatch):
+    store, sender, notes, events, started, work, tmp = setup
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp / 'claude-config'))
+    write_transcript(tmp / 'claude-config' / 'projects' / 'w')
+    store.dispatch.track('claude-code', 'old', owner=OWNER, title='Old', directory=str(work), state='done',
+                         settings={'model': 'opus'})
+    store.dispatch.rename('claude-code:old', 'Mine')
+    store.dispatch.set_pinned('claude-code:old', True)
+    sender.edit('claude-code:old', 'u2', 0, 'again')
+    wait(lambda: store.dispatch.get('claude-code:old')['prompt'] == 'again'
+         and store.dispatch.get('claude-code:old')['state'] == 'done')
+    argv = next(l['argv'] for l in lines(tmp / 'claude.log') if 'argv' in l)
+    assert argv[argv.index('--resume') + 1] == 'old' and argv[argv.index('--resume-session-at') + 1] == 'a2'
+    # The first message has nothing to resume at: a new session takes the conversation's place.
+    replaced = []
+    sender.edit('claude-code:old', 'u1', 1, 'from the top', replaced=lambda old, new: replaced.append((old, new)))
+    wait(lambda: replaced and store.dispatch.get(replaced[0][1])['state'] == 'done')
+    old, new = replaced[0]
+    row = store.dispatch.get(new)
+    assert old == 'claude-code:old' and new != old and row['prompt'] == 'from the top'
+    assert row['title'] == 'Mine' and row['custom_title'] and row.get('pinned') and row['model'] == 'opus'
+    argv = [l['argv'] for l in lines(tmp / 'claude.log') if 'argv' in l][-1]
+    assert '--session-id' in argv and '--resume-session-at' not in argv
+    assert notes == []
+
+
+def test_opencode_edit_reverts_then_sends(tmp_path):
+    from tests.test_dispatch import FakeOpenCode, PASSWORD
+    from agentdock.dispatch.opencode import OpenCodeService
+    fake = FakeOpenCode()
+    service = OpenCodeService(fake.url, PASSWORD)
+    store = QuestionStore(tmp_path / 'data')
+    notes = []
+    sender = Dispatcher(store.dispatch, notify=notes.append, connect=lambda _s: service, adapters=[])
+    fake.sessions['ses_1'] = {'id': 'ses_1', 'title': 'Hi', 'location': {'directory': '/w'}}
+    fake.messages['ses_1'] = [{'id': 'u1', 'type': 'user', 'text': 'one'}, {'id': 'a1', 'type': 'assistant', 'content': []},
+                              {'id': 'u2', 'type': 'user', 'text': 'two'}, {'id': 'a2', 'type': 'assistant', 'content': []}]
+    store.dispatch.track('opencode', 'ses_1', owner=OWNER, title='Hi', directory='/w', state='done')
+    sender.edit('opencode:ses_1', 'live-id', 0, 'TWO')
+    wait(lambda: any(c[1] == 'api/session/ses_1/prompt' for c in fake.calls))
+    assert ('POST', 'api/session/ses_1/revert/stage', {'messageID': 'u2', 'files': False}) in fake.calls
+    assert [m.get('text') for m in fake.messages['ses_1'] if m['type'] == 'user'] == ['one', 'TWO']
+    assert notes == []
     sender.close()
     fake.server.shutdown()
 

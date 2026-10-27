@@ -103,6 +103,8 @@ class ChatWindow(QWidget):
         self.bridge.live.connect(self.conversation.live_event)
         self.bridge.started.connect(self.open_conversation)
         self.bridge.deleted.connect(self._deleted)
+        self.bridge.replaced.connect(self._replaced)
+        self.bridge.reload.connect(lambda key: key == self.conversation.key and self.conversation.reload())
         self.bridge.options.connect(self._options_arrived)
         self.bridge.git.connect(self.conversation.git_arrived)
         self.git_windows: dict[str, QDialog] = {}
@@ -263,6 +265,17 @@ class ChatWindow(QWidget):
             self.show_new()
         self.refresh()
 
+    def _replaced(self, old: str, new: str) -> None:
+        """An edited first message started the conversation over in a new session; the old one leaves the list."""
+        row = self.store.dispatch.get(old)
+        if row is not None:
+            self.store.remove_conversation(row['owner'], work_id(row))
+        if self.ui_state.get('last_conversation') == old:
+            self.ui_state['last_conversation'] = new
+        if self.current_key == old:
+            self.open_conversation(new)
+        self.refresh()
+
     def import_conversations(self, project: str | None = None) -> None:
         row = self.store.dispatch.get(self.current_key) if self.current_key else None
         agent = (row or {}).get('client') or ((self.projects.get(project) or {}).get('agent') if project else None) \
@@ -306,7 +319,7 @@ class ChatWindow(QWidget):
         dialog.activateWindow()
 
     def resume_in_terminal(self, key: str) -> None:
-        """Continue the session in the client's own terminal UI. The one place a window is wanted."""
+        """Continue the session in the client's own terminal UI, explicitly requested by the user."""
         row = self.store.dispatch.get(key)
         command = resume_command(row) if row else None
         if not command:
@@ -472,6 +485,9 @@ class ChatWindow(QWidget):
             self.frameless = frameless
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint, frameless)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, frameless)
+            # Turning transparency on also set "no system background"; turning it off does not undo that,
+            # and the plain window then shows black wherever nothing paints.
+            self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, frameless)
             if shown:
                 self.setGeometry(geometry)
                 self.setWindowState(state & ~Qt.WindowState.WindowMinimized)

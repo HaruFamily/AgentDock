@@ -226,6 +226,30 @@ def fork_transcript(path: Path, message_id: str, title: str) -> str:
     return new_id
 
 
+def rewind_point(path: Path, message_id: str) -> str | None:
+    """The entry a conversation resumes at to drop the user message `message_id` and all after it: the end
+    of the turn before it (notes injected with the message go too). None when it was the first message."""
+    by_id: dict[str, dict] = {}
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict) and isinstance(entry.get('uuid'), str):
+                    by_id[entry['uuid']] = entry
+    except OSError as e:
+        raise ClientError(f'無法讀取 Claude Code 對話紀錄：{e}') from e
+    entry = by_id.get(message_id)
+    if entry is None or entry.get('type') != 'user':
+        raise ClientError('找不到要編輯的那則訊息。')
+    parent = by_id.get(entry.get('parentUuid') or '')
+    while parent is not None and parent.get('type') == 'user' and parent.get('isMeta'):
+        parent = by_id.get(parent.get('parentUuid') or '')
+    return parent['uuid'] if parent is not None else None
+
+
 def list_transcripts(limit: int = 200) -> list[dict]:
     """Claude Code's saved sessions: title (custom, AI or first prompt), folder and time."""
     files = []
@@ -268,7 +292,8 @@ def list_transcripts(limit: int = 200) -> list[dict]:
 class Session:
     """One running claude process for one conversation."""
 
-    def __init__(self, owner: 'ClaudeClient', sid: str, directory: str, fresh: bool, settings: dict | None = None):
+    def __init__(self, owner: 'ClaudeClient', sid: str, directory: str, fresh: bool, settings: dict | None = None,
+                 resume_at: str = ''):
         self.owner, self.sid = owner, sid
         settings = settings or {}
         self.pending: dict[str, dict] = {}       # control request id -> can_use_tool request
@@ -285,7 +310,11 @@ class Session:
         self._next = 0
         args = [*owner.command(), '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json',
                 '--include-partial-messages', '--permission-prompt-tool', 'stdio',
+                # Only makes 全部允許 selectable mid-session; without it set_permission_mode is refused.
+                '--allow-dangerously-skip-permissions',
                 '--session-id' if fresh else '--resume', sid]
+        if resume_at and not fresh:   # an edited message: continue from the turn before it
+            args += ['--resume-session-at', resume_at]
         for flag, name in (('--model', 'model'), ('--effort', 'effort'), ('--permission-mode', 'mode')):
             if settings.get(name):
                 args += [flag, str(settings[name])]
@@ -565,6 +594,7 @@ class ClaudeClient(Adapter):
         self._lock = threading.Lock()
         self._sessions: dict[str, Session] = {}
         self._fresh: set[str] = set()
+        self._resume_at: dict[str, str] = {}   # session -> entry the next start resumes at (an edited message)
         self._closed = False
         self._options: dict = {}
         self._probed = False
@@ -592,7 +622,8 @@ class ClaudeClient(Adapter):
             # A new session stays "fresh" until Claude Code has started it, so a failed first start
             # does not leave a session id that --resume cannot find.
             session = Session(self, sid, row.get('directory') or os.path.expanduser('~'), sid in self._fresh,
-                              {name: row.get(name, '') for name in ('model', 'effort', 'mode')})
+                              {name: row.get(name, '') for name in ('model', 'effort', 'mode')},
+                              self._resume_at.pop(sid, ''))
             self._sessions[sid] = session
             return session
 
@@ -706,6 +737,30 @@ class ClaudeClient(Adapter):
             raise ClientError('找不到 Claude Code 的對話紀錄。')
         new_id = fork_transcript(path, message_id, f"{row.get('title', '')}（分叉）")
         return new_id
+
+    def rewind(self, row: dict, message_id: str) -> bool:
+        """Claude Code keeps every branch in the transcript: the next start resumes at the turn before the
+        message (--resume-session-at), and the new message continues from there."""
+        sid = row['session_id']
+        path = transcript_file(row.get('directory', ''), sid)
+        if path is None:
+            raise ClientError('找不到 Claude Code 的對話紀錄。')
+        at = rewind_point(path, message_id)
+        if at is None:
+            return False
+        session = self._live(sid)
+        if session is not None:
+            if session.busy:
+                raise ClientError('這個對話還在執行。')
+            self.forget(session)
+            session.close()
+            try:
+                session.process.proc.wait(5)
+            except Exception:
+                pass
+        with self._lock:
+            self._resume_at[sid] = at
+        return True
 
     def sessions(self) -> list[dict]:
         return list_transcripts()

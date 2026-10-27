@@ -419,6 +419,7 @@ class _Worker(QObject):
     done = Signal(str, str)  # (key, message; "!" prefix = error)
     updates = Signal(dict)  # {key: latest_tag}
     tested = Signal(str, str)  # (key, report)
+    signed_in = Signal(str, str)  # (key, error or "")
 
 
 # ============================================================================ building blocks
@@ -651,6 +652,7 @@ class AgentsView(QWidget):
         self._worker.done.connect(self._download_done)
         self._worker.updates.connect(lambda _u: self.refresh())
         self._worker.tested.connect(self._test_done)
+        self._worker.signed_in.connect(self._google_login_done)
         self._notice_timer = QTimer(self, singleShot=True, interval=8000)
         self._restart_timer = QTimer(self, interval=30000)
         self._restart_timer.timeout.connect(self.check_restarts)
@@ -1357,8 +1359,26 @@ class AgentsView(QWidget):
         table.setColumnStretch(1, 1)
         card.lay.addLayout(table)
         card.lay.addStretch(1)
+        from agentdock.account_login import LOGIN_ARGS
+        if row['kind'] in LOGIN_ARGS:
+            actions = QHBoxLayout()
+            for title, switch in (('登入', False), ('切換帳號', True)):
+                action = button(title, flat=True)
+                action.clicked.connect(lambda _=False, k=row['kind'], s=switch: self._account_login(k, s))
+                actions.addWidget(action)
+            actions.addStretch(1)
+            card.lay.addLayout(actions)
         card.setToolTip(row["path"])
         return card
+
+    def _account_login(self, kind: str, switch: bool) -> None:
+        from agentdock.account_login import open_login
+        try:
+            open_login(kind, switch)
+        except (OSError, ValueError) as e:
+            self.info(f'無法開啟登入：{e}', error=True)
+            return
+        self.info('帳號變更會套用至共用此 CLI 的程式；完成後請重啟 AgentDock。', sticky=True)
 
     def _add_agent_card(self) -> QWidget:
         from agentdock.ui.settings_page import Card
@@ -1839,6 +1859,9 @@ class AgentsView(QWidget):
             if installed:
                 menu.addAction("重新下載", lambda e=entry: self._download(e))
             menu.addSeparator()
+        from agentdock import oauth_login
+        if oauth_login.scopes(entry) and key not in self.busy:
+            menu.addAction("登入 Google", lambda e=entry: self._google_login(e))
         menu.addAction("測試（各 Agent 目前的設定）", lambda k=key: self._test_mcp(k))
         menu.addAction("編輯…", lambda e=entry: self._edit_mcp(e))
         menu.addAction("刪除…", lambda k=key: self.guard(lambda: self._delete_mcp(k)))
@@ -2281,6 +2304,36 @@ class AgentsView(QWidget):
         else:
             self.library.remove_extension(key)
             self.info(f"已從擴充庫刪除 {key}。")
+
+    # ------------------------------------------------------------------ Google login
+    def _google_login(self, entry: dict[str, Any]) -> None:
+        from agentdock import oauth_login
+        key = entry["key"]
+        try:
+            oauth_login.login_command(entry, self.library.secrets())
+        except ValueError as e:
+            self.info(str(e), error=True)
+            return
+        self.busy.add(key)
+        self.info(f"等待 {key} 的 Google 登入…", sticky=True)
+        self.refresh()
+
+        def run() -> None:
+            try:
+                oauth_login.login(entry, self.library.secrets())
+                self._worker.signed_in.emit(key, "")
+            except Exception as e:
+                self._worker.signed_in.emit(key, str(e) or type(e).__name__)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _google_login_done(self, key: str, error: str) -> None:
+        self.busy.discard(key)
+        self.refresh()
+        if error:
+            self.info(f"{key} 登入失敗：{error}", error=True)
+        else:
+            self.info(f"{key} 已登入 Google；已在執行的客戶端要重開才會改用。")
 
     # ------------------------------------------------------------------ test
     def _test_mcp(self, key: str) -> None:

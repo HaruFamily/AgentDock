@@ -156,6 +156,11 @@ class OpenCodeService:
         body = {'before': before} if before else {}
         return self.request('POST', f'/api/session/{_q(session_id)}/fork', body)['data']['id']
 
+    def revert(self, session_id: str, message_id: str) -> None:
+        """Drop `message_id` and everything after it; files stay as they are."""
+        self.request('POST', f'/api/session/{_q(session_id)}/revert/stage', {'messageID': message_id, 'files': False})
+        self.request('POST', f'/api/session/{_q(session_id)}/revert/commit', {})
+
     def sessions(self, limit: int = 100) -> list[dict]:
         page = self.request('GET', f"/api/session?{urllib.parse.urlencode({'limit': limit, 'order': 'desc'})}") or {}
         out = []

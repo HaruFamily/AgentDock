@@ -72,6 +72,13 @@ class Transcript:
         self.items = older + self.items
         return older
 
+    def cut(self, item_id: str) -> list[dict]:
+        """Drop the item `item_id` and everything after it; returns what was dropped."""
+        index = next((i for i, item in enumerate(self.items) if item['id'] == item_id), len(self.items))
+        dropped, self.items = self.items[index:], self.items[:index]
+        self._ids.difference_update(item['id'] for item in dropped)
+        return dropped
+
     def _assistant(self, mid: str) -> dict:
         for item in reversed(self.items):
             if item['kind'] == 'assistant' and item['id'] == mid:

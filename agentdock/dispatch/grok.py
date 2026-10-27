@@ -30,6 +30,7 @@ CLIENT = 'grok-cli'
 TIMEOUT = 60
 LOAD_TIMEOUT = 120
 ASK = '_x.ai/ask_user_question'
+REWIND = '_x.ai/rewind/execute'
 # Set when a session is created (ACP session/new `_meta`); Grok has no way to switch them afterwards.
 MODES = [{'id': 'ask', 'label': '詢問'}, {'id': 'auto', 'label': '自動判斷'}, {'id': 'yolo', 'label': '全部允許'}]
 DECISIONS = {'once': ('allow_once',), 'always': ('allow_always', 'allow_once'), 'reject': ('reject_once', 'reject_always')}
@@ -147,6 +148,14 @@ class Record:
             if message['id'] == message_id:
                 return max(index, 0)
         raise ClientError('找不到要分叉的那則訊息。')
+
+    def cut(self, message_id: str) -> None:
+        """Forget the message `message_id` and everything after it (after a rewind)."""
+        index = next((i for i, m in enumerate(self.messages) if m['id'] == message_id), len(self.messages))
+        for message in self.messages[index:]:
+            self._by_id.pop(message['id'], None)
+        self.messages = self.messages[:index]
+        self.current = ''
 
     def apply(self, update: dict, meta: dict, emit: Callable[..., None] | None = None) -> None:
         kind = update.get('sessionUpdate')
@@ -558,6 +567,21 @@ class GrokClient(Adapter):
         if not new:
             raise ClientError('Grok 沒有建立分叉。')
         return new
+
+    def rewind(self, row: dict, message_id: str) -> bool:
+        """Grok's own /rewind, conversation only (files stay as they are)."""
+        sid = row['session_id']
+        if self.running(sid):
+            raise ClientError('這個對話還在執行。')
+        record = self._load(row)
+        prompts = [m['id'] for m in record.messages if m['type'] == 'user']
+        if message_id not in prompts:
+            raise ClientError('找不到要編輯的那則訊息。')
+        self._call(self._ensure(), REWIND, {'sessionId': sid, 'targetPromptIndex': prompts.index(message_id),
+                                            'mode': 'conversation_only'})
+        with self._lock:
+            record.cut(message_id)
+        return True
 
     def sessions(self) -> list[dict]:
         out = []

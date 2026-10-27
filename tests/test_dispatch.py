@@ -25,6 +25,7 @@ class FakeOpenCode:
         self.version = version
         self.sessions, self.permissions, self.forms, self.messages = {}, {}, {}, {}
         self.active, self.listeners, self.calls = set(), [], []
+        self.staged = {}
         self.lock = threading.Lock()
         fake = self
 
@@ -135,6 +136,13 @@ class FakeOpenCode:
                     cut = ids.index(body['before']) if body.get('before') in ids else len(ids)
                     fake.messages[new] = messages[:cut]
                     return self._json(200, {'data': fake.sessions[new]})
+                if parts[3:] == ['revert', 'stage']:
+                    fake.staged[sid] = body['messageID']
+                    return self._json(200, {'data': {}})
+                if parts[3:] == ['revert', 'commit']:
+                    ids = [m['id'] for m in fake.messages.get(sid, [])]
+                    fake.messages[sid] = fake.messages[sid][:ids.index(fake.staged.pop(sid))]
+                    return self._json(204)
                 if parts[3] == 'prompt':
                     fake.prompt(sid, body['text'])
                     return self._json(200, {'data': {'id': 'msg_u', 'type': 'user'}})

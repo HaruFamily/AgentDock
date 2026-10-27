@@ -583,6 +583,20 @@ class CodexClient(Adapter):
             self.call('thread/revert', {'threadId': new, 'beforeTurnId': turns[index + 1]['id']})
         return new
 
+    def rewind(self, row: dict, message_id: str) -> bool:
+        """thread/revert to just before the turn that the message started."""
+        thread = row['session_id']
+        if self.running(thread):
+            raise ClientError('這個對話還在執行。')
+        self._load(row)
+        turns = (self.call('thread/read', {'threadId': thread, 'includeTurns': True}).get('thread') or {}).get('turns') or []
+        turn = next((t for t in turns
+                     if any(isinstance(it, dict) and it.get('id') == message_id for it in t.get('items') or [])), None)
+        if turn is None:
+            raise ClientError('找不到要編輯的那則訊息。')
+        self.call('thread/revert', {'threadId': thread, 'beforeTurnId': turn['id']})
+        return True
+
     def sessions(self) -> list[dict]:
         out = []
         for t in self.call('thread/list', {'limit': 100}).get('data') or []:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import html
+import json
 import os
 import re
 import subprocess
@@ -12,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontDatabase, QIcon, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -32,7 +33,7 @@ from agentdock.ui.question_text import QuestionText
 from agentdock.ui.web_transcript import tool_name
 from agentdock.ui.widgets import ElidedLabel, icon_button
 from agentdock.ui.chat_common import COLUMN, context_text, hidden, icon, mini_button, theme_color
-from agentdock.ui.chat_messages import CodeBlock, MessageWidget, RichText, ToolRow
+from agentdock.ui.chat_messages import CodeBlock, MessageWidget, ReasoningRow, RichText, ToolRow
 from agentdock.ui.chat_composer import Composer
 
 
@@ -67,6 +68,7 @@ class ConversationView(QWidget):
         self.transcript = Transcript()
         self.widgets: dict[str, MessageWidget] = {}
         self.open_tools: set[str] = set()   # folded tool runs the user opened, by their first tool's key
+        self.open_process: set[str] = set()   # finished answers whose steps the user opened, by first item id
         self.older: str | None = None
         self.loading = False
         self._pending_items: set[str] = set()
@@ -165,6 +167,9 @@ class ConversationView(QWidget):
         outer.addWidget(self.request_area)
         self.scroll.verticalScrollBar().rangeChanged.connect(self._range_changed)
         self._stick = True
+        self._anchor = None   # (message, its top on screen) kept while its editor opens or closes
+        self._anchor_timer = QTimer(self, singleShot=True, interval=400)
+        self._anchor_timer.timeout.connect(lambda: setattr(self, '_anchor', None))
         self.scroll.verticalScrollBar().valueChanged.connect(self._scrolled)
         self.latest = QPushButton(self.scroll)
         self.latest.setObjectName('LatestButton')
@@ -268,7 +273,11 @@ class ConversationView(QWidget):
         if action == 'copy':
             QApplication.clipboard().setText(arg)
         elif action == 'edit':
-            self.edit_text(next((i['text'] for i in self.transcript.items if i['kind'] == 'user' and i['id'] == arg), ''))
+            try:
+                message_id, text = json.loads(arg)
+            except (ValueError, TypeError):
+                return
+            self.submit_edit(str(message_id), str(text))
         elif action == 'fork':
             self.fork(arg)
         elif action == 'retry':
@@ -292,6 +301,7 @@ class ConversationView(QWidget):
             widget.deleteLater()
         self.widgets = {}
         self.open_tools = set()
+        self.open_process = set()
         self.older = None
         self.loading = True
         self._stick = True
@@ -427,8 +437,9 @@ class ConversationView(QWidget):
                 self._flush.start()
 
     def _widget(self, item: dict) -> MessageWidget:
-        widget = MessageWidget(item)
-        widget.edit_requested.connect(self.edit_text)
+        widget = MessageWidget(item, resolve=self.file_path)
+        widget.edit_submitted.connect(self.submit_edit)
+        widget.keep_place = lambda change, w=widget: self._keep_place(w, change)
         widget.retry_requested.connect(self.retry)
         widget.fork_requested.connect(self.fork)
         self.widgets[item['id']] = widget
@@ -459,14 +470,35 @@ class ConversationView(QWidget):
             self.window_.dispatcher.send(self.key, text)
             self._stick = True
 
-    def edit_text(self, text: str) -> None:
-        """Put an earlier message back in the box to change and send it again."""
-        box = self.composer.text
-        box.setPlainText(text)
-        box.setFocus()
-        cursor = box.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        box.setTextCursor(cursor)
+    def submit_edit(self, message_id: str, text: str) -> None:
+        """A message edited in place: it and everything after it are replaced by the new text."""
+        row = self.window_.store.dispatch.get(self.key) if self.key else None
+        if row is None or not text.strip():
+            return
+        if row['state'] == 'running':
+            self.window_.notify('這個對話還在執行，請先停止。')
+            return
+        key, bridge = self.key, self.window_.bridge
+        users = [i['id'] for i in self.transcript.items if i['kind'] == 'user']
+        back = len(users) - 1 - users.index(message_id) if message_id in users else -1
+        self._cut(message_id)
+        self._anchor = None   # from here the list follows the new answer
+        self._stick = True
+        self.window_.dispatcher.edit(key, message_id, back, text, [], replaced=bridge.replaced.emit,
+                                     failed=lambda: bridge.reload.emit(key))
+
+    def _cut(self, message_id: str) -> None:
+        """The edited message and what followed leave the page at once; the new answer streams in after."""
+        for item in self.transcript.cut(message_id):
+            widget = self.widgets.pop(item['id'], None)
+            if widget is not None:
+                self.items.removeWidget(widget)
+                widget.deleteLater()
+        if self.use_web:
+            self._render_web()
+        else:
+            self._group.start()
+            self._sync_retry()
 
     def _flush_items(self) -> None:
         if self.use_web:
@@ -481,8 +513,10 @@ class ConversationView(QWidget):
 
     def _regroup(self) -> None:
         """Consecutive shown assistant steps form one card; copying from it copies the whole answer."""
-        shown = [w for w in (self.items.itemAt(i).widget() for i in range(self.items.count()))
-                 if isinstance(w, MessageWidget) and (w.folded or not hidden(w))]
+        every = [w for w in (self.items.itemAt(i).widget() for i in range(self.items.count()))
+                 if isinstance(w, MessageWidget)]
+        self._fold_process(every)
+        shown = [w for w in every if w.folded or not hidden(w)]
         self._fold_tools(shown)
         shown = [w for w in shown if not w.folded]
         groups: list[list[MessageWidget]] = []
@@ -499,6 +533,49 @@ class ConversationView(QWidget):
         for members in groups:
             for widget in members:
                 widget.copy_text = lambda g=members: '\n\n'.join(t for t in (w.plain_text() for w in g) if t)
+
+    def _fold_process(self, widgets: list[MessageWidget]) -> None:
+        """As on the web page: while the Agent works every step shows (thinking open). Once an answer is done,
+        everything up to its last tool or thought, the remarks in between too, folds into '處理了 N 個步驟',
+        with a rule above the rest of the answer."""
+        row = self.window_.store.dispatch.get(self.key) if self.key else None
+        running = row is not None and row['state'] == 'running'
+        turns: list[list[MessageWidget]] = [[]]
+        for widget in widgets:
+            if widget.item['kind'] == 'assistant':
+                turns[-1].append(widget)
+            elif turns[-1]:
+                turns.append([])
+        live_turn = turns[-1] if running and turns[-1] else None
+        for turn in turns:
+            head = next((w for w in turn if w.has_content()), None)
+            if head is None:
+                continue
+            live = turn is live_turn
+            parts = [(w, p['key'], p['type']) for w in turn for p in w.item.get('parts', [])
+                     if p['key'] in w.parts and (p['type'] == 'tool' or str(p.get('text') or '').strip())]
+            last = max((i for i, (_w, _k, kind) in enumerate(parts) if kind != 'text'), default=-1)
+            fold = not live and last >= 0
+            key = head.item['id']
+            opened = key in self.open_process
+            for index, (widget, part_key, kind) in enumerate(parts):
+                part = widget.parts[part_key]
+                if isinstance(part, ReasoningRow):
+                    part.set_live(live)
+                part.setVisible(not (fold and index <= last and not opened))
+            head.on_process = lambda k=key: (self.open_process.symmetric_difference_update({k}), self._regroup())
+            head.set_process(sum(1 for _w, _k, kind in parts[:last + 1] if kind != 'text') if fold else 0, opened)
+            answer = parts[last + 1] if fold and last + 1 < len(parts) else None
+            for widget in turn:
+                widget.set_rule(answer[1] if answer and answer[0] is widget else None)
+            # A step whose parts all went into the folded line takes no space; the first keeps the line.
+            for widget in turn:
+                if not widget.has_content():
+                    continue
+                showing = (widget.process is not None and not hidden(widget.process)) or any(
+                    not hidden(p) for p in widget.parts.values())
+                if widget.isHidden() == showing and not widget.folded:
+                    widget.setVisible(showing)
 
     def _fold_tools(self, shown: list[MessageWidget]) -> None:
         """Two or more tools with nothing shown between them (even across steps) fold into one line on the
@@ -525,8 +602,9 @@ class ConversationView(QWidget):
         for widget in shown:
             if widget.item['kind'] != 'assistant' or not widget.has_content():
                 continue
-            visible = any(not hidden(p) and not (isinstance(p, ToolRow) and p.folded and not p.heads)
-                          for p in widget.parts.values())
+            visible = (widget.process is not None and not hidden(widget.process)) or any(
+                not hidden(p) and not (isinstance(p, ToolRow) and p.folded and not p.heads)
+                for p in widget.parts.values())
             if widget.folded == visible:
                 widget.folded = not visible
                 widget.setVisible(visible)
@@ -565,6 +643,8 @@ class ConversationView(QWidget):
             if self.last_state == 'running':
                 self.check_git()   # the agent may have changed files
             self.last_state = row['state']
+            if not self.use_web:
+                self._group.start()   # a finished answer folds its steps
         running = row['state'] == 'running' and not row.get('permissions') and not row.get('forms')
         self.composer.set_running(row['state'] == 'running')
         if not self.loading:
@@ -680,9 +760,32 @@ class ConversationView(QWidget):
         self._fit_requests()
 
     def _range_changed(self, _minimum: int, maximum: int) -> None:
-        if self._stick:
+        if self._anchor is not None:
+            self._restore_anchor()
+        elif self._stick:
             self.scroll.verticalScrollBar().setValue(maximum)
         self._place_latest()
+
+    def _keep_place(self, widget: QWidget, change) -> None:
+        """Change a message (open or close its editor) without the list moving under the reader: its top
+        stays where it was on screen while the layout settles."""
+        self._anchor = (widget, widget.mapTo(self.scroll.viewport(), QPoint(0, 0)).y())
+        change()
+        self._restore_anchor()
+        QTimer.singleShot(0, self._restore_anchor)
+        self._anchor_timer.start()
+
+    def _restore_anchor(self) -> None:
+        if self._anchor is None:
+            return
+        widget, top = self._anchor
+        try:
+            now = widget.mapTo(self.scroll.viewport(), QPoint(0, 0)).y()
+        except RuntimeError:   # the message is gone
+            self._anchor = None
+            return
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.value() + now - top)
 
 
 class FindBar(QFrame):

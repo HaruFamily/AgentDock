@@ -300,6 +300,105 @@ class Dispatcher:
             done(new_key)
         self._work(run, '無法分叉', key)
 
+    def edit(self, key: str, message_id: str, back: int, text: str, files: list[str] | None = None,
+             replaced: Callable[[str, str], None] = lambda _old, _new: None,
+             failed: Callable[[], None] = lambda: None) -> None:
+        """Send `text` in place of an earlier message: the client drops that message and everything after it.
+
+        `back` is how many of the user's messages come after it, for a message the window only knows by
+        the id it had while streaming. A client that cannot empty a session (Claude Code, at the first
+        message) starts a new one in its place: `replaced(old key, new key)`. `failed()` when it did not go
+        through, so the window shows what the client really holds.
+        """
+        def run():
+            row = self._row(key)
+            if row['state'] == 'running':
+                raise ValueError('這個對話還在執行，請先停止。')
+            adapter = self._adapter(row)
+            if adapter is not None:
+                prompts = [m['id'] for m in self._all_messages(row, adapter) if m.get('type') == 'user']
+                kept = adapter.rewind(row, self._pick(prompts, message_id, back))
+                if not kept:
+                    self._start_over(row, adapter, text, files or [], replaced)
+                    return
+                self.store.update(key, state='running', prompt=text, error='')
+                try:
+                    adapter.prompt(row, text, files or [])
+                except ClientError as e:
+                    self.store.update(key, state='failed', error=str(e))
+                    raise
+                return
+            service = self._service_for(start=True)
+            prompts = [m['id'] for m in self._opencode_messages(service, row['session_id'])
+                       if m.get('type') == 'user']
+            service.revert(row['session_id'], self._pick(prompts, message_id, back))
+            with self._listening():
+                self.store.update(key, state='running', prompt=text, error='')
+                try:
+                    service.prompt(row['session_id'], text, files or [])
+                except OpenCodeError as e:
+                    self.store.update(key, state='failed', error=str(e))
+                    raise
+
+        def guarded():
+            try:
+                run()
+            except Exception:
+                failed()
+                raise
+        self._work(guarded, '無法編輯訊息', key)
+
+    @staticmethod
+    def _pick(prompts: list[str], message_id: str, back: int) -> str:
+        if message_id in prompts:
+            return message_id
+        if 0 <= back < len(prompts):
+            return prompts[-1 - back]
+        raise ValueError('找不到要編輯的那則訊息。')
+
+    @staticmethod
+    def _all_messages(row: dict, adapter: Adapter) -> list[dict]:
+        messages: list[dict] = []
+        cursor = None
+        for _ in range(200):
+            page, cursor = adapter.history(row, cursor)
+            messages = page + messages
+            if not cursor:
+                break
+        return messages
+
+    @staticmethod
+    def _opencode_messages(service: OpenCodeService, session_id: str) -> list[dict]:
+        """Oldest first."""
+        messages: list[dict] = []
+        cursor = None
+        for _ in range(50):
+            page, cursor = service.message_page(session_id, 50, cursor)   # newest first
+            messages = list(reversed(page)) + messages
+            if not cursor:
+                break
+        return messages
+
+    def _start_over(self, row: dict, adapter: Adapter, text: str, files: list[str],
+                    replaced: Callable[[str, str], None]) -> None:
+        """A new session with the same name, place and settings takes the conversation's place."""
+        old = key_for(row['client'], row['session_id'])
+        settings = {name: row[name] for name in SETTINGS if row.get(name)}
+        session_id = adapter.new_session(row.get('directory', ''), settings)
+        key = key_for(adapter.client, session_id)
+        self.store.track(adapter.client, session_id, owner=row.get('owner', ''), title=row.get('title', ''),
+                         directory=row.get('directory', ''), prompt=text, project=row.get('project'), settings=settings)
+        if row.get('custom_title'):
+            self.store.rename(key, row['title'])
+        if row.get('pinned'):
+            self.store.set_pinned(key, True)
+        replaced(old, key)
+        try:
+            adapter.prompt(self._row(key), text, files)
+        except ClientError as e:
+            self.store.update(key, state='failed', error=str(e))
+            raise
+
     @staticmethod
     def _opencode_next(service: OpenCodeService, session_id: str, message_id: str) -> str | None:
         """OpenCode forks *before* a message: the user message after `message_id`'s turn (None keeps all)."""
