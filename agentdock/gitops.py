@@ -189,6 +189,29 @@ def branches(root: str) -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
+def numstat(root: str, staged: bool) -> dict[str, tuple[int, int]]:
+    """Lines added and removed per changed path (binary files left out); {} when git cannot say."""
+    try:
+        out = run(root, 'diff', '--numstat', '--no-color', '--no-ext-diff', '-M', *(['--cached'] if staged else []))
+    except GitError:
+        return {}
+    found = {}
+    for line in out.splitlines():
+        parts = line.split('\t', 2)
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        added, removed, path = parts
+        if ' => ' in path:   # a rename: 'old => new' or 'dir/{old => new}/file'
+            if '{' in path:
+                head, rest = path.split('{', 1)
+                inner, tail = rest.split('}', 1)
+                path = head + inner.split(' => ')[1] + tail
+            else:
+                path = path.split(' => ')[1]
+        found[path.replace('//', '/')] = (int(added), int(removed))
+    return found
+
+
 def checkout(root: str, branch: str, create: bool = False) -> None:
     if create:
         run(root, 'switch', '-c', branch)

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
@@ -160,7 +160,29 @@ class QuotaFloat(QFrame):
         self.view = QuotaView(model, compact=True)
         self.layout_.addWidget(self.view)
         self._drag: QPoint | None = None
+        # Over the window being worked in it steps back (see-through) until the pointer comes to it.
+        self._watch = QTimer(self, interval=500)
+        self._watch.timeout.connect(self._step_back)
         self.restyle()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._watch.start()
+
+    def hideEvent(self, event):  # noqa: N802
+        super().hideEvent(event)
+        self._watch.stop()
+
+    def _step_back(self) -> None:
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QApplication
+        active = QApplication.activeWindow()
+        covering = (active is not None and active is not self
+                    and active.frameGeometry().intersects(self.frameGeometry())
+                    and not self.frameGeometry().contains(QCursor.pos()) and self._drag is None)
+        opacity = 0.35 if covering else 1.0
+        if abs(self.windowOpacity() - opacity) > 0.01:
+            self.setWindowOpacity(opacity)
 
     def laced(self) -> bool:
         return theme.decorated('settings_card')

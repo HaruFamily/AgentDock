@@ -311,6 +311,29 @@ def test_steps_of_one_answer_share_one_card(window, tmp_path):
     assert all(w.joined == (False, False) for w in widgets.values() if w.item['kind'] == 'user')
 
 
+def test_tools_in_a_row_fold_into_one_line(window, tmp_path):
+    win, store, projects, notes, app = window
+    from agentdock.ui.chat_window import ToolRow, tool_name
+    store.dispatch.track('opencode', 's8', owner='o', title='t', directory=str(tmp_path), state='done')
+    win.open_conversation('opencode:s8')
+    view = win.conversation
+    view.loading = True
+    tool = lambda i: {'id': f'a{i}', 'type': 'assistant', 'content': [{'type': 'tool', 'id': f'c{i}', 'name': 'shell',
+                                                                       'state': {'status': 'completed'}}]}
+    view.history_loaded('opencode:s8', [{'id': 'u1', 'type': 'user', 'text': '問'}, tool(1), tool(2), tool(3),
+                                        {'id': 'a4', 'type': 'assistant', 'content': [{'type': 'text', 'text': '答'}]}],
+                        None)
+    view._regroup()
+    rows = [w.parts[f'tool:c{i}'] for i in (1, 2, 3) for w in [view.widgets[f'a{i}']]]
+    assert all(isinstance(r, ToolRow) for r in rows)
+    assert rows[0].heads and '3 個工具' in rows[0].summary.text()
+    assert all(r.folded for r in rows)
+    assert not view.widgets['a1'].folded and view.widgets['a2'].folded and view.widgets['a3'].folded
+    rows[0].summary.click()                                   # unfolds them all
+    assert not any(r.folded for r in rows) and not view.widgets['a3'].folded
+    assert tool_name('mcp__google-sheets__list_sheets') == 'google-sheets · list_sheets'
+
+
 def test_changing_to_a_framed_look_keeps_the_window_maximized(window, monkeypatch):
     from agentdock.ui import theme
     win, store, projects, notes, app = window

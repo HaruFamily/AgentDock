@@ -261,3 +261,17 @@ def test_context_text():
     assert context_text({'used': 50_000, 'limit': 200_000}) == '上下文 25%'
     assert context_text({'used': 12_345, 'limit': 0}) == '上下文 12k'
     assert context_text({'used': 1_500, 'limit': 0}) == '上下文 1.5k'
+
+
+def test_git_window_counts_lines_and_numbers_the_diff(repo, ui_app):
+    from agentdock.ui.git_view import diff_rows
+    (repo / 'a.txt').write_text('changed\nmore\n')
+    root = str(repo)
+    assert gitops.numstat(root, False)['a.txt'][0] == 2
+    assert gitops.numstat(root, True) == {}
+    rows, added, removed = diff_rows('@@ -3,2 +3,3 @@ def f\n x\n-<old>\n+new\n+more\n', 'a.py')
+    assert (added, removed) == (2, 1)
+    assert '<td class="ln">3</td><td class="ln">3</td>' in rows       # context: both sides
+    assert '<td class="ln">4</td><td class="ln"></td>' in rows        # removed: old side only
+    assert '<td class="ln"></td><td class="ln">5</td>' in rows        # second added line
+    assert '<old>' not in rows                                        # code is escaped

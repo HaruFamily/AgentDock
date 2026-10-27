@@ -66,52 +66,6 @@
    }
   },
   {
-   "key": "inbox-activity",
-   "type": "command",
-   "command": "{PYTHON}",
-   "path": false,
-   "description": "Inbox 授權提醒與近期活動。僅通知，仍在原客戶端批准；兩分鐘無事件顯示未知。Claude Desktop 一般聊天尚無接入。",
-   "hooks": {
-    "grok-cli": {
-     "event": "UserPromptSubmit",
-     "matcher": ".*",
-     "command": "{INBOX_HOOK}",
-     "events": ["PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "StopFailure", "StopCancelled", "SessionEnd"]
-    },
-    "codex": {
-     "event": "UserPromptSubmit",
-     "matcher": "*",
-     "command": "{INBOX_HOOK}",
-     "events": [
-      "PreToolUse",
-      "PostToolUse",
-      "PermissionRequest",
-      "Stop",
-      "Interrupt",
-      "SessionEnd"
-     ]
-    },
-    "claude-code": {
-     "event": "UserPromptSubmit",
-     "matcher": "*",
-     "command": "{INBOX_HOOK}",
-     "events": [
-      "PreToolUse",
-      "PostToolUse",
-      "PostToolUseFailure",
-      "Notification",
-      "Stop",
-      "StopFailure",
-      "SessionEnd"
-     ]
-    },
-    "opencode": {
-     "plugin": "inbox-activity.js",
-     "source": "{AGENTDOCK}/agentdock/assets/opencode/inbox-activity.js"
-    }
-   }
-  },
-  {
    "key": "codebase-memory-integration",
    "type": "command",
    "command": "{MCP}",
@@ -124,13 +78,19 @@
      "event": "SessionStart",
      "matcher": "*",
      "command": "{MCP}",
-     "events": ["SubagentStart"]
+     "events": [
+      "SubagentStart"
+     ]
     },
     "claude-code": {
      "event": "SessionStart",
      "matcher": "*",
      "command": "{MCP}",
-     "events": ["SubagentStart", "PreToolUse", "PostToolUse"]
+     "events": [
+      "SubagentStart",
+      "PreToolUse",
+      "PostToolUse"
+     ]
     },
     "opencode": {
      "plugin": "cbm-augment.ts",

@@ -1,5 +1,15 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-27：Git 視窗改成 VS Code／GitHub Desktop 的樣子（`ui/git_view.py`）：提交訊息與「提交 N 個檔案到 <分支>」在檔案清單上方；清單由 ChangeDelegate 自畫（彩色狀態字母、粗體檔名、淡灰資料夾、+/− 行數，滑鼠移上去出現 ＋／− 暫存或取消暫存，群組列的 ＋／− 作用於整組，取代「全部暫存」按鈕）；行數來自新的 gitops.numstat（`git diff --numstat`）。上方顯示「→ 上游 ↑N ↓N」，落後時「拉取 N 個提交」、領先時「推送 N 個提交」變成主按鈕，重新整理改成圖示。差異在網頁開啟時用 diff_page（GitHub 樣式：新舊行號、增刪底色、分段列、Pygments 依副檔名上色；超過 setHtml 上限就去掉顏色），否則仍是 QTextBrowser（測試讀它）。
+
+2026-10-27：chat_window.py（3300 行）依面板拆成 chat_common（常數、樣式表、圖示、小按鈕）、chat_sidebar、chat_messages（Qt 畫的訊息）、chat_composer、chat_conversation、chat_new、chat_dialogs，chat_window 只剩 ChatWindow 並轉匯出舊名稱（測試與 git_view 的匯入不變）。改哪塊只讀哪塊。標題列只留對話名稱與「⋯」（專案、Agent 標籤隱藏但仍更新），Git 狀態與上下文移到輸入框底列；輸入框內距縮小。網頁對話：Agent 工作中最新一段是 turn live（步驟照常顯示、思考展開），完成後最後一個工具／思考以前的內容（含中間的說明文字）收成最上面「處理了 N 個步驟」＋細線，下面才是答案；內文字級只隨文字大小放大一半，標題縮小。圖片附件：輸入框顯示縮圖（ImageChip），送出的訊息顯示圖片（ChatWindow.sent_files 記本次送出的路徑，其他找 data/attachments/chat；轉成 data: URL，頁面仍不讀檔）。Claude 的歷史只記「圖片」，無法還原。tests/test_dispatch.py::test_stop_running_task 偶爾逾時失敗（與這次無關，重跑會過）。
+
+2026-10-27：對話內容改用網頁顯示（`ui/web_transcript.py`，QtWebEngine＋markdown-it），排版接近 Codex／Claude 桌面版：真正的 CSS（標題、粗體、清單圓點、表格、引用、行內程式碼、Pygments 語法上色、程式碼區複製）。新依賴 `PySide6-Addons==6.11.2`（固定與 Essentials 同版本，否則 uv 會想升級 App 正在用的 Qt DLL）與 `markdown-it-py`。安全：markdown-it 關閉原始 HTML 與圖片；頁面不載入任何外部資源；按鈕是 `https://agentdock.invalid/<動作>/<參數>` 連結，由 acceptNavigationRequest 攔下交給 ConversationView._web_action（copy／edit／fork／retry／older）；使用者點答案裡的 http(s) 連結才用系統瀏覽器開。Python 每次把 Transcript 轉成 units（user／turn／end，turn＝相鄰的助理步驟），只送簽章變了的部分給頁面的 apply()，頁面保留 details 展開狀態與閱讀位置。只有 App 啟動時 `web_transcript.prepare()`（須在 QApplication 之前）且外觀沒有自己畫對話（canvas／bubble／code／reply）才用網頁；測試與本機可愛外觀沿用 Qt 元件。網頁模式下授權與問答卡片放在輸入框上方（request_area，最多半個頁面高）；Ctrl+F 用 Chromium 的 findText。
+
+2026-10-27：回答的 Markdown 加上樣式（question_text.dressed，改寫 Qt 自己產生的 HTML）：h1／h2 用強調色、h3 以下與粗體用近黑色、各級標題固定字級；行內程式碼為 Consolas＋淺灰底＋強調色；連結用強調色；引用改為整寬淡色底板；表格滿寬、淡色框線、表頭灰底粗體。表格與引用框上下留白，儲存格內段落不加段距。
+
+2026-10-27：對話視窗版面整理。標題列、訊息、搜尋列與輸入框共用一條欄寬（chat_window.COLUMN＝720）；標題列的標籤改成無框文字；連續兩個以上的工具（可跨步驟）收成一行「N 個工具」（ConversationView._fold_tools，展開狀態記在 open_tools；只剩被收起工具的步驟 MessageWidget.folded 不佔位），MCP 名稱顯示為「伺服器 · 工具」；訊息捲到輸入框上方時有漸層（Fade），「↓」置中在輸入框上方；Markdown 標題上方留白大於下方。新對話頁的「專案」「Agent」移進輸入框底列；推理選單加量表圖示。晨光・暖橘改為中性灰，橘色只留給送出與選取；極簡外觀的「新對話」改為白底框線鈕，自己的訊息改為淺灰底；窄欄與清單之間不畫線；清單選取列不再有 Windows 11 的強調條。額度浮動視窗蓋在使用中的視窗上時變半透明，滑鼠移上去恢復。字型維持 JhengHei：實測改用 Segoe UI 開頭或字型清單時，Qt 會失去中文粗體或改用細明體粗體。清單項目符號和文字之間的距離是 Qt 固定的，沒有改。完整 338 項測試通過；尚待使用者實機驗收。
+
 2026-10-24：晨光・暖橘在使用者的 Windows（深色模式）有很多黑色：樣式表沒蓋到的地方用了 Windows 深色調色盤。現在 Dock.apply_theme 設 app palette（theme.palette()）與 colorScheme（theme.is_dark()），tint_caption 對所有外觀設標題列顏色與 DWMWA_USE_IMMERSIVE_DARK_MODE，Dresser 對系統框對話框也 tint，選單／提示都 round_mask。
 
 2026-10-24：使用者要對話區像 Claude／Codex 桌面版，不要聊天室效果：本機主題不再有 draw_reply（回答不畫卡片與兔子），draw_bubble 沒有尾巴，#ToolRow 無框透明。分組（_regroup）仍用來決定間距與整段複製。

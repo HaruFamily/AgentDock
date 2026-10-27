@@ -38,25 +38,25 @@ THEMES['white_orange'] = {
     'ACCENT': '#ff914d',
     'ACCENT_DEEP': '#ee7d3b',
     'ACCENT_SOFT': '#fff1e7',
-    'LAVENDER': '#eef2f6',
+    # Neutral greys: orange is the only colour, so it marks what matters (send, the selected row).
+    'LAVENDER': '#f1f2f4',
     'ALERT': '#95600d',
-    'INK': '#40556b',
-    'MUTED': '#617287',
-    'LINE': '#d4dde5',
-    'CANVAS': '#f7f8fa',
+    'INK': '#2d333b',
+    'MUTED': '#6a727c',
+    'LINE': '#e2e4e8',
+    'CANVAS': '#f7f7f8',
     'CARD': '#ffffff',
     'DANGER': '#b94343',
     'OK': '#36745c',
-    'HOVER': '#edf2f6',
-    'DIM': '#8996a5',
+    'HOVER': '#eff0f2',
+    'DIM': '#9aa0a8',
     'ERR_BG': '#fff0ef',
     'WARN_BG': '#fff3da',
     'WARN_INK': '#875709',
     'GOLD': '#ff914d',
     'HEADER_A': '#ffffff',
-    'HEADER_B': '#f0f3f7',
+    'HEADER_B': '#f3f4f6',
 }
-
 NAME = "clean"
 # module-level names other modules read (updated by apply)
 ACCENT = ACCENT_DEEP = ACCENT_SOFT = LAVENDER = ALERT = INK = MUTED = LINE = CANVAS = CARD = DANGER = OK = ""

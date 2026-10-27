@@ -83,6 +83,42 @@ def cjk_emphasis(text):
     return '\n'.join(lines)
 
 
+HEADING_SIZES = {1: 22, 2: 19, 3: 17, 4: 15, 5: 15, 6: 15}
+
+
+def dressed(html):
+    """Qt's Markdown HTML with a look: coloured headings, bold that stands out, code chips, framed tables
+    with a shaded header row, quotes on a tinted panel, links in the accent. Only Qt's own markup is
+    rewritten (the input never reaches here as HTML)."""
+    strong = '#ffffff' if theme.is_dark() else '#111418'
+
+    def heading(m):
+        level = int(m.group(1))
+        colour = theme.ACCENT_DEEP if level <= 2 else strong
+        inner = re.sub(r'font-size:[^;]*;', f'font-size:{theme.px(HEADING_SIZES[level])}px;', m.group(3))
+        inner = inner.replace('font-weight:700;', f'font-weight:700; color:{colour};')
+        return f'<h{level}{m.group(2)}>{inner}</h{level}>'
+    html = re.sub(r'<h([1-6])([^>]*)>(.*?)</h\1>', heading, html, flags=re.S)
+    html = html.replace('<span style=" font-weight:700;">', f'<span style=" font-weight:700; color:{strong};">')
+    html = re.sub(r"font-family:'Courier New'; color:[^;]*; background-color:[^;]*;",
+                  f"font-family:Consolas,'Courier New'; color:{theme.ACCENT_DEEP}; background-color:{theme.HOVER};",
+                  html)
+    html = re.sub(r'(<a href="[^"]*"><span style=" )color:[^;]*;', rf'\1color:{theme.ACCENT_DEEP};', html)
+    # > quote: Qt indents it 40px on both sides; a tinted full-width panel reads better.
+    html = re.sub(r'<p style="([^"]*) margin-left:40px; margin-right:40px;([^"]*)">(.*?)</p>',
+                  lambda m: (f'<table width="100%" cellspacing="0" cellpadding="8" bgcolor="{theme.LAVENDER}">'
+                             f'<tr><td><p style="{m.group(1)}{m.group(2)} color:{theme.MUTED};">{m.group(3)}</p>'
+                             f'</td></tr></table>'), html, flags=re.S)
+
+    def table(m):
+        head, sep, rest = m.group(1).partition('</tr>')
+        head = head.replace('<tr>', f'<tr bgcolor="{theme.HOVER}">', 1).replace('<p style="', '<p style=" font-weight:700;')
+        body = head + sep + rest
+        return (f'<table width="100%" border="1" cellspacing="0" cellpadding="7" '
+                f'style="border-collapse:collapse; border-style:solid; border-color:{theme.LINE};">{body}</table>')
+    return re.sub(r'<table border="1"[^>]*>(.*?)</table>', table, html, flags=re.S)
+
+
 def question_html(text):
     parts = []
     for kind, body in sections(text):
@@ -101,6 +137,8 @@ def question_html(text):
                 style += f' color:{color}; background-color:{theme.ACCENT_SOFT};'
             return f'<span style="{style}">'
         html = re.sub(r'<span style="([^"]*)">', style_span, html)
+        if kind != 'note':
+            html = dressed(html)
         size = theme.px(12 if kind == 'note' else 15)
         if kind == 'warning':
             html = f'<table width="100%" cellspacing="0" cellpadding="8" bgcolor="{theme.WARN_BG}"><tr><td><b>注意</b>{html}</td></tr></table>'
@@ -133,16 +171,30 @@ class QuestionText(QTextBrowser):
         anchor, position = cursor.anchor(), cursor.position()
         self.setHtml(question_html(self.source))
         block = self.document().begin()
+        first = True
         while block.isValid():
             block_cursor = QTextCursor(block)
             fmt = block.blockFormat()
             if fmt.nonBreakableLines():
                 fmt.setBackground(QColor(theme.ACCENT_SOFT))
             fmt.setNonBreakableLines(False)
-            fmt.setBottomMargin(4 if block.textList() else 10)
+            if block_cursor.currentTable() is not None:
+                fmt.setBottomMargin(0)   # cells keep their own padding
+            elif fmt.headingLevel():
+                # A heading belongs to what follows it: more room above than below.
+                fmt.setTopMargin(0 if first else theme.px(14))
+                fmt.setBottomMargin(theme.px(4))
+            else:
+                fmt.setBottomMargin(6 if block.textList() else 10)
             fmt.setLineHeight(135, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
             block_cursor.setBlockFormat(fmt)
+            first = False
             block = block.next()
+        for frame in self.document().rootFrame().childFrames():   # tables and quote panels
+            fmt = frame.frameFormat()
+            fmt.setTopMargin(theme.px(6))
+            fmt.setBottomMargin(theme.px(10))
+            frame.setFrameFormat(fmt)
         self.document().setDocumentMargin(0)
         cursor.setPosition(min(anchor, self.document().characterCount() - 1))
         cursor.setPosition(min(position, self.document().characterCount() - 1), cursor.MoveMode.KeepAnchor)

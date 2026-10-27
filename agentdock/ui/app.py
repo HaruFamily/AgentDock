@@ -645,6 +645,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    from agentdock.ui import web_transcript
+    web_transcript.prepare()   # WebEngine must be set up before QApplication exists
     app = QApplication(sys.argv[:1])
     app.setApplicationName("AgentDock")
     app.setQuitOnLastWindowClosed(False)
