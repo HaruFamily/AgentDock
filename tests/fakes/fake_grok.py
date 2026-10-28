@@ -175,10 +175,6 @@ while True:
     elif method == 'session/list':
         out({'id': mid, 'result': {'sessions': [{'sessionId': s, 'cwd': '/w', 'title': f'title {s[:4]}',
                                                  'updatedAt': '2026-10-01T10:00:00.000Z'} for s in sessions]}})
-    elif method == '_x.ai/session/delete':
-        sessions.pop(params['sessionId'], None)
-        save()
-        out({'id': mid, 'result': {'success': True}})
     elif method == 'session/prompt':
         prompt(mid, params['sessionId'], params['prompt'][0]['text'])
     else:

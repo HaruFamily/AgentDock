@@ -16,14 +16,14 @@ def keys(widget, *pairs):
 # --------------------------------------------------------------------------- store
 def test_pins_and_given_names_survive_a_new_start(tmp_path):
     store = QuestionStore(tmp_path)
-    store.dispatch.track('opencode', 'ses_1', owner='o', title='first')
-    store.dispatch.rename('opencode:ses_1', 'Mine')
-    store.dispatch.set_pinned('opencode:ses_1', True)
-    store.dispatch.track('opencode', 'ses_1', owner='o', title='client title')
-    row = QuestionStore(tmp_path).dispatch.get('opencode:ses_1')
+    store.dispatch.track('codex', 'ses_1', owner='o', title='first')
+    store.dispatch.rename('codex:ses_1', 'Mine')
+    store.dispatch.set_pinned('codex:ses_1', True)
+    store.dispatch.track('codex', 'ses_1', owner='o', title='client title')
+    row = QuestionStore(tmp_path).dispatch.get('codex:ses_1')
     assert row['pinned'] and row['title'] == 'Mine'
-    store.dispatch.set_pinned('opencode:ses_1', False)
-    assert 'pinned' not in store.dispatch.get('opencode:ses_1')
+    store.dispatch.set_pinned('codex:ses_1', False)
+    assert 'pinned' not in store.dispatch.get('codex:ses_1')
 
 
 # --------------------------------------------------------------------------- new conversation page
@@ -50,12 +50,11 @@ def test_new_page_picks_place_and_agent_from_chips(window, tmp_path):
     key = win.current_key
     row = store.dispatch.get(key)
     assert row['client'] == 'codex' and row['project'] == project['id']
-    # The page lists the latest conversations to jump back into.
+    # History is available only in the sidebar.
     win.show_new()
-    entries = [view.recent.itemAt(i).widget() for i in range(view.recent.count())]
-    assert [e.key for e in entries] == [key]
-    assert entries[0].title.text() == row['title']
-    entries[0].click()
+    assert key in win.sidebar.keys()
+    assert not hasattr(view, 'recent')
+    win.open_conversation(key)
     assert win.pages.currentWidget() is win.conversation
 
 
@@ -91,13 +90,25 @@ def test_pinned_group_and_row_more_button(window, monkeypatch):
     assert win.sidebar.keys()[0] == first
     shown = []
     monkeypatch.setattr(Sidebar, 'show_menu', lambda self, menu, _w: shown.append([a.text() for a in menu.actions()]))
+    tree = win.sidebar.tree
+    app.processEvents()
+    top = tree.topLevelItem(0)  # queued store changes may rebuild the tree
+    widths = [tree.columnWidth(i) for i in range(3)]
+    title_rect = tree.visualItemRect(top.child(0))
+    badge = top.child(0).text(1)
     win.sidebar._hovered(top.child(0))
-    button = win.sidebar.tree.itemWidget(top.child(0), 1)
-    assert button is not None and top.child(0).text(1).strip() == ''
+    app.processEvents()
+    button = win.sidebar.hover_button
+    assert button is not None and top.child(0).text(1) == badge
+    assert [tree.columnWidth(i) for i in range(3)] == widths
+    assert tree.visualItemRect(top.child(0)) == title_rect
     button.click()
     assert shown and shown[0][0] == '取消釘選'
     win.sidebar._unhover()
-    assert top.child(0).text(1).strip() != ''
+    app.processEvents()
+    assert top.child(0).text(1) == badge
+    assert [tree.columnWidth(i) for i in range(3)] == widths
+    assert top.text(1) == ''
 
 
 def test_sidebar_width_is_remembered(window):
@@ -203,6 +214,7 @@ def test_jump_to_latest_appears_when_reading_back(window):
 def test_claude_lists_models_before_any_conversation(window, monkeypatch):
     win, make, store, sender, notes, work, projects, state, app = window
     monkeypatch.setenv('FAKE_CLAUDE_MODELS', '1')
+    sender.adapters['claude-code']._probed = False   # the window's first page (Claude) already asked once
     win.show_new(agent='claude-code', folder=str(work))
     bar = win.new_view.composer.settings
     wait(lambda: not bar.model_chip.isHidden(), app=app)
@@ -379,40 +391,6 @@ def test_codex_and_grok_report_their_real_defaults(window):
     assert bar.effort_chip.text() == '高' and bar.values() == {'model': '', 'effort': '', 'mode': ''}
 
 
-def test_opencode_shows_the_model_it_really_uses(ui_app, tmp_path, monkeypatch):
-    import json
-    from agentdock.dispatch.opencode import OpenCodeService
-    from agentdock.ui.chat_window import SettingsBar
-    from test_dispatch import PASSWORD, FakeOpenCode
-    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
-    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
-    fake = FakeOpenCode()
-    try:
-        service = OpenCodeService(fake.url, PASSWORD, fake.version)
-        options = service.options(str(tmp_path))
-        assert options['defaults'] == {} and options['effort_unset'] == '標準'   # nothing says: no model shown as real
-        # The model OpenCode last used (its state) with the variant it remembers for it.
-        (tmp_path / 'state' / 'opencode').mkdir(parents=True)
-        (tmp_path / 'state' / 'opencode' / 'model.json').write_text(json.dumps(
-            {'recent': [{'providerID': 'openai', 'modelID': 'gpt-a'}], 'variant': {'openai/gpt-a': 'high'}}), encoding='utf-8')
-        assert service.options(str(tmp_path))['defaults'] == {'model': 'openai/gpt-a', 'effort': {'openai/gpt-a': 'high'}}
-        # The user's config beats it; a project's opencode.jsonc beats that.
-        (tmp_path / 'config' / 'opencode').mkdir(parents=True)
-        (tmp_path / 'config' / 'opencode' / 'opencode.json').write_text('{"model": "openai/gpt-b"}', encoding='utf-8')
-        assert service.options(str(tmp_path))['defaults']['model'] == 'openai/gpt-b'
-        fake.config = {'model': 'openai/gpt-a'}
-        options = service.options(str(tmp_path))
-        assert options['defaults']['model'] == 'openai/gpt-a'
-        bar = SettingsBar()
-        bar.set_options(options, {})
-        assert bar.model_chip.text() == 'GPT A' and bar.effort_chip.text() == '高'
-        bar.pick('model', 'openai/gpt-b')
-        assert bar.effort_chip.text() == '標準'
-        assert [a.text() for a in bar.effort_chip.menu_.actions()] == ['標準', '低', '高']
-    finally:
-        fake.close()
-
-
 def test_chat_only_uses_an_empty_folder_and_a_cautious_mode(window):
     win, make, store, sender, notes, work, projects, state, app = window
     store.dispatch.remember_options('codex', {'models': [], 'modes': [{'id': 'read-only', 'label': '唯讀'},
@@ -479,7 +457,7 @@ def test_agent_facts_say_model_account_and_program():
     from agentdock.tools.tokengauge.gauge import Account, ProviderResult
     options = {'models': [{'id': 'opus', 'label': 'Opus 5.5'}], 'defaults': {'model': 'opus', 'effort': {'opus': 'xhigh'}}}
     assert model_text(options) == 'Opus 5.5 · 很高'
-    assert model_text({'models': [], 'defaults': {'model': 'x/y'}, 'effort_unset': '標準'}) == 'x/y · 標準'
+    assert model_text({'models': [], 'defaults': {'model': 'x/y'}}) == 'x/y'
     assert model_text({}) == ''
     assert account_text(ProviderResult('claude', 'Claude', [Account('Pin', plan='Max 20x')])) == ('Pin · Max 20x', False)
     assert account_text(ProviderResult('claude', 'Claude', [Account(None)])) == ('已登入', False)
@@ -490,7 +468,7 @@ def test_agent_facts_say_model_account_and_program():
     facts.versions = {'claude-code': '2.1.288', 'codex': None}
     assert facts('claude-code') == {'program': '2.1.288', 'model': 'Opus 5.5 · 很高', 'account': 'Pin', 'account_problem': False}
     assert facts('codex') == {'program': None}
-    assert facts('opencode') == {}   # version not looked up yet: nothing claimed
+    assert facts('grok-cli') == {}   # version not looked up yet: nothing claimed
 
 
 def test_program_version_reads_the_first_version(tmp_path):
@@ -574,3 +552,37 @@ def test_light_looks_bring_a_light_palette(ui_app):
         assert theme.is_dark() and theme.palette().color(QPalette.ColorRole.Base).lightness() < 80
     finally:
         theme.apply(old)
+
+
+def test_opencode_shows_the_model_it_really_uses(ui_app, tmp_path, monkeypatch):
+    import json
+    from agentdock.dispatch.opencode import OpenCodeService
+    from agentdock.ui.chat_window import SettingsBar
+    from test_dispatch import PASSWORD, FakeOpenCode
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    fake = FakeOpenCode()
+    try:
+        service = OpenCodeService(fake.url, PASSWORD, fake.version)
+        options = service.options(str(tmp_path))
+        assert options['defaults'] == {} and options['effort_unset'] == '標準'   # nothing says: no model shown as real
+        # The model OpenCode last used (its state) with the variant it remembers for it.
+        (tmp_path / 'state' / 'opencode').mkdir(parents=True)
+        (tmp_path / 'state' / 'opencode' / 'model.json').write_text(json.dumps(
+            {'recent': [{'providerID': 'openai', 'modelID': 'gpt-a'}], 'variant': {'openai/gpt-a': 'high'}}), encoding='utf-8')
+        assert service.options(str(tmp_path))['defaults'] == {'model': 'openai/gpt-a', 'effort': {'openai/gpt-a': 'high'}}
+        # The user's config beats it; a project's opencode.jsonc beats that.
+        (tmp_path / 'config' / 'opencode').mkdir(parents=True)
+        (tmp_path / 'config' / 'opencode' / 'opencode.json').write_text('{"model": "openai/gpt-b"}', encoding='utf-8')
+        assert service.options(str(tmp_path))['defaults']['model'] == 'openai/gpt-b'
+        fake.config = {'model': 'openai/gpt-a'}
+        options = service.options(str(tmp_path))
+        assert options['defaults']['model'] == 'openai/gpt-a'
+        bar = SettingsBar()
+        bar.set_options(options, {})
+        assert bar.model_chip.text() == 'GPT A' and bar.effort_chip.text() == '高'
+        bar.pick('model', 'openai/gpt-b')
+        assert bar.effort_chip.text() == '標準'
+        assert [a.text() for a in bar.effort_chip.menu_.actions()] == ['標準', '低', '高']
+    finally:
+        fake.close()

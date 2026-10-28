@@ -79,16 +79,9 @@ class ConversationView(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        header = QFrame()
-        centre = QHBoxLayout(header)
-        centre.setContentsMargins(24, 12, 24, 8)
-        centre.addStretch(1)
-        heading = QWidget()
-        heading.setMaximumWidth(COLUMN)
-        centre.addWidget(heading, 100)
-        centre.addStretch(1)
-        head = QHBoxLayout(heading)
-        head.setContentsMargins(0, 0, 0, 0)
+        header = QFrame()   # the title sits at the window's left edge, not over the reading column
+        head = QHBoxLayout(header)
+        head.setContentsMargins(24, 12, 16, 8)
         head.setSpacing(2)
         self.title = ElidedLabel('')
         self.title.setObjectName('ConvTitle')
@@ -98,12 +91,6 @@ class ConversationView(QWidget):
         self.project_chip.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project_chip.clicked.connect(self._open_project)
         self.project_chip.hide()   # the list already shows the project
-        self.git_chip = QPushButton()
-        self.git_chip.setObjectName('ChatChip')
-        self.git_chip.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.git_chip.clicked.connect(lambda: self.git_root and self.window_.open_git(self.git_root))
-        self.git_chip.hide()
-        self.git_root = ''
         self.context_chip = QLabel()
         self.context_chip.setObjectName('ChatChip')
         self.context_chip.hide()
@@ -181,9 +168,8 @@ class ConversationView(QWidget):
         self.fade = Fade(self.scroll)
         self.composer = Composer(self, enter_sends=True)
         self.composer.recall = self._last_user_text
-        # Branch and context sit with the other facts of the work, in the box's own row (as in Codex);
-        # the header keeps only the title.
-        self.composer.bar.insertWidget(self.composer.bar.indexOf(self.composer.settings.mode_chip) + 1, self.git_chip)
+        # Context sits with the other facts of the work, in the box's own row (as in Codex); the header
+        # keeps only the title. Git is opened from the project.
         self.composer.bar.insertWidget(self.composer.bar.indexOf(self.composer.settings.model_chip), self.context_chip)
         self.composer.submitted.connect(self.send)
         self.composer.stop.clicked.connect(lambda: self.window_.dispatcher.interrupt(self.key))
@@ -203,6 +189,27 @@ class ConversationView(QWidget):
         wrap.addWidget(self.composer, 100)
         wrap.addStretch(1)
         outer.addLayout(wrap)
+        # Quota of the Agent's account: in the bottom-right corner beside the message box when there is room,
+        # else under the box at its right edge.
+        self.quota: QWidget | None = None
+        self.quota_slot = QWidget()
+        self.quota_slot.setMaximumWidth(COLUMN)
+        slot = QHBoxLayout(self.quota_slot)
+        slot.setContentsMargins(0, 0, 0, 0)
+        slot.addStretch(1)
+        self.quota_slot.hide()
+        quota_row = QHBoxLayout()
+        quota_row.setContentsMargins(24, 0, 24, 12)
+        quota_row.addStretch(1)
+        quota_row.addWidget(self.quota_slot, 100)
+        quota_row.addStretch(1)
+        outer.addLayout(quota_row)
+        self.history_cache: dict[str, tuple[list, object]] = {}
+        self._clock = QTimer(self, interval=1000)   # the running turn's elapsed time
+        self._clock.timeout.connect(self._tick)
+        self.places: dict[str, int] = {}   # conversation -> distance from the bottom when it was left
+        self.refreshing: list | None = None   # the cached page on screen until the client's copy arrives
+        self._place = 0
         self.request_ids: tuple = ()
         self.forms: dict[str, FormBox] = {}
         self.permission_rows: list[QWidget] = []
@@ -245,6 +252,10 @@ class ConversationView(QWidget):
         self._set_mode()
         if self.key and before != self.use_web:
             self.reload()
+        if self.quota is not None:
+            self.quota.setFixedWidth(theme.px(230))
+            self.quota.restyle()
+            self._place_quota()
 
     def _retry_id(self) -> str:
         """The newest ending, when it failed or was stopped and the Agent is idle, offers to run it again."""
@@ -282,26 +293,30 @@ class ConversationView(QWidget):
             self.fork(arg)
         elif action == 'retry':
             self.retry()
+        elif action == 'image':
+            if not any(arg in item.get('files', []) for item in self.transcript.items if item.get('kind') == 'user'):
+                return
+            path = self.file_path(arg)
+            if path:
+                self.window_.external_tools.open('image', path)
         elif action == 'older':
             self.load_older()
 
     # -- loading ---------------------------------------------------------------
+    CACHED = 12   # conversations whose newest page is kept, to show at once when opened again
+
     def open(self, key: str) -> None:
         if key == self.key:
             self.update_row()
             return
         self.composer.save_draft()
+        if self.key:
+            self._remember_place(self.key)
         self._set_mode()
-        if self.use_web:
-            self.web.clear()
+        self._rebuild_requests({'permissions': {}, 'forms': {}}, ((), ()))
         self.key = key
-        self.transcript = Transcript()
-        for widget in self.widgets.values():
-            self.items.removeWidget(widget)
-            widget.deleteLater()
-        self.widgets = {}
-        self.open_tools = set()
-        self.open_process = set()
+        self._clear()
+        self.refreshing = None
         self.older = None
         self.loading = True
         self._stick = True
@@ -316,28 +331,93 @@ class ConversationView(QWidget):
         self.composer.settings.set_options(self.window_.store.dispatch.options.get(row.get('client', ''), {}), row,
                                            self.window_.store.dispatch.options.get(row.get('client', ''), {})
                                            .get('mode_fixed', False))
-        self.git_root = ''
-        self.git_chip.hide()
         self.composer.root = row.get('directory', '')
         self._commands(self.window_.store.dispatch.options.get(row.get('client', ''), {}))
         self.last_state = row.get('state', '')
         self.update_row()
+        self._place = self.places.pop(key, 0)
+        cached = self.history_cache.get(key)
+        if cached is not None and row.get('state') != 'running':
+            # Shown at once from last time; the client's copy replaces it if it changed meanwhile.
+            self.history_loaded(key, *cached)
+            self.refreshing = cached[0]
+            self.loading = True
+            self.more.setEnabled(False)
         self._fetch(None)
         self.window_.request_options(row.get('client', ''), key, row.get('directory', ''))
-        self.check_git()
+        self._quota_for(row.get('client', ''))
 
-    def check_git(self) -> None:
-        """Branch and change count of the conversation's folder, read off the UI thread."""
-        row = self.window_.store.dispatch.get(self.key) if self.key else None
-        if row is not None:
-            self.window_.git_status(self.key, row.get('directory', ''))
+    # -- quota -----------------------------------------------------------------------
+    def set_quota(self, model) -> None:
+        from agentdock.ui.quota_view import QuotaView
+        self.quota = QuotaView(model, compact=True, show_head=False)
+        self.quota.setFixedWidth(theme.px(230))
+        self.quota.keys = set()
+        self.quota.render()
+        model.changed.connect(self._place_quota)
+        self._place_quota()
 
-    def git_arrived(self, key: str, root: str, summary: str) -> None:
-        if key != self.key:
+    def _quota_for(self, client: str) -> None:
+        if self.quota is None:
             return
-        self.git_root = root
-        self.git_chip.setText(summary)
-        self.git_chip.setVisible(bool(root))
+        from agentdock.agent_info import QUOTA_KEYS
+        self.quota.keys = {QUOTA_KEYS[client]} if client in QUOTA_KEYS else set()
+        self.quota.render()
+        self._place_quota()
+
+    def _place_quota(self) -> None:
+        q = self.quota
+        if q is None:
+            return
+        shown = bool(self.key) and q.shown > 0
+        q.adjustSize()
+        column = min(COLUMN, self.width() - 48)
+        corner = self.width() - q.width() - 20
+        if corner >= (self.width() + column) // 2 + 16:   # room beside the message box
+            if q.parentWidget() is not self:
+                self.quota_slot.layout().removeWidget(q)
+                q.setParent(self)
+            q.move(corner, self.height() - q.height() - 18)
+            q.raise_()
+            self.quota_slot.hide()
+        else:
+            if q.parentWidget() is not self.quota_slot:
+                self.quota_slot.layout().addWidget(q)
+            self.quota_slot.setVisible(shown)
+        q.setVisible(shown)
+
+    def _show_status(self, row: dict) -> None:
+        if self.loading:
+            return
+        running = row['state'] == 'running' and not row.get('permissions') and not row.get('forms')
+        # Only OpenCode goes through a shared service that can be offline.
+        offline = self.window_.store.dispatch.offline if row['client'] == 'opencode' else ''
+        text = status_text({**row, 'offline': offline})
+        elapsed = self._elapsed() if running else ''
+        if elapsed:
+            head, _, rest = text.partition('\n')
+            text = f'{head} · {elapsed}' + (f'\n{rest}' if rest else '')
+        show = running or row['state'] in ('unknown',) or bool(offline and row['state'] != 'done')
+        self.status.setText(text if show else '')
+        self.status.setVisible(show)
+
+    def _elapsed(self) -> str:
+        """How long the current turn has run, as 1:23 (or 1:02:03)."""
+        start = self.window_.run_started.get(self.key)
+        if start is None:
+            return ''
+        seconds = max(0, int(time.monotonic() - start))
+        hours, rest = divmod(seconds, 3600)
+        return f'{hours}:{rest // 60:02d}:{rest % 60:02d}' if hours else f'{rest // 60}:{rest % 60:02d}'
+
+    def _tick(self) -> None:
+        row = self.window_.store.dispatch.get(self.key) if self.key else None
+        if row is None or row['state'] != 'running':
+            self._clock.stop()
+            return
+        self._show_status(row)
+        if self.use_web:
+            self._render_web()
 
     def options_arrived(self, key: str, options: dict) -> None:
         row = self.window_.store.dispatch.get(key)
@@ -360,7 +440,7 @@ class ConversationView(QWidget):
         compact.setEnabled(row.get('state') != 'running')
         menu.addSeparator()
         menu.addAction('改名', lambda: self.window_.rename_conversation(self.key))
-        delete = menu.addAction('刪除…', lambda: self.window_.delete_conversation(self.key))
+        delete = menu.addAction('刪除', lambda: self.window_.delete_conversation(self.key))
         delete.setEnabled(row.get('state') != 'running')
         menu.exec(self.more_button.mapToGlobal(self.more_button.rect().bottomLeft()))
 
@@ -384,10 +464,64 @@ class ConversationView(QWidget):
             self.more.setEnabled(False)
             self._fetch(self.older)
 
+    def _clear(self) -> None:
+        if self.use_web:
+            self.web.clear()
+        self.transcript = Transcript()
+        for widget in self.widgets.values():
+            self.items.removeWidget(widget)
+            widget.deleteLater()
+        self.widgets = {}
+        self.open_tools = set()
+        self.open_process = set()
+
+    def _cache(self, key: str, messages: list, older) -> None:
+        self.history_cache.pop(key, None)
+        self.history_cache[key] = (messages, older)
+        while len(self.history_cache) > self.CACHED:
+            self.history_cache.pop(next(iter(self.history_cache)))
+
+    def _remember_place(self, key: str) -> None:
+        """How far above the bottom the reader was, to come back there."""
+        if self.use_web:
+            self.web.where(lambda value, k=key: self.places.__setitem__(k, int(value or 0)))
+        else:
+            bar = self.scroll.verticalScrollBar()
+            self.places[key] = 0 if self._stick else bar.maximum() - bar.value()
+
+    def _go_to(self, from_bottom: int) -> None:
+        self._stick_value = False
+        if self.use_web:
+            self.web.go_to(from_bottom)
+        else:
+            bar = self.scroll.verticalScrollBar()
+            QTimer.singleShot(0, lambda: bar.setValue(bar.maximum() - from_bottom))
+
+    def _refreshed(self, key: str, messages: list, older) -> None:
+        """The client's copy after the cached one was shown: redraw only when it differs."""
+        shown, self.refreshing = self.refreshing, None
+        self._cache(key, messages, older)
+        self.loading = False
+        self.more.setEnabled(True)
+        row = self.window_.store.dispatch.get(key) or {}
+        # Once a new turn streams in, the live view is the current one.
+        if messages == shown or row.get('state') == 'running':
+            return
+        bar = self.scroll.verticalScrollBar()
+        from_bottom = 0 if self._stick or self.use_web else bar.maximum() - bar.value()
+        self._clear()
+        self._place = from_bottom
+        self.history_loaded(key, messages, older)
+
     def history_loaded(self, key: str, messages: list, older) -> None:
         if key != self.key:
             return
+        if self.refreshing is not None:
+            self._refreshed(key, messages, older)
+            return
         first = not self.transcript.items
+        if first:
+            self._cache(key, messages, older)
         bar = self.scroll.verticalScrollBar()
         from_bottom = bar.maximum() - bar.value()
         added = self.transcript.prepend(messages)
@@ -402,7 +536,9 @@ class ConversationView(QWidget):
         self.more.setEnabled(True)
         self.more.setVisible(bool(older))
         self.status.hide()
+        place = 0
         if first:
+            place, self._place = self._place, 0
             self._stick = True
             events, self.buffered = self.buffered, []
             for event in events:   # what streamed in while the history was loading
@@ -412,6 +548,8 @@ class ConversationView(QWidget):
             # Keep the reader's place when older messages appear above.
             QTimer.singleShot(0, lambda: bar.setValue(bar.maximum() - from_bottom))
         self._sync_retry()
+        if place > 40:   # back where the reader left it
+            self._go_to(place)
 
     def live_event(self, key: str, event: dict) -> None:
         if key != self.key:
@@ -609,10 +747,13 @@ class ConversationView(QWidget):
                 widget.folded = not visible
                 widget.setVisible(visible)
 
-    def reload(self) -> None:
-        """Build the open conversation again (after the text size changed)."""
+    def reload(self, fresh: bool = False) -> None:
+        """Build the open conversation again: after the text size changed, or (`fresh`) from the client's
+        copy only, when what was shown is known to be wrong."""
         if self.key:
             key, self.key = self.key, ''
+            if fresh:
+                self.history_cache.pop(key, None)
             self.open(key)
 
     # -- state -----------------------------------------------------------------
@@ -640,20 +781,14 @@ class ConversationView(QWidget):
             self.context_chip.style().polish(self.context_chip)
         self.context_chip.setVisible(bool(self.context_chip.text()))
         if row['state'] != self.last_state:
-            if self.last_state == 'running':
-                self.check_git()   # the agent may have changed files
             self.last_state = row['state']
             if not self.use_web:
                 self._group.start()   # a finished answer folds its steps
         running = row['state'] == 'running' and not row.get('permissions') and not row.get('forms')
         self.composer.set_running(row['state'] == 'running')
-        if not self.loading:
-            # Only OpenCode goes through a shared service that can be offline.
-            offline = self.window_.store.dispatch.offline if row['client'] == 'opencode' else ''
-            text = status_text({**row, 'offline': offline})
-            show = running or row['state'] in ('unknown',) or bool(offline and row['state'] != 'done')
-            self.status.setText(text if show else '')
-            self.status.setVisible(show)
+        self._show_status(row)
+        if running != self._clock.isActive():
+            self._clock.start() if running else self._clock.stop()
         self._sync_retry()
         ids = (tuple(row.get('permissions', {})), tuple(row.get('forms', {})))
         if ids != self.request_ids:
@@ -663,11 +798,17 @@ class ConversationView(QWidget):
 
     def _rebuild_requests(self, row: dict, ids: tuple) -> None:
         self.request_ids = ids
-        for widget in self.permission_rows + list(self.forms.values()):
+        for widget in self.permission_rows:
             self.requests.removeWidget(widget)
             widget.hide()
             widget.deleteLater()
-        self.permission_rows, self.forms = [], {}
+        self.permission_rows = []
+        for fid in list(self.forms):
+            if fid not in row.get('forms', {}):
+                widget = self.forms.pop(fid)
+                self.requests.removeWidget(widget)
+                widget.hide()
+                widget.deleteLater()
         for pid, permission in row.get('permissions', {}).items():
             card = QFrame()
             card.setObjectName('Request')
@@ -689,6 +830,8 @@ class ConversationView(QWidget):
             self.requests.addWidget(card)
             self.permission_rows.append(card)
         for fid, form in row.get('forms', {}).items():
+            if fid in self.forms:
+                continue
             box = FormBox(self, form)
             box.setObjectName('Request')
             self.forms[fid] = box
@@ -716,7 +859,8 @@ class ConversationView(QWidget):
         else:
             files = self.composer.take_files()
             self.window_.sent_files.update({os.path.basename(f): f for f in files})
-            self.window_.dispatcher.send(self.key, text, files)
+            key, bridge = self.key, self.window_.bridge
+            self.window_.dispatcher.send(key, text, files, failed=lambda: bridge.unsent.emit(key, text, files))
         self.composer.clear()
         self._stick = True
 
@@ -758,6 +902,7 @@ class ConversationView(QWidget):
         super().resizeEvent(event)
         self._place_latest()
         self._fit_requests()
+        self._place_quota()
 
     def _range_changed(self, _minimum: int, maximum: int) -> None:
         if self._anchor is not None:

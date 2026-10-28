@@ -705,15 +705,6 @@ class GrokClient(Adapter):
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         return page(self._load(row).visible(), cursor)
 
-    def delete(self, row: dict) -> None:
-        sid = row['session_id']
-        if self.running(sid):
-            raise ClientError('這個對話還在執行。')
-        self._call(self._ensure(), '_x.ai/session/delete', {'sessionId': sid})
-        with self._lock:
-            self._loaded.pop(sid, None)
-            self._records.pop(sid, None)
-
     def close(self) -> None:
         with self._lock:
             self._closed = True

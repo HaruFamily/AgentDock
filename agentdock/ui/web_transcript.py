@@ -241,7 +241,7 @@ def user_html(item: dict, resolve=None) -> str:
     for name in item.get('files') or []:
         src = image_data(resolve(name)) if resolve else ''
         if src:
-            images.append(f'<img src="{src}" alt="{html.escape(name)}" title="{html.escape(name)}">')
+            images.append(f'<a href="{action_url("image", name)}"><img src="{src}" alt="{html.escape(name)}" title="{html.escape(name)}"></a>')
         else:
             files.append(f'<div class="file">附件：{html.escape(name)}</div>')
     images_html = f'<div class="images">{"".join(images)}</div>' if images else ''
@@ -447,6 +447,7 @@ function showLatest() { document.getElementById('latest').style.display = fromBo
 addEventListener('scroll', () => { stick = fromBottom() < 40; showLatest(); });
 addEventListener('resize', () => { if (stick) root.scrollTop = root.scrollHeight; showLatest(); });
 function toBottom() { stick = true; root.scrollTop = root.scrollHeight; showLatest(); }
+function goTo(below) { stick = false; root.scrollTop = root.scrollHeight - innerHeight - below; showLatest(); }
 document.addEventListener('click', e => {
   const link = e.target.closest('a[data-edit]');
   if (link) { e.preventDefault(); startEdit(link.closest('.unit'), link.dataset.edit); }
@@ -541,7 +542,8 @@ def make_view(owner):
                 return False
             if kind == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
                 if url.scheme() in ('http', 'https'):
-                    QDesktopServices.openUrl(url)   # the user clicked a link in an answer
+                    from agentdock.ui.external_tools import open_target
+                    open_target('browser', url.toString())
                 return False
             return url.scheme() in ('about', 'data')
 
@@ -611,8 +613,10 @@ class WebTranscript:
         self.view.setHtml(page_html(self.column), self.view.page_url)
 
     def _loaded(self, ok: bool) -> None:
-        self.ready = ok
+        # Rejected action-link navigations also emit loadFinished(False), while
+        # the existing document is still usable. Only restyle invalidates it.
         if ok:
+            self.ready = True
             self.show(*self.state)
 
     def clear(self) -> None:
@@ -645,6 +649,15 @@ class WebTranscript:
     def to_bottom(self) -> None:
         if self.ready:
             self.view.page().runJavaScript('toBottom()')
+
+    def where(self, done) -> None:
+        """How far above the bottom the page is scrolled (to `done`, later)."""
+        if self.ready:
+            self.view.page().runJavaScript('stick ? 0 : fromBottom()', 0, done)
+
+    def go_to(self, from_bottom: int) -> None:
+        if self.ready:
+            self.view.page().runJavaScript(f'goTo({int(from_bottom)})')
 
     def find(self, text: str, backward: bool, done) -> None:
         from PySide6.QtWebEngineCore import QWebEnginePage

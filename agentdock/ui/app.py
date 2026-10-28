@@ -624,9 +624,13 @@ class Dock(QObject):
         self.app.quit()
 
 
+RESTART_WAIT = 30000   # ms the restarted app waits for the old one to let go of the lock
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agentdock")
     parser.add_argument("--background", action="store_true", help="start as the floating ball only")
+    parser.add_argument("--restart", action="store_true", help="started by 重新啟動: wait for the old instance to exit")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
     data = data_dir()
     logging.basicConfig(filename=str(data / "agentdock.log"), level=logging.INFO,
@@ -635,7 +639,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lock = QLockFile(str(data / "agentdock.lock"))
     lock.setStaleLockTime(0)
-    if not lock.tryLock(200):
+    if not lock.tryLock(RESTART_WAIT if args.restart else 200):
         running = _find()
         if running:
             try:

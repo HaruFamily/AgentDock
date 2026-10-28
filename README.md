@@ -14,7 +14,7 @@
 - **Inbox 已停用**：對話都在視窗裡原生處理，不再透過 `ask_user`／`report_to_user` MCP。舊設定檔裡的 Inbox MCP 與 inbox-activity 擴充會在「設定 → 全部更新」預覽後移除；移除前若有 Agent 呼叫 ask_user，會收到「已停用、請直接詢問使用者」的錯誤。
 - 舊的浮動卡片暫時保留一版：`data/ui.json` 設 `"shell": "card"` 可退回（含 Inbox）。
 - **設定**：左邊是分類（一般、外觀、Agent、MCP、擴充、備份），和 Claude／Codex 桌面版一樣一次看一頁。
-  - 一般：開機自動啟動、需要處理時跳出通知、額度浮動視窗（和系統匣選單同步）。外觀：點一下就換。
+  - 一般：開機自動啟動、需要處理時跳出通知、額度浮動視窗（和系統匣選單同步）；「重新啟動」關掉後從原始碼重開，改過的程式就會生效（系統匣選單也有）。外觀：點一下就換。
   - Agent：對話視窗能用的四個（OpenCode、Claude、Codex、Grok CLI）各一張卡片：程式版本（找不到會標出來）、預設模型與推理強度、登入的帳號與方案、MCP／擴充數量與需要處理的事。Claude Desktop／Cowork 與 GrokBot 已不列出也不再提供新增（舊的登記仍保存在 `data/agents.json`）。
   - MCP：每個 MCP 一列（只定義一次：遠端網址、uvx/npx 套件、GitHub Release 下載、自訂指令），右邊每個 Agent 一個開關。點開關就排入加入／移除，再點一次復原；要更新、被其他程式移除、已停用的會直接寫在那一列。
   - 擴充：MCP 以外的 hook／plugin（例如 [rtk](https://github.com/rtk-ai/rtk)），一樣每個 Agent 一個開關；Claude、Codex 寫入 hook，OpenCode 放 plugin，不支援的 Agent 沒有開關。

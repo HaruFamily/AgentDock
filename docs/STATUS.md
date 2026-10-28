@@ -1,5 +1,59 @@
 # 現況：0.7.1（Python 版）
 
+2026-10-28：專案頁移除獨立視窗按鈕；Git 改為一個整合卡片，標題／分支與外部工具／重新整理集中於頂列。空儲存庫與非 Git 資料夾只顯示狀態，有變更才展開清單與差異；隱藏空分組、自動選取第一個變更。匯入對話與刪除專案移至頁尾，主題切換同步 Git 卡片。
+
+2026-10-28：設定重整為一般、外觀、Agent 與工具、外部程式、資料與備份。Agent／MCP／擴充改為同頁 Tab，沿用舊導覽狀態並記住最後工具 Tab；切頁保留捲動位置與待套用變更。套用列僅在工具頁顯示，側欄保留待處理計數。外部程式由一般移出，一般的重新啟動合併到偏好區。以暫存資料驗證兩種主題與放大文字。
+
+2026-10-28：唯讀專案變更以共用 GitView 預設嵌入專案頁，窄版改為上下清單／差異；獨立視窗共用元件。設定 → 一般加入外部工具：Git Extensions（預設）、Fork、Git GUI、自訂 exe；圖片與瀏覽器採系統預設或自訂 exe。偏好存 ui.json、不改 Windows 關聯；以參數陣列與 CREATE_NO_WINDOW 開啟，聊天圖片及 HTTP(S) 連結使用同一服務。背景讀取加 generation 隔離與元件銷毀保護。
+
+2026-10-28：Git 視窗改為純唯讀「專案變更」：保留分支、追蹤資訊、已暫存／工作區差異、重新整理及開啟外部 Git GUI；移除所有暫存、提交、推拉、切分支、捨棄入口與事件。Git 讀取禁用 optional locks、外部 diff 及 textconv；選檔遲到結果不覆蓋新選擇。暫存 repo 驗證瀏覽與雙擊不改 index、HEAD、工作區。
+
+2026-10-28：共用 control_style 統一一般／緊湊操作、唯讀欄位、選取與焦點外觀，由 App 與聊天／Git 樣式共同使用；專案頁分開標題、名稱輸入及圖示預覽，刪除採危險操作樣式，自畫設定導覽／開關／主題卡補鍵盤焦點。新增介面、收發、設定交易、runtime 與驗證五個專用 Skill，更新維護 Skill 與 AGENTS 索引，並安裝到本機 Codex skills。
+
+2026-10-28：專案資料夾列改為唯讀完整路徑框、瀏覽選擇資料夾、開啟資料夾三個獨立控制；路徑可選取複製，瀏覽取消不變更。
+
+2026-10-28：側欄專案入口由「⋯」改為齒輪「專案設定」。專案頁直接列出圖示選擇、顏色／預設顏色、資料夾開啟／更換、Git、匯入對話及刪除操作，不再藏於頁內選單；圖示形狀與顏色持久化並同步側欄。
+
+2026-10-28：專案列「⋯」直接切換主區域專案頁，不再開選單或獨立設定視窗；新對話仍由「＋」開啟。移除展開箭頭，名稱列繼續展開／收合，空專案顯示「沒有對話」（搜尋無命中顯示「沒有符合的對話」）。新增可持久化的專案資料夾圖示顏色，點專案頁圖示選色，側欄同步更新。
+
+2026-10-28：修正專案新對話預留 120px 頂部空間造成的置中偏移，專案／一般新對話輸入框位置一致。側欄專案名稱與箭頭只展開／收合，不切換頁面或草稿；專案細節改由「⋯ → 專案設定」獨立對話框操作。新增實際滑鼠名稱／箭頭點擊及輸入框座標一致回歸驗證。
+
+2026-10-28：依使用回饋，新對話共用輸入框改為主區域垂直置中，專案上方保留名稱與根目錄操作；移除主區域最近／歷史對話清單，歷史統一從側欄開啟。已開始的對話仍用底部輸入框，專案草稿與附件保留。
+
+2026-10-28：專案與新對話共用底部輸入框及草稿，切換專案保留文字、附件與已有草稿的 Agent／模型設定；最近對話依所選專案篩選。側欄新對話改為輕量圖示列，搜尋採低對比外觀，專案保留選取底色並增加滑鼠移入的新對話入口。完整測試 386 passed（暫存資料與假服務），新增共用輸入框位置及跨專案草稿回歸測試。
+
+2026-10-28：使用者實測 AgentDock 的 OpenCode／Claude／Codex 均已可使用 Unity MCP。另依 Codex 紀錄確認重送回合先略過 pending optional unityMCP，隨後 MCP 才 initialized；CodexClient 啟動 app-server 加入行程限定 `-c mcp_optional_startup_grace_ms=0`，讓工具清單等各 MCP 的既有啟動逾時，不改個人設定或授權。透過實際 CodexClient 確認有效值為 0、Unity 工具 48 個。
+
+2026-10-28：Unity MCP 的 Codex 啟動紀錄出現 stderr 非 UTF-8，隨後 initialize 連線關閉。MCP 庫補上 PYTHONIOENCODING=utf-8／PYTHONUTF8=1，並備份後同步本機 Codex 的 unityMCP 環境。以實際設定驗證握手、48 個工具及 Aetherwheel instance 成功，stdout／stderr 嚴格 UTF-8 解碼通過；不修改 Unity 專案。
+
+2026-10-28：修正網頁聊天在編輯送出後停止更新、畫面空白的問題。內部動作連結被攔截時 QtWebEngine 仍發出 `loadFinished(False)`；WebTranscript 現在保留既有頁面的 ready 狀態，只在真正重建樣式頁面時清除。獨立 WebEngine 回歸測試涵蓋連續兩次原文編輯送出、清除舊輪後顯示新回覆與樣式重載。正常環境完整測試 385 passed（暫存資料與假服務）；受限環境首次執行因本機通訊限制中止。需重啟 AgentDock 載入。
+
+2026-10-28：MCP 庫加入 CoplayDev `unityMCP`，使用內附 uvx 的 `--from mcpforunityserver mcp-for-unity --transport stdio`，快取／工具與 Python 路徑留在 runtime。已下載依賴並驗證 `--help` 成功；完整測試 384 passed（初次受限環境無法存取暫存目錄，改在正常環境重跑通過）。尚未套用至 Agent，也未安裝 Unity 專案端套件或驗證 Editor 連線。設定依據：https://coplaydev.github.io/unity-mcp/getting-started/install 。
+
+2026-10-28：收發錯誤恢復修正。Codex 不再重試的 error 立即結束本機回合，不等 turn/completed；去重遲到的結束通知，避免蓋掉下一輪。重試中的錯誤顯示「連線重試中」。授權／回答傳送失敗保留請求，只有使用者再次點擊才重送。送出、編輯及壓縮的一般例外也會離開 running。聊天問答卡增減時保留未變動的 FormBox 與答案，切換對話清除舊卡；Codex 匯入讀完 nextCursor 分頁。空白的新對話不再儲存會覆蓋 Agent／權限的空草稿。新增 6 項回歸測試，完整測試 384 passed（專案外暫存目錄與本機假服務）；git diff --check 通過。修正兩個既有 UI 測試的前置目錄與舊元件引用／選取方式。
+
+本次 Codex 診斷：AgentDock 選到 npm codex-cli 0.165.0；桌面版附帶 0.165.0-alpha.1.2。唯讀查詢原 Session 證實失敗回合的 codexErrorInfo 為 serverOverloaded，後續嘗試多為 interrupted；不能由此斷定是本機版本或帳號差異。兩個執行檔以相同 ChatGPT 帳號、gpt-6.1-sol、default 層級各執行一次 ephemeral 最小請求均 completed（停用 MCP／hooks、不執行工具、不修改真實設定）。當時桌面版可用而 AgentDock 失敗的服務端分流／容量原因仍無法由現有紀錄確定。已補上啟動執行檔、userAgent、Codex home、每輪模型／推理強度、錯誤代碼及 willRetry 日誌，不記錄提示詞或憑證。重啟 AgentDock 載入修正。
+
+2026-10-28：聊天側欄整理為專案粗體／展開箭頭與縮排對話；移除專案對話總數及相對時間，保留未讀與執行／待處理／失敗狀態。狀態、更多選單分為固定寬度欄，hover 不改文字與標題寬度。專案也可由列上的更多選單操作，匯入收在專案選單。離線畫面確認與欄寬回歸測試通過；完整 pytest 為 376 passed、1 failed，未涉及側欄的 test_stop_running_task 等待 interrupted 逾時，單獨重跑亦失敗，尚未解決。
+
+2026-10-28：恢復 OpenCode 完整支援，維持四個 CLI 的聊天、MCP 設定與擴充管理。補回 OpenCode V2 收發、模型／推理選項、歷史／匯入／分叉／編輯、rtk 與 codebase-memory 插件；載入時保留 OpenCode 登記、對話與專案預設。保留本日重啟、專案頁、Agent 更新及操作手感修改；刪除對話仍只移除 AgentDock 清單。使用資料夾內 runtime 執行完整 pytest：377 passed（假服務與暫存設定，未測真實模型）。
+
+2026-10-28：設定 → Agent 改為垂直單列，Claude／Codex／Grok 加入「更新」。點擊後確認實際執行檔路徑，再於背景更新：npm 安裝依該執行檔所屬 prefix 更新，Claude／Grok 官方原生安裝使用 update；其他來源提示由原安裝來源更新，不另裝一份。更新完成驗證並顯示版本，提示重啟 AgentDock；不停止既有對話。測試使用假的安裝路徑與 subprocess，不執行真實更新。
+
+本次驗證：更新及登入測試 18 項通過；完整測試 335 passed、9 failed、18 errors，失敗涉及既有 OpenCode 移除後的舊測試／資產引用（系統匣測試另有 cp950 輸出解碼問題，以 UTF-8 重跑後確認為 OpenCode 標題斷言）。
+
+2026-10-28：操作手感。再開最近的對話立刻顯示記住的最新一頁並回到原本的捲動位置，背景比對 Agent 的紀錄有差才重畫；刪除不再確認，改為清單立刻移除＋約 6 秒「復原」；執行中狀態顯示經過時間；一輪結束或待授權／待回答時，視窗開著但不在前景就閃工作列；送出失敗把訊息與附件放回輸入框；額度浮動視窗右鍵可「立即更新」「關閉」。
+
+2026-10-28：對話頁顯示該 Agent 帳號的全部額度（`ConversationView.set_quota`／`_place_quota`，重用精簡的 QuotaView 並以 `keys` 篩選）：寬時在右下角、窄時在輸入框下方靠右；OpenCode 不顯示。額度更新條件改為對話視窗開著或浮動視窗開著。
+
+2026-10-28：設定「一般」與系統匣選單新增「重新啟動」：有對話進行中時先確認；正常結束後以 `launch.start('--restart')` 另開（對話視窗原本沒開就加 `--background`），新行程用 `--restart` 等舊行程放開 `agentdock.lock`（最多 30 秒）。經 AgentDock.exe 啟動，uv.lock 變了也會順便更新 runtime。
+
+2026-10-28：專案頁改版：名稱平常是純文字、根目錄可點開資料夾，頁面直接放新對話輸入框（選的 Agent 就是專案預設），對話清單沿用「最近」的樣式；匯入、更換根目錄、刪除收進「⋯」。
+
+2026-10-28：對話標題列靠視窗左邊，不再對齊中間的閱讀欄。輸入框下方的 Git 標籤（與每輪結束後查 Git 狀態）移除，Git 只從專案頁或專案右鍵「Git」開；GitDialog 改為無父視窗的獨立視窗（工作列、最小化、最大化、關閉），自己套用對話樣式，可愛外觀也不改成無框（`cute_plain`）。
+
+2026-10-28：刪除對話只從 AgentDock 移除，拿掉「同時刪除 X 裡的紀錄」勾選項與各家的遠端刪除（`Adapter.delete`、`Dispatcher.delete`、OpenCode `delete_session`）；Agent 那邊的紀錄保留，可再匯入。
+
 2026-10-28：編輯訊息改成在訊息泡泡上直接編輯（Qt：`MessageWidget.start_edit`／`edit_submitted`；網頁：頁面上的 `startEdit`，送出走 `edit` 動作帶 `[id, text]` JSON），移除輸入框的「編輯訊息 ✕」編輯模式；`ConversationView.submit_edit` 呼叫 `Dispatcher.edit`。
 
 2026-10-28：可愛外觀（Qt 畫的對話）對齊網頁顯示：一輪結束後步驟收成「處理了 N 個步驟」（`ConversationView._fold_process`、`MessageWidget.set_process`／`set_rule`），執行中思考過程展開、結束後收起（`ReasoningRow.set_live`，使用者點過就不再自動）。網頁版執行中自動展開的思考標 `data-live`，結束後不再被當成使用者展開而保留。

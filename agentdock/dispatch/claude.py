@@ -809,26 +809,6 @@ class ClaudeClient(Adapter):
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         return page(read_history(transcript_file(row.get('directory', ''), row['session_id'])), cursor)
 
-    def delete(self, row: dict) -> None:
-        """Claude Code keeps a session as its transcript (plus a folder for subagents and tool output)."""
-        sid = row['session_id']
-        session = self._live(sid)
-        if session is not None:
-            if session.busy:
-                raise ClientError('這個對話還在執行。')
-            self.forget(session)
-            session.close()
-        path = transcript_file(row.get('directory', ''), sid)
-        if path is None:
-            return
-        try:
-            path.unlink()
-            extra = path.with_suffix('')
-            if extra.is_dir():
-                shutil.rmtree(extra, ignore_errors=True)
-        except OSError as e:
-            raise ClientError(f'無法刪除 Claude Code 的紀錄：{e}') from e
-
     def close(self) -> None:
         with self._lock:
             self._closed = True

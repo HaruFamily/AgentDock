@@ -1,6 +1,7 @@
 # AgentDock 開發指引
 
 先讀 [docs/STATUS.md](docs/STATUS.md)，依任務再讀 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 或 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+UI 修改先讀 [介面規範](docs/skills/agentdock-ui/SKILL.md)；收發、設定交易、runtime 與驗證規範依維護 Skill 的索引讀取。
 重複的開發／驗收工作可使用 [agentdock-maintainer Skill](docs/skills/agentdock-maintainer/SKILL.md)。
 
 - 這是使用者個人自用的 Python 程式，直接從原始碼執行，沒有打包或發行流程。

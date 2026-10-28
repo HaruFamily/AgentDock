@@ -146,38 +146,6 @@ def test_import_lists_and_adopts(setup, client):
     assert next(s for s in again[0] if s['id'] == sid)['tracked'] is True
 
 
-def test_opencode_fork_list_and_context(tmp_path):
-    from tests.test_dispatch import FakeOpenCode, PASSWORD
-    from agentdock.dispatch.opencode import OpenCodeService
-    fake = FakeOpenCode()
-    service = OpenCodeService(fake.url, PASSWORD)
-    store = QuestionStore(tmp_path / 'data')
-    sender = Dispatcher(store.dispatch, connect=lambda _s: service, adapters=[])
-    fake.sessions['ses_1'] = {'id': 'ses_1', 'title': 'Hi', 'location': {'directory': '/w'}}
-    fake.messages['ses_1'] = [
-        {'id': 'u1', 'type': 'user', 'text': 'one'},
-        {'id': 'a1', 'type': 'assistant', 'content': [], 'tokens': {'input': 10, 'output': 5, 'reasoning': 0,
-                                                                     'cache': {'read': 100, 'write': 0}},
-         'model': {'id': 'm', 'providerID': 'p'}},
-        {'id': 'a1b', 'type': 'assistant', 'content': []},
-        {'id': 'u2', 'type': 'user', 'text': 'two'},
-        {'id': 'a2', 'type': 'assistant', 'content': []}]
-    found = []
-    sender.sessions('opencode', found.append)
-    wait(lambda: found)
-    assert found[0] == [{'id': 'ses_1', 'title': 'Hi', 'directory': '/w', 'updated': 1700000000.0, 'tracked': False}]
-    store.dispatch.track('opencode', 'ses_1', owner=OWNER, title='Hi', directory='/w', state='done')
-    forks = []
-    sender.fork('opencode:ses_1', 'a1', done=forks.append)
-    wait(lambda: forks)
-    new_sid = forks[0].split(':', 1)[1]
-    assert [m['id'] for m in fake.messages[new_sid]] == ['u1', 'a1', 'a1b']   # forked before the next prompt
-    assert ('POST', 'api/session/ses_1/fork', {'before': 'u2'}) in fake.calls
-    assert service.context('ses_1') == {'used': 115, 'model': 'p/m'}
-    sender.close()
-    fake.server.shutdown()
-
-
 # --------------------------------------------------------------------------- edit
 def test_claude_rewind_point(tmp_path):
     path = write_transcript(tmp_path / 'p')
@@ -249,27 +217,6 @@ def test_claude_edit_resumes_before_the_message(setup, monkeypatch):
     assert notes == []
 
 
-def test_opencode_edit_reverts_then_sends(tmp_path):
-    from tests.test_dispatch import FakeOpenCode, PASSWORD
-    from agentdock.dispatch.opencode import OpenCodeService
-    fake = FakeOpenCode()
-    service = OpenCodeService(fake.url, PASSWORD)
-    store = QuestionStore(tmp_path / 'data')
-    notes = []
-    sender = Dispatcher(store.dispatch, notify=notes.append, connect=lambda _s: service, adapters=[])
-    fake.sessions['ses_1'] = {'id': 'ses_1', 'title': 'Hi', 'location': {'directory': '/w'}}
-    fake.messages['ses_1'] = [{'id': 'u1', 'type': 'user', 'text': 'one'}, {'id': 'a1', 'type': 'assistant', 'content': []},
-                              {'id': 'u2', 'type': 'user', 'text': 'two'}, {'id': 'a2', 'type': 'assistant', 'content': []}]
-    store.dispatch.track('opencode', 'ses_1', owner=OWNER, title='Hi', directory='/w', state='done')
-    sender.edit('opencode:ses_1', 'live-id', 0, 'TWO')
-    wait(lambda: any(c[1] == 'api/session/ses_1/prompt' for c in fake.calls))
-    assert ('POST', 'api/session/ses_1/revert/stage', {'messageID': 'u2', 'files': False}) in fake.calls
-    assert [m.get('text') for m in fake.messages['ses_1'] if m['type'] == 'user'] == ['one', 'TWO']
-    assert notes == []
-    sender.close()
-    fake.server.shutdown()
-
-
 # --------------------------------------------------------------------------- git
 def git(root, *args):
     subprocess.run(['git', '-C', str(root), *args], check=True, capture_output=True)
@@ -316,23 +263,33 @@ def test_git_status_stage_commit_and_branches(repo):
     assert gitops.repo_root(str(repo.parent)) is None
 
 
-def test_git_window_commits_on_click(repo, ui_app):
+def test_git_window_is_read_only(repo, ui_app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QPushButton
     from agentdock.ui.git_view import GitDialog
-    (repo / 'a.txt').write_text('changed\n')
-    dialog = GitDialog(None, str(repo))
+    (repo / 'a.txt').write_text('staged version\n')
+    gitops.stage(str(repo), ['a.txt'])
+    (repo / 'a.txt').write_text('worktree version\n')
+    before = (repo / '.git' / 'index').read_bytes()
+    head = gitops.run(str(repo), 'rev-parse', 'HEAD')
+    dialog = GitDialog(str(repo))
+    dialog.show()
     pump = lambda condition: wait_ui(ui_app, condition)
     pump(lambda: dialog.status is not None and dialog.busy == 0)
-    assert dialog.branch.currentData() == 'main' and not dialog.commit_button.isEnabled()
-    unstaged = dialog.changes.topLevelItem(1).child(0)
-    dialog.changes.setCurrentItem(unstaged)
-    pump(lambda: 'changed' in dialog.diff.toPlainText())
-    dialog._toggle([unstaged])
-    pump(lambda: dialog.busy == 0 and dialog.changes.topLevelItem(0).childCount() == 1)
-    dialog.message.setPlainText('edit a')
-    assert dialog.commit_button.isEnabled()
-    dialog.commit_button.click()
-    pump(lambda: dialog.busy == 0 and dialog.status.changes == [] and dialog.message.toPlainText() == '')
-    assert gitops.log(str(repo))[0][1] == 'edit a'
+    assert dialog.branch.text() == 'main'
+    for group, expected in [(0, 'staged version'), (1, 'worktree version')]:
+        item = dialog.changes.topLevelItem(group).child(0)
+        dialog.changes.setCurrentItem(item)
+        pump(lambda: expected in dialog.diff.toPlainText() and dialog.busy == 0)
+        QTest.mouseDClick(dialog.changes.viewport(), Qt.MouseButton.LeftButton,
+                         pos=dialog.changes.visualItemRect(item).center())
+    dialog.reload()
+    pump(lambda: dialog.busy == 0)
+    assert (repo / '.git' / 'index').read_bytes() == before
+    assert gitops.run(str(repo), 'rev-parse', 'HEAD') == head
+    assert (repo / 'a.txt').read_text() == 'worktree version\n'
+    assert not any(b.text().startswith(('提交', '推送', '拉取', '暫存', '捨棄')) for b in dialog.findChildren(QPushButton))
     dialog.close()
 
 
@@ -367,3 +324,57 @@ def test_git_window_counts_lines_and_numbers_the_diff(repo, ui_app):
     assert '<td class="ln">4</td><td class="ln"></td>' in rows        # removed: old side only
     assert '<td class="ln"></td><td class="ln">5</td>' in rows        # second added line
     assert '<old>' not in rows                                        # code is escaped
+
+
+def test_opencode_fork_list_and_context(tmp_path):
+    from tests.test_dispatch import FakeOpenCode, PASSWORD
+    from agentdock.dispatch.opencode import OpenCodeService
+    fake = FakeOpenCode()
+    service = OpenCodeService(fake.url, PASSWORD)
+    store = QuestionStore(tmp_path / 'data')
+    sender = Dispatcher(store.dispatch, connect=lambda _s: service, adapters=[])
+    fake.sessions['ses_1'] = {'id': 'ses_1', 'title': 'Hi', 'location': {'directory': '/w'}}
+    fake.messages['ses_1'] = [
+        {'id': 'u1', 'type': 'user', 'text': 'one'},
+        {'id': 'a1', 'type': 'assistant', 'content': [], 'tokens': {'input': 10, 'output': 5, 'reasoning': 0,
+                                                                     'cache': {'read': 100, 'write': 0}},
+         'model': {'id': 'm', 'providerID': 'p'}},
+        {'id': 'a1b', 'type': 'assistant', 'content': []},
+        {'id': 'u2', 'type': 'user', 'text': 'two'},
+        {'id': 'a2', 'type': 'assistant', 'content': []}]
+    found = []
+    sender.sessions('opencode', found.append)
+    wait(lambda: found)
+    assert found[0] == [{'id': 'ses_1', 'title': 'Hi', 'directory': '/w', 'updated': 1700000000.0, 'tracked': False}]
+    store.dispatch.track('opencode', 'ses_1', owner=OWNER, title='Hi', directory='/w', state='done')
+    forks = []
+    sender.fork('opencode:ses_1', 'a1', done=forks.append)
+    wait(lambda: forks)
+    new_sid = forks[0].split(':', 1)[1]
+    assert [m['id'] for m in fake.messages[new_sid]] == ['u1', 'a1', 'a1b']   # forked before the next prompt
+    assert ('POST', 'api/session/ses_1/fork', {'before': 'u2'}) in fake.calls
+    assert service.context('ses_1') == {'used': 115, 'model': 'p/m'}
+    sender.close()
+    fake.server.shutdown()
+
+
+
+def test_opencode_edit_reverts_then_sends(tmp_path):
+    from tests.test_dispatch import FakeOpenCode, PASSWORD
+    from agentdock.dispatch.opencode import OpenCodeService
+    fake = FakeOpenCode()
+    service = OpenCodeService(fake.url, PASSWORD)
+    store = QuestionStore(tmp_path / 'data')
+    notes = []
+    sender = Dispatcher(store.dispatch, notify=notes.append, connect=lambda _s: service, adapters=[])
+    fake.sessions['ses_1'] = {'id': 'ses_1', 'title': 'Hi', 'location': {'directory': '/w'}}
+    fake.messages['ses_1'] = [{'id': 'u1', 'type': 'user', 'text': 'one'}, {'id': 'a1', 'type': 'assistant', 'content': []},
+                              {'id': 'u2', 'type': 'user', 'text': 'two'}, {'id': 'a2', 'type': 'assistant', 'content': []}]
+    store.dispatch.track('opencode', 'ses_1', owner=OWNER, title='Hi', directory='/w', state='done')
+    sender.edit('opencode:ses_1', 'live-id', 0, 'TWO')
+    wait(lambda: any(c[1] == 'api/session/ses_1/prompt' for c in fake.calls))
+    assert ('POST', 'api/session/ses_1/revert/stage', {'messageID': 'u2', 'files': False}) in fake.calls
+    assert [m.get('text') for m in fake.messages['ses_1'] if m['type'] == 'user'] == ['one', 'TWO']
+    assert notes == []
+    sender.close()
+    fake.server.shutdown()

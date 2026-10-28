@@ -6,6 +6,7 @@ whose root contains its working folder; otherwise it is unsorted.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Any, Callable
 from agentdock.files import atomic_json, load_json
 
 UNSORTED = ''
+PROJECT_ICONS = ('folder', 'tools', 'chat', 'shield', 'agent')
 
 
 def _norm(path: str) -> str:
@@ -29,7 +31,9 @@ class ProjectStore:
         rows = data.get('projects') if isinstance(data, dict) else None
         self.projects: list[dict[str, Any]] = [
             {'id': str(p['id']), 'name': str(p.get('name') or 'Project'), 'root': str(p.get('root', '')),
-             'agent': str(p.get('agent') or 'opencode')}
+             'agent': str(p.get('agent') or 'opencode'),
+             'icon': p.get('icon') if p.get('icon') in PROJECT_ICONS else 'folder',
+             'color': p.get('color', '') if re.fullmatch(r'#[0-9a-fA-F]{6}', str(p.get('color', ''))) else ''}
             for p in (rows or []) if isinstance(p, dict) and p.get('id')]
 
     def _save(self) -> None:
@@ -48,7 +52,7 @@ class ProjectStore:
             raise ValueError('名稱需為 1–80 字。')
         if not os.path.isdir(root):
             raise ValueError('找不到這個資料夾。')
-        project = {'id': str(uuid.uuid4()), 'name': name, 'root': os.path.normpath(root), 'agent': agent}
+        project = {'id': str(uuid.uuid4()), 'name': name, 'root': os.path.normpath(root), 'agent': agent, 'color': '', 'icon': 'folder'}
         with self.lock:
             self.projects = [*self.projects, project]
             self._save()
@@ -67,7 +71,11 @@ class ProjectStore:
                 if not os.path.isdir(changes['root']):
                     raise ValueError('找不到這個資料夾。')
                 changes['root'] = os.path.normpath(changes['root'])
-            updated = {**current, **{k: v for k, v in changes.items() if k in ('name', 'root', 'agent')}}
+            if 'icon' in changes and changes['icon'] not in PROJECT_ICONS:
+                raise ValueError('請選擇有效的專案圖示。')
+            if 'color' in changes and changes['color'] != '' and not re.fullmatch(r'#[0-9a-fA-F]{6}', str(changes['color'])):
+                raise ValueError('請選擇有效的圖示顏色。')
+            updated = {**current, **{k: v for k, v in changes.items() if k in ('name', 'root', 'agent', 'color', 'icon')}}
             self.projects = [updated if p['id'] == pid else p for p in self.projects]
             self._save()
         return dict(updated)

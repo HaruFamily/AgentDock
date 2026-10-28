@@ -92,9 +92,10 @@ class ConversationTree(QTreeWidget):
         super().__init__()
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.setHeaderHidden(True)
-        self.setColumnCount(2)
-        self.setIndentation(14)
+        self.setColumnCount(3)
+        self.setIndentation(18)
         self.setRootIsDecorated(False)
+        self.setExpandsOnDoubleClick(False)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
@@ -110,13 +111,15 @@ class ConversationTree(QTreeWidget):
         self.setPalette(palette)
         self.header().setStretchLastSection(False)
         self.header().setSectionResizeMode(0, self.header().ResizeMode.Stretch)
-        self.header().setSectionResizeMode(1, self.header().ResizeMode.ResizeToContents)
+        for column, width in ((1, 52), (2, 28)):
+            self.header().setSectionResizeMode(column, self.header().ResizeMode.Fixed)
+            self.setColumnWidth(column, width)
 
     def drawRow(self, painter, option, index):  # noqa: N802
         """One rounded highlight for the whole row; per-cell backgrounds would split it in two."""
         from PySide6.QtGui import QCursor, QPainter
         selected = self.selectionModel().isSelected(index)
-        hovered = index == self.indexAt(self.viewport().mapFromGlobal(QCursor.pos()))
+        hovered = index == self.indexAt(self.viewport().mapFromGlobal(QCursor.pos())).siblingAtColumn(0)
         if selected or hovered:
             first = self.visualRect(index.siblingAtColumn(0))
             rect = option.rect.adjusted(first.left() - option.rect.left(), 1, -2, -1)
@@ -130,7 +133,7 @@ class ConversationTree(QTreeWidget):
         super().drawRow(painter, option, index)
 
     def drawBranches(self, painter, rect, index):  # noqa: N802
-        pass   # no expand arrows; the indent would otherwise show the system's square selection colour
+        pass
 
     def mouseMoveEvent(self, event):  # noqa: N802
         super().mouseMoveEvent(event)
@@ -194,7 +197,10 @@ class Sidebar(QFrame):
         self.style_new_button()
         layout.addWidget(self.new_button)
         self.search = QLineEdit()
-        self.search.setPlaceholderText('搜尋')
+        self.search.setObjectName('SidebarSearch')
+        self.search.setPlaceholderText('搜尋對話')
+        self.search.setAccessibleName('搜尋對話')
+        self.search.addAction(icon('search', theme.MUTED or '#888888', 16), QLineEdit.ActionPosition.LeadingPosition)
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda _t: self.refresh())
         layout.addWidget(self.search)
@@ -202,9 +208,6 @@ class Sidebar(QFrame):
         section = QLabel('專案')
         section.setObjectName('SectionLabel')
         head.addWidget(section, 1)
-        adopt = icon_button('⇩', '匯入對話')
-        adopt.clicked.connect(lambda: window.import_conversations())
-        head.addWidget(adopt)
         add = icon_button('＋', '新增專案')
         add.clicked.connect(lambda: window.add_project())
         head.addWidget(add)
@@ -215,9 +218,11 @@ class Sidebar(QFrame):
         self.tree.customContextMenuRequested.connect(self._menu)
         self.tree.setMouseTracking(True)
         self.tree.itemEntered.connect(self._hovered)
+        self.tree.verticalScrollBar().valueChanged.connect(lambda _v: self._unhover())
         self.tree.viewport().installEventFilter(self)
         self.hover_item = None
         self.hover_button = None
+        self.hover_new = None
         self.tree.key_action.connect(lambda action, key: (window.delete_conversation(key) if action == 'delete'
                                                           else window.rename_conversation(key)))
         layout.addWidget(self.tree, 1)
@@ -231,10 +236,11 @@ class Sidebar(QFrame):
         """Filled with the accent only in the sweet look; otherwise a quiet outlined button, so the accent
         stays for sending and the selected conversation."""
         b = self.new_button
-        b.setText(theme.t('chat_new'))
-        b.setIcon(heart_icon(False, 'white', 15) if theme.CUTE else QIcon())
-        b.setProperty('primary', theme.CUTE)
-        b.setObjectName('' if theme.CUTE else 'NewChat')
+        b.setText('新對話')
+        b.setIcon(icon('plus', theme.INK or '#888888', 16))
+        b.setProperty('primary', False)
+        b.setObjectName('NewChat')
+        b.setMinimumHeight(38)
         b.style().unpolish(b)
         b.style().polish(b)
 
@@ -247,7 +253,8 @@ class Sidebar(QFrame):
         found = []
         for i in range(self.tree.topLevelItemCount()):
             top = self.tree.topLevelItem(i)
-            found += [top.child(j).data(0, ROLE)[1] for j in range(top.childCount())]
+            found += [top.child(j).data(0, ROLE)[1] for j in range(top.childCount())
+                      if (top.child(j).data(0, ROLE) or ('',))[0] == 'conv']
         return found
 
     # -- the ⋯ on the row under the mouse opens the same menu as a right click --------
@@ -256,28 +263,47 @@ class Sidebar(QFrame):
             return
         self._unhover()
         kind, _value = item.data(0, ROLE) or ('', '')
-        if kind != 'conv':
+        if kind not in ('conv', 'project') or (kind == 'project' and not _value):
             return
         self.hover_item = item
-        b = QPushButton()
+        b = QPushButton(self.tree.viewport())
         b.setObjectName('RowMore')
-        b.setAccessibleName('更多')
+        b.setAccessibleName('專案設定' if kind == 'project' else '更多')
+        b.setToolTip('專案設定' if kind == 'project' else '更多')
         b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.setIcon(icon('more', theme.MUTED or '#888888', 16))
+        b.setIcon(icon('settings' if kind == 'project' else 'more', theme.MUTED or '#888888', 16))
         b.setFixedSize(26, 22)
-        b.clicked.connect(lambda _c=False, i=item, w=b: self._menu_for(i, w.mapToGlobal(w.rect().bottomLeft())))
+        if kind == 'project':
+            b.clicked.connect(lambda _c=False, pid=_value: self.window_.project_settings(pid))
+        else:
+            b.clicked.connect(lambda _c=False, i=item, w=b: self._menu_for(i, w.mapToGlobal(w.rect().bottomLeft())))
         self.hover_button = b
-        self.hover_text = item.text(1)
-        item.setText(1, ' ' * max(4, len(self.hover_text)))   # keeps the column width; the ⋯ sits on it
-        self.tree.setItemWidget(item, 1, b)
+        rect = self.tree.visualItemRect(item)
+        b.move(self.tree.viewport().width() - 28, rect.center().y() - 11)
+        b.show()
+        if kind == 'project':
+            add = QPushButton(self.tree.viewport())
+            add.setObjectName('RowMore')
+            add.setAccessibleName('新對話')
+            add.setIcon(icon('plus', theme.MUTED or '#888888', 16))
+            add.setFixedSize(26, 22)
+            add.setCursor(Qt.CursorShape.PointingHandCursor)
+            add.move(b.x() - 28, b.y())
+            add.clicked.connect(lambda _c=False, pid=_value: self.window_.show_new(pid))
+            add.show()
+            self.hover_new = add
 
     def _unhover(self) -> None:
         if self.hover_item is not None:
             try:
-                self.tree.removeItemWidget(self.hover_item, 1)
-                self.hover_item.setText(1, self.hover_text)
+                self.hover_button.hide()
+                self.hover_button.deleteLater()
             except RuntimeError:
                 pass   # the list was rebuilt
+        if self.hover_new is not None:
+            self.hover_new.hide()
+            self.hover_new.deleteLater()
+            self.hover_new = None
         self.hover_item = self.hover_button = None
 
     def eventFilter(self, watched, event):  # noqa: N802
@@ -312,12 +338,13 @@ class Sidebar(QFrame):
                 action = menu.addAction('在終端機接續', lambda: w.resume_in_terminal(value))
                 action.setEnabled(row['state'] != 'running')
             menu.addSeparator()
-            action = menu.addAction('刪除…', lambda: w.delete_conversation(value))
+            action = menu.addAction('刪除', lambda: w.delete_conversation(value))
             action.setEnabled(row['state'] != 'running')
         elif kind == 'project' and value:
             menu.addAction('在此專案開新對話', lambda: w.show_new(value))
             menu.addAction('匯入對話到此專案…', lambda: w.import_conversations(value))
-            menu.addAction('專案設定', lambda: w.show_project(value))
+            menu.addAction('專案變更', lambda: w.open_git((w.projects.get(value) or {}).get('root', ''), report=True))
+            menu.addAction('專案設定…', lambda: w.project_settings(value))
         else:
             return
         self.show_menu(menu, where)
@@ -329,18 +356,19 @@ class Sidebar(QFrame):
         kind, value = item.data(0, ROLE) or ('', '')
         if kind == 'conv':
             self.window_.open_conversation(value)
-        elif kind == 'project' and value:
-            self.window_.show_project(value)
+        elif kind in ('project', 'pinned'):
+            item.setExpanded(not item.isExpanded())
 
     def refresh(self) -> None:
         w = self.window_
         query = self.search.text().strip().lower()
         expanded = {tuple(self.tree.topLevelItem(i).data(0, ROLE)): self.tree.topLevelItem(i).isExpanded()
                     for i in range(self.tree.topLevelItemCount())}
-        rows = sorted(w.store.dispatch.rows.items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
+        rows = sorted(w.rows().items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
+        project_names = {p['id']: p['name'].lower() for p in w.projects.list()}
         groups: dict[str, list] = {}
         for key, row in rows:
-            if query and not any(query in str(row.get(name, '')).lower()
+            if query and query not in project_names.get(w.projects.project_of(row), '') and not any(query in str(row.get(name, '')).lower()
                                  for name in ('title', 'prompt', 'reply', 'source', 'directory')):
                 continue
             groups.setdefault('\x00pinned' if row.get('pinned') else w.projects.project_of(row), []).append((key, row))
@@ -354,18 +382,26 @@ class Sidebar(QFrame):
             convs = groups.get(pid, [])
             if pid in (UNSORTED, PINNED) and not convs:
                 continue
-            top = QTreeWidgetItem([name, str(len(convs)) if convs and pid != PINNED else ''])
+            top = QTreeWidgetItem([name, '', ''])
             top.setData(0, ROLE, ('pinned', '') if pid == PINNED else ('project', pid))
             font = top.font(0)
             font.setBold(True)
             top.setFont(0, font)
+            top.setSizeHint(0, QSize(0, 38))
             top.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled | Qt.ItemFlag.ItemIsSelectable)
             if pid and pid != PINNED:
-                top.setToolTip(0, w.projects.get(pid)['root'])
+                project = w.projects.get(pid)
+                top.setToolTip(0, project['root'])
+                top.setIcon(0, icon(project.get('icon', 'folder'), project.get('color') or theme.MUTED or '#888888', 16))
             self.tree.addTopLevelItem(top)
+            selected_project = w.project_view.pid if w.pages.currentWidget() is w.project_view else w.new_view.pid
+            if not w.current_key and pid and pid == selected_project:
+                self.tree.setCurrentItem(top)
             for key, row in convs:
                 badge = self._badge(row)
-                child = QTreeWidgetItem([row['title'], badge or when(row.get('updated_at', ''))])
+                child = QTreeWidgetItem([row['title'], badge, ''])
+                child.setSizeHint(0, QSize(0, 32))
+                child.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
                 child.setData(0, ROLE, ('conv', key))
                 child.setToolTip(0, row['title'])
                 child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled)
@@ -373,12 +409,18 @@ class Sidebar(QFrame):
                     child.setForeground(1, theme_color('ALERT'))
                 elif badge == '●':
                     child.setForeground(1, theme_color('ACCENT'))
-                    child.setText(1, f"● {when(row.get('updated_at', ''))}")
                 else:
                     child.setForeground(1, theme_color('MUTED'))
                 top.addChild(child)
                 if key == w.current_key:
                     self.tree.setCurrentItem(child)
+            if not convs:
+                empty = QTreeWidgetItem(['沒有符合的對話' if query else '沒有對話', '', ''])
+                empty.setData(0, ROLE, ('empty', ''))
+                empty.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                empty.setForeground(0, theme_color('MUTED'))
+                empty.setSizeHint(0, QSize(0, 30))
+                top.addChild(empty)
             top.setExpanded(expanded.get(tuple(top.data(0, ROLE)), True) or bool(query))
 
     @staticmethod

@@ -25,6 +25,7 @@ def icon_button(text: str, tip: str, *, danger: bool = False) -> QPushButton:
     if danger:
         b.setProperty("danger", True)
     b.setToolTip(tip)
+    b.setAccessibleName(tip)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     return b
 

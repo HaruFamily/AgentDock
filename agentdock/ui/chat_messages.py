@@ -353,12 +353,16 @@ class MessageWidget(QWidget):
                 for name in item['files']:
                     path = resolve(name) if resolve else ''
                     pixmap = QPixmap(path) if path else QPixmap()
-                    attachment = QLabel()
+                    from agentdock.ui.qa_view import ClickableImage
+                    attachment = ClickableImage() if not pixmap.isNull() else QLabel()
                     if not pixmap.isNull():
                         attachment.setPixmap(pixmap.scaled(
                             360, 240, Qt.AspectRatioMode.KeepAspectRatio,
                             Qt.TransformationMode.SmoothTransformation))
                         attachment.setAccessibleName(name)
+                        attachment.setCursor(Qt.CursorShape.PointingHandCursor)
+                        from agentdock.ui.external_tools import open_target
+                        attachment.clicked.connect(lambda p=path: open_target('image', p))
                     else:
                         attachment.setText(f'附件：{name}')
                         attachment.setObjectName('FileNote')

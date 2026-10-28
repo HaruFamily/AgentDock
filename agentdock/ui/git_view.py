@@ -1,14 +1,9 @@
-"""The Git window of a project folder: changes with their diff, stage, commit, push / pull, branches.
-
-Nothing runs on its own: every git command follows a click (or opening the window, which reads the status).
-Laid out as in VS Code / GitHub Desktop: the commit box on top of the changed files, each file as its name
-with the folder dimmed, a coloured status letter and its +/− lines; the diff as a web page in GitHub's look
-(line numbers, tinted rows, syntax colours) when the web view is on, otherwise as coloured text.
-"""
+"""Read-only project changes: branch, staged/worktree files and diffs."""
 from __future__ import annotations
 
 import html
 import os
+import subprocess
 import threading
 from typing import Callable
 
@@ -41,8 +36,7 @@ class _Relay(QObject):
 
 # --------------------------------------------------------------------------- the file list
 class ChangeDelegate(QStyledItemDelegate):
-    """One changed file: status letter, name, dimmed folder, +/− lines; on hover a ＋ / − to (un)stage it.
-    The group rows (已暫存 / 變更) get a ＋ / − for all their files."""
+    """Read-only file rows with status, path and added/removed line counts."""
 
     def __init__(self, dialog):
         super().__init__(dialog)
@@ -50,22 +44,6 @@ class ChangeDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):  # noqa: N802
         return QSize(100, theme.px(28))
-
-    @staticmethod
-    def glyph_rect(rect: QRect) -> QRect:
-        side = theme.px(20)
-        return QRect(rect.right() - side - 6, rect.center().y() - side // 2, side, side)
-
-    def _glyph(self, index) -> str:
-        """＋ / − for the row, '' when it has nothing to act on."""
-        item = self.dialog.changes.itemFromIndex(index)
-        if item is None:
-            return ''
-        head = item.data(0, HEAD)
-        if head is not None:
-            return ('−' if head else '＋') if item.childCount() else ''
-        data = item.data(0, ROLE)
-        return ('−' if data[1] else '＋') if data else ''
 
     def paint(self, painter, option, index):
         item = self.dialog.changes.itemFromIndex(index)
@@ -84,15 +62,6 @@ class ChangeDelegate(QStyledItemDelegate):
         font = QFont(option.font)
         muted, ink = QColor(theme.MUTED), QColor(theme.INK)
         right = rect.right() - 8
-        glyph = self._glyph(index) if hovered else ''
-        if glyph:
-            g = self.glyph_rect(option.rect)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(theme.CARD))
-            painter.drawRoundedRect(g, 5, 5)
-            painter.setPen(ink)
-            painter.drawText(g, Qt.AlignmentFlag.AlignCenter, glyph)
-            right = g.left() - 6
         if head is not None:
             font.setBold(True)
             font.setPixelSize(theme.px(12))
@@ -109,14 +78,14 @@ class ChangeDelegate(QStyledItemDelegate):
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(letter_colour(letter))
-        mark = 'U' if letter == '?' else letter
+        mark = letter
         painter.drawText(QRect(x, rect.top(), 16, rect.height()), Qt.AlignmentFlag.AlignVCenter, mark)
         x += 22
-        if stats and not glyph:
+        if stats:
             small = QFont(option.font)
             small.setPixelSize(theme.px(11))
             painter.setFont(small)
-            added, removed = f'+{stats[0]}', f'−{stats[1]}'
+            added, removed = f'+{stats[0]}', f'-{stats[1]}'
             metrics = painter.fontMetrics()
             width = metrics.horizontalAdvance(added) + metrics.horizontalAdvance(removed) + 6
             painter.setPen(QColor(theme.OK))
@@ -142,15 +111,6 @@ class ChangeDelegate(QStyledItemDelegate):
             text = painter.fontMetrics().elidedText(folder, Qt.TextElideMode.ElideLeft, right - x)
             painter.drawText(QRect(x, rect.top(), right - x, rect.height()), Qt.AlignmentFlag.AlignVCenter, text)
         painter.restore()
-
-    def editorEvent(self, event, model, option, index):  # noqa: N802
-        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease) \
-                and self._glyph(index) and self.glyph_rect(option.rect).contains(event.position().toPoint()):
-            if event.type() == QEvent.Type.MouseButtonRelease:
-                self.dialog.glyph_clicked(self.dialog.changes.itemFromIndex(index))
-            return True
-        return super().editorEvent(event, model, option, index)
-
 
 # --------------------------------------------------------------------------- the diff page
 def diff_rows(diff: str, path: str) -> tuple[str, int, int]:
@@ -262,52 +222,54 @@ tr.meta td {{ color: {t.MUTED}; }}
 
 
 # --------------------------------------------------------------------------- the window
-class GitDialog(QDialog):
-    def __init__(self, parent, root: str):
-        super().__init__(parent)
+class GitView(QWidget):
+    """Read-only changes shared by the project page and standalone viewer."""
+
+    def __init__(self, root: str = '', external=None, embedded: bool = False):
+        super().__init__()
+        self.external = external
+        self.embedded = embedded
+        self._generation = 0
+        self.directory = root
+        self.restyle()
         self.root = root
         self.status: gitops.Status | None = None
         self.stats: dict[tuple[str, bool], tuple[int, int]] = {}
         self.busy = 0
         self.relay = _Relay(self)
         self.relay.done.connect(lambda callback, result, error: callback(result, error))
-        self.setWindowTitle(f'Git — {root}')
+        self.setWindowTitle(f'專案變更 — {root}')
+        self._diff_serial = 0
         self.resize(1080, 700)
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         top = QHBoxLayout()
-        self.branch = QComboBox()
-        self.branch.setMinimumWidth(180)
-        self.branch.activated.connect(self._branch_picked)
-        top.addWidget(self.branch)
+        self.branch = label('', wrap=False)
+        self.branch.setAccessibleName('目前分支')
+        heading = QVBoxLayout()
+        heading.setSpacing(3)
+        heading.addWidget(label('Git 變更', name='GroupTitle'))
+        meta = QHBoxLayout()
+        meta.addWidget(self.branch)
         self.tracking = label('', muted=True)
-        top.addWidget(self.tracking, 1)
-        self.pull_button = button('拉取')
-        self.pull_button.clicked.connect(lambda: self._run(lambda: gitops.pull(self.root), self._said, '拉取'))
-        top.addWidget(self.pull_button)
-        self.push_button = button('推送')
-        self.push_button.clicked.connect(lambda: self._run(lambda: gitops.push(self.root), self._said, '推送'))
-        top.addWidget(self.push_button)
-        refresh = icon_button('⟳', '重新整理')
+        meta.addWidget(self.tracking, 1)
+        heading.addLayout(meta)
+        top.addLayout(heading, 1)
+        self.external_button = button('開啟 Git 工具')
+        self.external_button.clicked.connect(self._external)
+        top.addWidget(self.external_button)
+        refresh = button('重新整理', flat=True)
         refresh.clicked.connect(self.reload)
         top.addWidget(refresh)
         layout.addLayout(top)
 
-        split = QSplitter(Qt.Orientation.Horizontal)
+        split = self.split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         column = QVBoxLayout(left)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(8)
-        # Write the message, commit, then the files: as in VS Code.
-        self.message = QPlainTextEdit()
-        self.message.setPlaceholderText('提交訊息')
-        self.message.setFixedHeight(theme.px(64))
-        self.message.textChanged.connect(self._sync_buttons)
-        column.addWidget(self.message)
-        self.commit_button = button('提交', primary=True)
-        self.commit_button.clicked.connect(self._commit)
-        column.addWidget(self.commit_button)
         self.changes = QTreeWidget()
         self.changes.setObjectName('GitChanges')
         self.changes.setHeaderHidden(True)
@@ -322,10 +284,7 @@ class GitDialog(QDialog):
                 palette.setColor(getattr(QPalette.ColorRole, role), QColor(0, 0, 0, 0))
         self.changes.setPalette(palette)
         self.changes.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
-        self.changes.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.changes.customContextMenuRequested.connect(self._menu)
         self.changes.currentItemChanged.connect(lambda item, _old: self._show_diff(item))
-        self.changes.itemDoubleClicked.connect(lambda item, _c: self._toggle([item]))
         column.addWidget(self.changes, 1)
         split.addWidget(left)
         # The diff: a web page in GitHub's look; coloured text when the web view is off (and for find in tests).
@@ -341,7 +300,12 @@ class GitDialog(QDialog):
             self.web.setHtml(diff_page('', '', ' '), self.web.page_url)
         else:
             split.addWidget(self.diff)
-        split.setSizes([380, 700])
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(8)
+        split.setSizes([240, 460])
+        self.empty = label('載入中…', muted=True)
+        self.empty.setContentsMargins(0, 12, 0, 12)
+        layout.addWidget(self.empty)
         layout.addWidget(split, 1)
         self.error = QLabel()
         self.error.setObjectName('ErrorText')
@@ -349,13 +313,23 @@ class GitDialog(QDialog):
         self.error.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.error.hide()
         layout.addWidget(self.error)
-        self.reload()
+        self._show_content(False)
+        if root:
+            self.reload()
+
+    def _show_content(self, visible: bool, note: str = '') -> None:
+        self.split.setVisible(visible)
+        self.empty.setVisible(not visible)
+        self.empty.setText(note or '載入中…')
+        if self.embedded:
+            self.split.setFixedHeight(300 if self.width() >= 650 else 420)
 
     def on_action(self, _action: str, _arg: str) -> None:
         """The diff page has no buttons; links in it are not followed."""
 
     # -- running git off the UI thread ------------------------------------------------
     def _run(self, job: Callable[[], object], then: Callable[[object], None], name: str = '') -> None:
+        generation = self._generation
         self.busy += 1
         self._sync_buttons()
 
@@ -364,13 +338,20 @@ class GitDialog(QDialog):
                 result, error = job(), None
             except (gitops.GitError, OSError) as e:
                 result, error = None, f'{name}失敗：{e}' if name else str(e)
-            self.relay.done.emit(self._finished(then), result, error)
+            try:
+                self.relay.done.emit(self._finished(then, generation), result, error)
+            except RuntimeError:
+                pass  # the page/window was destroyed while the read was pending
         threading.Thread(target=work, name='AgentDock git', daemon=True).start()
 
-    def _finished(self, then: Callable[[object], None]) -> Callable[[object, object], None]:
+    def _finished(self, then: Callable[[object], None], generation: int) -> Callable[[object, object], None]:
         def finish(result, error):
             self.busy -= 1
+            if generation != self._generation:
+                return
             if error:
+                if self.status is None:
+                    self._show_content(False, "無法讀取 Git 狀態")
                 self.error.setText(error)
                 self.error.show()
             else:
@@ -379,34 +360,64 @@ class GitDialog(QDialog):
             self._sync_buttons()
         return finish
 
+    def restyle(self) -> None:
+        from agentdock.ui.chat_common import _style
+        self.setStyleSheet(_style() + f'''
+            QTreeWidget#GitChanges, QTextBrowser {{
+                background: {theme.CARD}; color: {theme.INK};
+                border: 1px solid {theme.LINE}; border-radius: 6px;
+            }}
+        ''')
+
+    def set_root(self, directory: str, force: bool = False) -> None:
+        if directory != self.directory or force:
+            self.directory = directory
+            self.reload()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, 'split'):
+            self.split.setOrientation(Qt.Orientation.Vertical if self.width() < 650 else Qt.Orientation.Horizontal)
+            if self.embedded:
+                self.split.setFixedHeight(420 if self.width() < 650 else 300)
+
     def reload(self) -> None:
-        self._run(lambda: (gitops.status(self.root), gitops.branches(self.root),
-                           gitops.numstat(self.root, True), gitops.numstat(self.root, False)), self._loaded)
+        self._generation += 1
+        self._diff_serial += 1
+        directory = self.directory
+        self.status = None
+        self.changes.clear()
+        self.branch.setText('')
+        self.tracking.setText('')
+        self._show_content(False)
+        self.external_button.setEnabled(False)
+        self._set_diff('', '', '')
+        def read():
+            root = gitops.repo_root(directory)
+            return (root, gitops.status(root), gitops.numstat(root, True), gitops.numstat(root, False)) if root else None
+        self._run(read, self._loaded)
 
-    def _said(self, _result) -> None:
-        self.reload()
-
-    def _paths_job(self, action, paths: list[str]) -> None:
-        if paths:
-            self._run(lambda: action(self.root, paths), lambda _r: self.reload())
+    def _external(self) -> None:
+        if self.external:
+            self.external('git', self.root)
+        else:
+            from agentdock.ui.external_tools import open_target
+            open_target('git', self.root)
 
     # -- showing -------------------------------------------------------------------------
     def _loaded(self, result) -> None:
-        status, branches, staged_stats, work_stats = result
+        if result is None:
+            self.root = ''
+            self.tracking.setText('')
+            self._show_content(False, '此資料夾不是 Git 儲存庫')
+            return
+        self.root, status, staged_stats, work_stats = result
+        self.external_button.setEnabled(True)
         selected = self._selected_key()
         self.status = status
+        self._show_content(bool(status.changes), '沒有未提交的變更')
         self.stats = {**{(p, True): s for p, s in staged_stats.items()}, **{(p, False): s for p, s in work_stats.items()}}
-        self.branch.blockSignals(True)
-        self.branch.clear()
-        names = branches if status.branch in branches or not status.branch else [status.branch, *branches]
-        for name in names:
-            self.branch.addItem(name, name)
-        if not status.branch:
-            self.branch.insertItem(0, '（分離 HEAD）', '')
-        self.branch.setCurrentIndex(max(0, self.branch.findData(status.branch)))
-        self.branch.insertSeparator(self.branch.count())
-        self.branch.addItem('新增分支…', '\0new')
-        self.branch.blockSignals(False)
+        self.branch.setText(status.branch or '分離 HEAD')
         # Where pushing goes, said plainly: master → origin/main ↑2.
         if status.upstream:
             parts = [f'→ {status.upstream}']
@@ -421,6 +432,8 @@ class GitDialog(QDialog):
         restore = None
         for staged in (True, False):
             group = [c for c in status.changes if (c.staged if staged else c.unstaged)]
+            if not group:
+                continue
             top = QTreeWidgetItem([f"{'已暫存' if staged else '變更'}（{len(group)}）"])
             top.setData(0, HEAD, staged)
             top.setFlags(Qt.ItemFlag.ItemIsEnabled)
@@ -434,10 +447,12 @@ class GitDialog(QDialog):
                 if selected == (change.path, staged):
                     restore = item
             top.setExpanded(True)
+        if restore is None and self.changes.topLevelItemCount():
+            restore = self.changes.topLevelItem(0).child(0)
         if restore is not None:
             self.changes.setCurrentItem(restore)
         else:
-            self._set_diff('', '', ' ')
+            self._set_diff('', '', '沒有未提交的變更' if not status.changes else '選擇檔案查看差異')
         self._sync_buttons()
 
     def _selected_key(self):
@@ -449,11 +464,16 @@ class GitDialog(QDialog):
         return list(self.status.changes) if self.status else []
 
     def _show_diff(self, item) -> None:
+        self._diff_serial += 1
+        serial = self._diff_serial
         data = item.data(0, ROLE) if item else None
         if not data:
+            self._set_diff('', '', '')
             return
         change, staged = data
-        self._run(lambda: gitops.diff(self.root, change, staged), lambda text: self._set_diff(text or '', change.path))
+        root = self.root
+        self._run(lambda: gitops.diff(root, change, staged),
+                  lambda text: serial == self._diff_serial and self._set_diff(text or '', change.path))
 
     def _set_diff(self, text: str, path: str, note: str = '') -> None:
         self.diff.setHtml(diff_html(text or note or '（沒有文字差異）', 4000))
@@ -464,87 +484,28 @@ class GitDialog(QDialog):
             self.web.setHtml(page, self.web.page_url)
 
     def _sync_buttons(self) -> None:
-        idle = self.busy == 0
-        staged = [c for c in self._all() if c.staged]
-        branch = self.status.branch if self.status else ''
-        self.commit_button.setEnabled(idle and bool(staged) and bool(self.message.toPlainText().strip()))
-        self.commit_button.setText(f'提交 {len(staged)} 個檔案到 {branch}' if staged and branch else '提交')
-        ahead = self.status.ahead if self.status else 0
-        behind = self.status.behind if self.status else 0
-        self.push_button.setEnabled(idle and bool(branch))
-        self.push_button.setText(f'推送 {ahead} 個提交' if ahead else '推送')
-        self.pull_button.setEnabled(idle and bool(self.status and self.status.upstream))
-        self.pull_button.setText(f'拉取 {behind} 個提交' if behind else '拉取')
-        # The thing to do next stands out: pull when behind, else push when ahead.
-        for b, main in ((self.pull_button, bool(behind)), (self.push_button, bool(ahead) and not behind)):
-            if b.property('primary') != main:
-                b.setProperty('primary', main)
-                b.style().unpolish(b)
-                b.style().polish(b)
-        self.branch.setEnabled(idle)
         self.changes.viewport().update()
 
-    # -- actions ---------------------------------------------------------------------------
-    def glyph_clicked(self, item) -> None:
-        """The ＋ / − on a row: that file, or every file of a group."""
-        head = item.data(0, HEAD)
-        if head is None:
-            self._toggle([item])
-        elif head:
-            self._paths_job(gitops.unstage, [c.path for c in self._all() if c.staged])
-        else:
-            self._paths_job(gitops.stage, [c.path for c in self._all() if c.unstaged])
 
-    def _toggle(self, items) -> None:
-        stage, unstage = [], []
-        for item in items:
-            data = item.data(0, ROLE)
-            if data:
-                (unstage if data[1] else stage).append(data[0].path)
-        if stage or unstage:
-            def job():
-                gitops.stage(self.root, stage)
-                gitops.unstage(self.root, unstage)
-            self._run(job, lambda _r: self.reload())
+class GitDialog(QDialog):
+    """Optional independent window using the same read-only panel."""
+    def __init__(self, root: str, external=None):
+        super().__init__(None)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowMinMaxButtonsHint | Qt.WindowType.WindowCloseButtonHint)
+        self.setProperty('cute_plain', True)
+        self.setWindowTitle(f'專案變更 — {root}')
+        self.resize(1080, 700)
+        self._view = GitView(root, external)
+        QVBoxLayout(self).addWidget(self._view)
+        self.restyle()
 
-    def _menu(self, pos) -> None:
-        items = [i for i in self.changes.selectedItems() if i.data(0, ROLE)]
-        if not items:
-            return
-        menu = QMenu(self)
-        staged = [i for i in items if i.data(0, ROLE)[1]]
-        unstaged = [i for i in items if not i.data(0, ROLE)[1]]
-        if unstaged:
-            menu.addAction('暫存', lambda: self._toggle(unstaged))
-        if staged:
-            menu.addAction('取消暫存', lambda: self._toggle(staged))
-        if len(unstaged) == 1 and not staged:
-            menu.addSeparator()
-            menu.addAction('捨棄變更…', lambda: self._discard(unstaged[0].data(0, ROLE)[0]))
-        menu.exec(self.changes.viewport().mapToGlobal(pos))
+    def __getattr__(self, name):
+        view = self.__dict__.get('_view')
+        if view is not None:
+            return getattr(view, name)
+        raise AttributeError(name)
 
-    def _discard(self, change: gitops.Change) -> None:
-        what = '刪除這個新檔' if change.index == '?' else '捨棄這個檔案未暫存的變更'
-        answer = QMessageBox.question(self, '捨棄變更', f'{what}？\n{change.path}\n\n無法復原。')
-        if answer == QMessageBox.StandardButton.Yes:
-            self._run(lambda: gitops.discard(self.root, change), lambda _r: self.reload())
-
-    def _commit(self) -> None:
-        message = self.message.toPlainText().strip()
-
-        def done(_summary):
-            self.message.clear()
-            self.reload()
-        self._run(lambda: gitops.commit(self.root, message), done, '提交')
-
-    def _branch_picked(self, index: int) -> None:
-        target = self.branch.itemData(index)
-        current = self.status.branch if self.status else ''
-        if target == '\0new':
-            name, ok = QInputDialog.getText(self, '新增分支', '分支名稱')
-            if ok and name.strip():
-                self._run(lambda: gitops.checkout(self.root, name.strip(), create=True), self._said, '建立分支')
-            else:
-                self.branch.setCurrentIndex(max(0, self.branch.findData(current)))
-        elif target and target != current:
-            self._run(lambda: gitops.checkout(self.root, target), self._said, '切換分支')
+    def restyle(self):
+        from agentdock.ui.chat_common import _style
+        self.setStyleSheet(_style())
+        self._view.restyle()

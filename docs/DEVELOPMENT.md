@@ -68,3 +68,11 @@ TOOL = ToolSpec(title="我的工具", create=create, order=50)
 
 測試只用暫存目錄；`test_broker_mcp.py` 會啟動真正的 MCP stdio 行程並設定 `AGENTDOCK_NO_LAUNCH=1`，不會開啟 UI。
 UI 測試使用 `QT_QPA_PLATFORM=offscreen`。
+
+
+## 外部程式
+
+`external_tools.ExternalTools` 讀取 ui.json 的 external_tools：git/image/browser 各有 tool 與 executable。Qt 設定卡位於 ui/external_tools.py；不改作業系統預設關聯。預設 Git Extensions，圖片／瀏覽器使用系統預設。自訂程式只接受 exe，目標永遠是獨立參數，禁止 shell=True 或命令字串。
+Git Extensions 使用 `GitExtensions.exe browse <root>`（[官方命令列文件](https://git-extensions-documentation.readthedocs.io/en/main/command_line.html)）；Fork 使用 `Fork.exe <root>`（[官方 Windows CLI 說明](https://git-fork.com/blog/posts/page/2/)）。不自動安裝工具；找不到時通知使用者選擇執行檔。
+圖片開啟限制為已存在的常見點陣圖片副檔名，網頁只接受 HTTP(S)。內部 image 動作必須對應目前 transcript 的使用者附件，避免答案連結指定任意本機檔案。
+測試使用假的 exe／Popen／startfile 與暫存設定，不真正開外部程式；tests/test_external_tools.py 涵蓋含空白和特殊字元參數、取消選擇、偏好還原與 Git 跨目錄遲到回覆。

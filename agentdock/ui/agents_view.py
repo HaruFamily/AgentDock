@@ -9,7 +9,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-                               QVBoxLayout, QWidget)
+                               QTabBar, QVBoxLayout, QWidget)
 
 from agentdock import clients
 from agentdock.agents import ACCOUNT_MCP_KINDS, KINDS, QAI_NAMES, RETIRED_KINDS, AgentManager, default_path
@@ -620,6 +620,7 @@ def _type_rank(t: str) -> int:
 class AgentsView(QWidget):
     summary_changed = Signal(str, bool)  # one line for the floating card, alert
     facts_ready = Signal()               # agent_info learned something (from a worker thread)
+    agent_updated = Signal(str, str, str)  # kind, version, error
 
     SECTIONS = (("agents", "Agent"), ("library", "MCP 庫"), ("extensions", "擴充庫"))
 
@@ -634,6 +635,9 @@ class AgentsView(QWidget):
         self.setProperty("wide", wide)
         # kind -> {"program": version | None (not found), "model": ..., "account": ...}; given by the tray app
         self.agent_info: Callable[[str], dict[str, Any]] | None = None
+        self.updating_agents: set[str] = set()
+        self.updated_versions: dict[str, str] = {}
+        self.agent_updated.connect(self._agent_update_done)
         self.facts_ready.connect(lambda: self.refresh() if self.isVisible() else None)
         self.manager = manager
         self.library = library
@@ -721,8 +725,9 @@ class AgentsView(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------------ wide page (conversation window)
-    WIDE_SECTIONS = (("general", "一般"), ("look", "外觀"), ("agents", "Agent"), ("library", "MCP"),
-                     ("extensions", "擴充"), ("backup", "備份"))
+    WIDE_SECTIONS = (("general", "一般"), ("look", "外觀"), ("tools", "Agent 與工具"),
+                     ("external", "外部程式"), ("backup", "資料與備份"))
+    TOOL_SECTIONS = (("agents", "Agent"), ("library", "MCP"), ("extensions", "擴充"))
 
     def _build_wide(self, root: QVBoxLayout, scroll: QScrollArea) -> None:
         """Categories on the left like the desktop apps' settings; one page at a time on the right."""
@@ -753,6 +758,19 @@ class AgentsView(QWidget):
         right.setSpacing(8)
         outer.addLayout(right, 1)
         right.addWidget(self.notice)
+        self.page_title = QLabel()
+        self.page_title.setObjectName("PageTitle")
+        right.addWidget(self.page_title)
+        self.tool_tabs = QTabBar()
+        self.tool_tabs.setExpanding(False)
+        self.tool_tabs.setDrawBase(False)
+        self.tool_tabs.setAccessibleName("Agent 與工具")
+        for key, text in self.TOOL_SECTIONS:
+            index = self.tool_tabs.addTab(text)
+            self.tool_tabs.setTabData(index, key)
+        self.tool_tabs.currentChanged.connect(lambda i: self.show_section(self.tool_tabs.tabData(i)))
+        right.addWidget(self.tool_tabs)
+        self._section_scroll = {}
         centre = QHBoxLayout(self.body)
         centre.setContentsMargins(6, 4, 26, 24)
         column = QWidget()
@@ -1193,21 +1211,40 @@ class AgentsView(QWidget):
     def show_section(self, key: str, save: bool = True) -> None:
         if not self.wide:
             return
-        if key not in dict(self.WIDE_SECTIONS):
+        tool_keys = dict(self.TOOL_SECTIONS)
+        if key == "tools":
+            key = self.ui_state.get("settings_tool_tab", "agents")
+        if key not in {**dict(self.WIDE_SECTIONS), **tool_keys}:
             key = "general"
         pages = {**getattr(self, "sections", {}), **getattr(self, "extra_pages", {})}
         if key not in pages and pages:
-            key = next(k for k, _t in self.WIDE_SECTIONS if k in pages)
+            key = "agents" if "agents" in pages else next(iter(pages))
+        previous = getattr(self, "current_section", None)
+        if previous != key and previous is not None:
+            self._section_scroll[previous] = self.scroll.verticalScrollBar().value()
         for name, page in pages.items():
             page.setVisible(name == key)
+        category = "tools" if key in tool_keys else key
         for name, tab in self.tabs.items():
-            tab.setChecked(name == key)
-            tab.setVisible(name in pages)
+            tab.setChecked(name == category)
+            tab.setVisible(name in pages or name == "tools" and bool(getattr(self, "sections", {})))
+        self.page_title.setText(dict(self.WIDE_SECTIONS).get(category, ""))
+        self.tool_tabs.setVisible(category == "tools")
+        if key in tool_keys:
+            self.tool_tabs.blockSignals(True)
+            self.tool_tabs.setCurrentIndex(list(tool_keys).index(key))
+            self.tool_tabs.blockSignals(False)
         self.current_section = key
-        if save and self.ui_state.get("settings_tab") != key:
+        if save:
             self.ui_state["settings_tab"] = key
+            if key in tool_keys:
+                self.ui_state["settings_tool_tab"] = key
             self.save_state()
-        self.scroll.verticalScrollBar().setValue(0) if save else None
+        if previous != key:
+            self._keep_scroll = self._section_scroll.get(key, 0)
+            self.scroll.verticalScrollBar().setValue(self._keep_scroll)
+            self._keep_timer.start()
+        self._paint_bar()
 
     # ------------------------------------------------------------------ wide pages
     def _prepare_rows(self) -> list[dict[str, Any]]:
@@ -1253,9 +1290,10 @@ class AgentsView(QWidget):
         for page in (agents, library, extensions):
             self.lay.addWidget(page)
         self.sections = {"agents": agents, "library": library, "extensions": extensions}
-        self.tabs["agents"].set_badge(self._agent_alerts)
-        self.tabs["library"].set_badge(self._lib_alerts)
-        self.tabs["extensions"].set_badge(self._ext_alerts)
+        self.tabs["tools"].set_badge(self._agent_alerts + self._lib_alerts + self._ext_alerts)
+        for i, ((key, title), count) in enumerate(zip(self.TOOL_SECTIONS,
+                (self._agent_alerts, self._lib_alerts, self._ext_alerts))):
+            self.tool_tabs.setTabText(i, f"{title} · {count}" if count else title)
         if not self.ui_state.get("restart"):
             self._restart_timer.stop()
         self.show_section(self.ui_state.get("settings_tab", "general"), save=False)
@@ -1264,20 +1302,16 @@ class AgentsView(QWidget):
 
     # -- Agent cards
     def _agents_page(self, rows: list[dict[str, Any]]) -> QWidget:
-        from PySide6.QtWidgets import QGridLayout
         page = QWidget()
-        grid = QGridLayout(page)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(14)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
         cards = [self._agent_card(row) for row in rows]
         free = [k for k in KINDS if k not in RETIRED_KINDS and k not in {r["kind"] for r in rows}]
         if free or not rows:
             cards.append(self._add_agent_card())
-        for i, card in enumerate(cards):
-            grid.addWidget(card, i // 2, i % 2)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        for card in cards:
+            layout.addWidget(card)
         return page
 
     def _agent_card(self, row: dict[str, Any]) -> QWidget:
@@ -1316,6 +1350,8 @@ class AgentsView(QWidget):
         head.addWidget(more)
         card.lay.addLayout(head)
         info = self.agent_info(row["kind"]) if callable(getattr(self, "agent_info", None)) else {}
+        if row['kind'] in self.updated_versions:
+            info = {**info, 'program': self.updated_versions[row['kind']]}
         facts: list[tuple[str, str, bool]] = []
         if "program" in info:
             program = info["program"]
@@ -1362,6 +1398,11 @@ class AgentsView(QWidget):
         from agentdock.account_login import LOGIN_ARGS
         if row['kind'] in LOGIN_ARGS:
             actions = QHBoxLayout()
+            updating = row['kind'] in self.updating_agents
+            update = button('更新中…' if updating else '更新', flat=True)
+            update.setEnabled(not self.updating_agents)
+            update.clicked.connect(lambda _=False, k=row['kind']: self._update_agent(k))
+            actions.addWidget(update)
             for title, switch in (('登入', False), ('切換帳號', True)):
                 action = button(title, flat=True)
                 action.clicked.connect(lambda _=False, k=row['kind'], s=switch: self._account_login(k, s))
@@ -1370,6 +1411,41 @@ class AgentsView(QWidget):
             card.lay.addLayout(actions)
         card.setToolTip(row["path"])
         return card
+
+    def _update_agent(self, kind: str) -> None:
+        from agentdock.agent_update import plan_update, run_update
+        if self.updating_agents:
+            return
+        try:
+            plan = plan_update(kind)
+        except (OSError, ValueError) as e:
+            self.info(str(e), error=True)
+            return
+        if QMessageBox.question(self, '更新 Agent',
+                f'更新這份程式：\n{plan.executable}\n\n共用此安裝的程式也會使用新版。完成後需重啟 AgentDock。',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self.updating_agents.add(kind)
+        self.refresh()
+        self.info('正在更新…', sticky=True)
+
+        def run():
+            try:
+                version = run_update(plan)
+            except Exception as e:
+                self.agent_updated.emit(kind, '', str(e))
+            else:
+                self.agent_updated.emit(kind, version, '')
+        threading.Thread(target=run, name='AgentDock CLI update', daemon=True).start()
+
+    def _agent_update_done(self, kind: str, version: str, error: str) -> None:
+        self.updating_agents.discard(kind)
+        if version:
+            self.updated_versions[kind] = version
+        self.refresh()
+        self.info(f'更新失敗：{error}' if error else f'已更新至 {version}，重啟 AgentDock 後生效。',
+                  error=bool(error), sticky=True)
 
     def _account_login(self, kind: str, switch: bool) -> None:
         from agentdock.account_login import open_login
@@ -1623,7 +1699,10 @@ class AgentsView(QWidget):
             parts.append(f"{updates} 項需要更新")
         if pending:
             parts.append(f"{pending} 項變更待套用")
-        self.bar.setVisible(bool(parts))
+        self.bar.setVisible(bool(parts) and (not self.wide or getattr(self, "current_section", "") in dict(self.TOOL_SECTIONS)))
+        if self.wide:
+            self.tabs["tools"].set_badge(pending + getattr(self, "_agent_alerts", 0)
+                + getattr(self, "_lib_alerts", 0) + getattr(self, "_ext_alerts", 0))
         self.bar_label.setText("  ·  ".join(parts))
         self.update_btn.setVisible(bool(updates))
         self.apply_btn.setVisible(bool(pending))
@@ -2090,7 +2169,7 @@ class AgentsView(QWidget):
 
         threading.Thread(target=run, daemon=True).start()
 
-    # ------------------------------------------------------------------ extensions (hooks / plugins)
+    # ------------------------------------------------------------------ extensions (hooks)
     def _addable_extensions(self, profile: Any) -> list[dict[str, Any]]:
         return [e for e in self.library.extensions()
                 if self.ext.status(e, profile) is False and not self._ext_op(profile.id, e["key"])
@@ -2150,7 +2229,7 @@ class AgentsView(QWidget):
 
     def _extension_section(self) -> QWidget:
         sec = self._fold("section:extensions", "擴充庫", section=True)
-        sec.setToolTip("hook、plugin 等非 MCP 的擴充（例如 rtk）。在 Agent 的「＋」加入。")
+        sec.setToolTip("hook 等非 MCP 的擴充（例如 rtk）。在 Agent 的「＋」加入。")
         add = icon_button("＋", "新增擴充")
         menu = QMenu(add)
         have = {e["key"] for e in self.library.extensions()}

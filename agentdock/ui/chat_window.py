@@ -41,7 +41,7 @@ from agentdock.ui.chat_sidebar import Rail, Sidebar  # noqa: F401
 from agentdock.ui.chat_composer import SettingsBar  # noqa: F401
 from agentdock.ui.chat_conversation import ConversationView  # noqa: F401
 from agentdock.ui.chat_new import NewConversationView  # noqa: F401
-from agentdock.ui.chat_dialogs import DeleteDialog, ImportDialog, ProjectDialog, ProjectView, RenameDialog, SearchPalette, TitleBar  # noqa: F401
+from agentdock.ui.chat_dialogs import ImportDialog, ProjectDialog, ProjectView, RenameDialog, SearchPalette, TitleBar  # noqa: F401
 
 
 class ChatWindow(QWidget):
@@ -55,6 +55,9 @@ class ChatWindow(QWidget):
         self.targets, self.notify, self.open_page = targets, notify, open_page
         self.ui_state = ui_state if ui_state is not None else {}
         self.save_state = save_state
+        from agentdock.external_tools import ExternalTools
+        self.external_tools = ExternalTools(self.ui_state, self.notify)
+        QApplication.instance().agentdock_external_tools = self.external_tools
         self.current_key = ''
         self.sent_files: dict[str, str] = {}   # attachment name → path, this session
         self.extra_pages: dict[str, QWidget] = {}
@@ -83,7 +86,12 @@ class ChatWindow(QWidget):
         self.split.setHandleWidth(4)
         self.split.setChildrenCollapsible(False)
         self.split.addWidget(self.sidebar)
-        self.split.addWidget(self.pages)
+        self.workspace = QWidget()
+        workspace_layout = QVBoxLayout(self.workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        workspace_layout.addWidget(self.pages, 1)
+        self.split.addWidget(self.workspace)
         self.split.setStretchFactor(0, 0)
         self.split.setStretchFactor(1, 1)
         width = self.ui_state.get('sidebar_width')
@@ -94,6 +102,25 @@ class ChatWindow(QWidget):
         self.new_view = NewConversationView(self)
         self.conversation = ConversationView(self)
         self.project_view = ProjectView(self)
+        self.compose_area = QWidget()
+        self.compose_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        compose_row = QHBoxLayout(self.compose_area)
+        compose_row.setContentsMargins(24, 8, 24, 18)
+        compose_row.addStretch(1)
+        from agentdock.ui.chat_common import COLUMN
+        self.new_view.composer.setMaximumWidth(COLUMN)
+        compose_column = QWidget()
+        compose_column.setMaximumWidth(COLUMN)
+        compose_layout = QVBoxLayout(compose_column)
+        compose_layout.setContentsMargins(0, 0, 0, 0)
+        compose_layout.setSpacing(0)
+        compose_layout.addWidget(self.new_view.mascot)
+        compose_layout.addWidget(self.new_view.composer)
+        compose_layout.addWidget(self.new_view.error)
+        compose_row.addWidget(compose_column, 100, Qt.AlignmentFlag.AlignVCenter)
+        compose_row.addStretch(1)
+        workspace_layout.addWidget(self.compose_area, 1)
+        self.pages.currentChanged.connect(self._workspace_changed)
         for page in (self.new_view, self.conversation, self.project_view):
             self.pages.addWidget(page)
         self.rail = Rail(self)
@@ -102,14 +129,35 @@ class ChatWindow(QWidget):
         self.bridge.history_failed.connect(self.conversation.history_failed)
         self.bridge.live.connect(self.conversation.live_event)
         self.bridge.started.connect(self.open_conversation)
-        self.bridge.deleted.connect(self._deleted)
         self.bridge.replaced.connect(self._replaced)
-        self.bridge.reload.connect(lambda key: key == self.conversation.key and self.conversation.reload())
+        self.bridge.unsent.connect(self._unsent)
+        self.bridge.reload.connect(lambda key: key == self.conversation.key and self.conversation.reload(fresh=True))
         self.bridge.options.connect(self._options_arrived)
-        self.bridge.git.connect(self.conversation.git_arrived)
         self.git_windows: dict[str, QDialog] = {}
+        # A deleted conversation leaves the list at once and is removed for good a few seconds later,
+        # unless 復原 is clicked first (or the app quits, which removes it then).
+        self.pending_delete = ''
+        self.run_started: dict[str, float] = {}
+        self._delete_timer = QTimer(self, singleShot=True, interval=6000)
+        self._delete_timer.timeout.connect(self._commit_delete)
+        self.undo_bar = QFrame(self)
+        self.undo_bar.setObjectName('UndoBar')
+        undo_row = QHBoxLayout(self.undo_bar)
+        undo_row.setContentsMargins(14, 6, 6, 6)
+        undo_row.setSpacing(10)
+        self.undo_text = QLabel()
+        undo_row.addWidget(self.undo_text)
+        undo = QPushButton('復原')
+        undo.setObjectName('UndoButton')
+        undo.setCursor(Qt.CursorShape.PointingHandCursor)
+        undo.clicked.connect(self.undo_delete)
+        undo_row.addWidget(undo)
+        self.undo_bar.hide()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._commit_delete)
         attach_dir = Path(store.dispatch.file).parent / 'attachments' / 'chat'
-        self.new_view.composer.attach_dir = self.conversation.composer.attach_dir = attach_dir
+        self.new_view.composer.attach_dir = self.project_view.composer.attach_dir = self.conversation.composer.attach_dir = attach_dir
         dispatcher.listeners.append(self.bridge.live.emit)
         self._refresh = QTimer(self, singleShot=True, interval=120)
         self._refresh.timeout.connect(self.refresh)
@@ -131,7 +179,17 @@ class ChatWindow(QWidget):
             shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(action)
 
+    def _workspace_changed(self, _index: int) -> None:
+        page = self.pages.currentWidget()
+        starting = page is self.new_view
+        self.compose_area.setVisible(starting)
+        self.pages.setMaximumHeight(0 if starting else 16777215)
+
     # -- navigation --------------------------------------------------------------
+    def set_quota(self, model) -> None:
+        """The quota tool's numbers, shown with the conversation for its Agent's account."""
+        self.conversation.set_quota(model)
+
     def add_page(self, name: str, widget: QWidget) -> None:
         """Tools / settings live in the window; without one, the rail asks open_page instead."""
         self.extra_pages[name] = widget
@@ -158,6 +216,12 @@ class ChatWindow(QWidget):
         self._show_list(not hidden)
 
     def show_new(self, project: str | None = None, agent: str | None = None, folder: str | None = None) -> None:
+        if project is None and not folder:
+            if self.pages.currentWidget() is self.project_view:
+                project = self.project_view.pid
+            elif self.current_key:
+                row = self.store.dispatch.get(self.current_key)
+                project = self.projects.project_of(row) if row else UNSORTED
         self._chat_mode()
         self.current_key = ''
         if folder:
@@ -179,6 +243,16 @@ class ChatWindow(QWidget):
         self.sidebar.refresh()
 
     def show_project(self, pid: str) -> None:
+        self._chat_mode()
+        self.current_key = ''
+        self.new_view.prepare(pid)
+        self.project_view.show_project(pid)
+        self.pages.setCurrentWidget(self.project_view)
+        self.sidebar.refresh()
+
+    def project_settings(self, pid: str) -> None:
+        if self.projects.get(pid) is None:
+            return
         self._chat_mode()
         self.current_key = ''
         self.project_view.show_project(pid)
@@ -244,17 +318,33 @@ class ChatWindow(QWidget):
         if row['state'] == 'running':
             self.notify('這個對話還在執行，請先停止。')
             return
-        dialog = DeleteDialog(self, row['title'], row['source'])
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        if dialog.remote.isChecked():
-            # Removed from the list only after the client has deleted it.
-            self.dispatcher.delete(key, True, done=lambda: self.bridge.deleted.emit(key))
-        else:
-            self._deleted(key)
+        # Only AgentDock's entry goes; the client keeps its history, so it can be imported again.
+        self._commit_delete()
+        self.pending_delete = key
+        if self.current_key == key:
+            self.conversation.key = ''
+            self.show_new()
+        self.undo_text.setText(f"已刪除「{row['title']}」")
+        self.undo_bar.adjustSize()
+        self._place_undo()
+        self.undo_bar.show()
+        self.undo_bar.raise_()
+        self._delete_timer.start()
+        self.refresh()
 
-    def _deleted(self, key: str) -> None:
-        row = self.store.dispatch.get(key)
+    def undo_delete(self) -> None:
+        key, self.pending_delete = self.pending_delete, ''
+        self._delete_timer.stop()
+        self.undo_bar.hide()
+        self.refresh()
+        if key and self.store.dispatch.get(key) and self.pages.currentWidget() is self.new_view:
+            self.open_conversation(key)
+
+    def _commit_delete(self) -> None:
+        key, self.pending_delete = self.pending_delete, ''
+        self._delete_timer.stop()
+        self.undo_bar.hide()
+        row = self.store.dispatch.get(key) if key else None
         if row is None:
             return
         self.store.remove_conversation(row['owner'], work_id(row))
@@ -264,6 +354,31 @@ class ChatWindow(QWidget):
             self.conversation.key = ''
             self.show_new()
         self.refresh()
+
+    def _unsent(self, key: str, text: str, files: list) -> None:
+        """Back into the box it was typed in, unless something new is being typed there."""
+        composer = self.conversation.composer if key else (
+            self.project_view.composer if self.pages.currentWidget() is self.project_view else self.new_view.composer)
+        if key and key != self.conversation.key:
+            return
+        if not composer.text.toPlainText().strip() and not composer.files:
+            composer.text.setPlainText(text)
+            composer.add_files([f for f in files if os.path.isfile(f)])
+
+    def flash(self) -> None:
+        """Something to look at while the window is open behind others: its taskbar button flashes, without
+        taking focus."""
+        if self.isVisible() and not self.isActiveWindow():
+            QApplication.alert(self)
+
+    def rows(self) -> dict[str, dict]:
+        """The conversations to list: all but one just deleted (still undoable)."""
+        rows = self.store.dispatch.rows
+        return {k: r for k, r in rows.items() if k != self.pending_delete} if self.pending_delete else dict(rows)
+
+    def _place_undo(self) -> None:
+        area = self.pages.geometry()
+        self.undo_bar.move(area.center().x() - self.undo_bar.width() // 2, area.bottom() - self.undo_bar.height() - 24)
 
     def _replaced(self, old: str, new: str) -> None:
         """An edited first message started the conversation over in a new session; the old one leaves the list."""
@@ -279,24 +394,9 @@ class ChatWindow(QWidget):
     def import_conversations(self, project: str | None = None) -> None:
         row = self.store.dispatch.get(self.current_key) if self.current_key else None
         agent = (row or {}).get('client') or ((self.projects.get(project) or {}).get('agent') if project else None) \
-            or self.ui_state.get('last_agent') or AGENTS[0][0]
+            or self.ui_state.get('last_agent')
+        agent = agent if agent in dict(AGENTS) else AGENTS[0][0]
         ImportDialog(self, project, agent).exec()
-
-    def git_status(self, key: str, directory: str) -> None:
-        import threading
-
-        from agentdock import gitops
-
-        def run():
-            root = gitops.repo_root(directory)
-            summary = ''
-            if root:
-                try:
-                    summary = gitops.status(root).summary
-                except gitops.GitError:
-                    root = ''
-            self.bridge.git.emit(key, root or '', summary)
-        threading.Thread(target=run, name='AgentDock git status', daemon=True).start()
 
     def open_git(self, directory: str, report: bool = False) -> None:
         from agentdock import gitops
@@ -308,8 +408,8 @@ class ChatWindow(QWidget):
             return
         dialog = self.git_windows.get(root)
         if dialog is None:
-            dialog = GitDialog(self, root)
-            dialog.finished.connect(lambda _r, r=root: (self.git_windows.pop(r, None), self.conversation.check_git()))
+            dialog = GitDialog(root, external=self.external_tools.open)
+            dialog.finished.connect(lambda _r, r=root: self.git_windows.pop(r, None))
             dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             self.git_windows[root] = dialog
         else:
@@ -352,6 +452,7 @@ class ChatWindow(QWidget):
             self.conversation.options_arrived(key, options)
         else:
             self.new_view.options_arrived(client, options)
+
 
     def find_in_conversation(self) -> None:
         if self.pages.currentWidget() is self.conversation and self.current_key:
@@ -409,13 +510,17 @@ class ChatWindow(QWidget):
             self._refresh.start()
 
     def refresh(self) -> None:
+        # When each conversation started running, as first seen here (the clients do not say).
+        now = time.monotonic()
+        running = {k for k, r in self.store.dispatch.rows.items() if r['state'] == 'running'}
+        if set(self.run_started) - running:
+            self.flash()   # a turn ended
+        self.run_started = {k: self.run_started.get(k, now) for k in running}
         self.sidebar.refresh()
         if self.pages.currentWidget() is self.conversation:
             self.conversation.update_row()
         elif self.pages.currentWidget() is self.project_view:
             self.project_view.refresh()
-        elif self.pages.currentWidget() is self.new_view:
-            self.new_view.refresh_recent()
 
     def refresh_theme(self) -> None:
         self.setStyleSheet(_style())
@@ -427,8 +532,11 @@ class ChatWindow(QWidget):
         self._frame_mode()
         self.conversation.restyle()
         self.new_view.mascot.restyle()
+        self.project_view.restyle()
         from agentdock.ui import cute
         cute.tint_caption(self)
+        for dialog in self.git_windows.values():
+            dialog.restyle()
         self.update()
         self.conversation.more_button.setIcon(icon('more', theme.MUTED or '#888888', 18))
         self.rail.set_current(self.rail.current)
@@ -447,6 +555,8 @@ class ChatWindow(QWidget):
         page = self.pages.currentWidget()
         if page is self.new_view:
             return self.new_view.composer
+        if page is self.project_view:
+            return self.project_view.composer
         if page is self.conversation and self.current_key:
             return self.conversation.composer
         return None
@@ -564,6 +674,8 @@ class ChatWindow(QWidget):
         super().resizeEvent(event)
         self._place_rail()
         self._shape()
+        if self.undo_bar.isVisible():
+            self._place_undo()
         palette = getattr(self, 'palette_', None)
         if palette is not None and palette.isVisible():
             palette.open()

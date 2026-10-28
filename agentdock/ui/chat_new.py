@@ -92,14 +92,20 @@ class NewConversationView(QWidget):
     which Agent, and the latest conversations to jump back into."""
     RECENT = 3
 
-    def __init__(self, window):
+    def __init__(self, window, embedded: bool = False):
+        """embedded: only the box, on a project page; the place is that project and the Agent picked
+        becomes the project's own."""
         super().__init__()
         self.window_ = window
+        self.embedded = embedded
         self.pid: str = UNSORTED
         self.folder_path = ''
+        self._drafts = {}
+        self._draft_context = None
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(32, 32, 32, 32)
-        outer.addStretch(2)
+        outer.setContentsMargins(*((0, 0, 0, 0) if embedded else (32, 32, 32, 32)))
+        if not embedded:
+            outer.addSpacing(0)
         column = QWidget()
         column.setMaximumWidth(COLUMN)
         lay = QVBoxLayout(column)
@@ -107,8 +113,12 @@ class NewConversationView(QWidget):
         lay.setSpacing(0)
         self.mascot = Mascot()
         lay.addWidget(self.mascot)
-        lay.addSpacing(12)
-        self.composer = Composer(self, enter_sends=True, max_lines=12, min_lines=2)
+        if embedded:
+            self.mascot.setVisible(False)
+            self.mascot.restyle = lambda: None
+        else:
+            lay.addSpacing(12)
+        self.composer = Composer(self, enter_sends=True, max_lines=10, min_lines=1)
         self.composer.setMaximumWidth(16777215)
         self.composer.submitted.connect(self.send)
         self.composer.settings.changed.connect(self._setting_changed)
@@ -116,6 +126,7 @@ class NewConversationView(QWidget):
         # Where and with which Agent sit with the other choices in the box's own row: + 專案 Agent 權限 … 模型 推理.
         self.place = ChipButton('folder')
         self.composer.bar.insertWidget(1, self.place)
+        self.place.setVisible(not embedded)
         self.agent_chip = ChipButton('agent')
         self.composer.bar.insertWidget(2, self.agent_chip)
         self.error = label('', muted=True)
@@ -123,20 +134,16 @@ class NewConversationView(QWidget):
         self.error.setContentsMargins(10, 6, 10, 0)
         self.error.hide()
         lay.addWidget(self.error)
-        lay.addSpacing(28)
-        self.recent_head = QLabel('最近')
-        self.recent_head.setObjectName('SectionLabel')
-        self.recent_head.setContentsMargins(12, 0, 0, 4)
-        lay.addWidget(self.recent_head)
-        self.recent = QVBoxLayout()
-        self.recent.setSpacing(2)
-        lay.addLayout(self.recent)
+        if embedded:
+            outer.addWidget(column)
+            self.agent = 'opencode'
+            return
         row = QHBoxLayout()
         row.addStretch(1)
         row.addWidget(column, 100)
         row.addStretch(1)
         outer.addLayout(row)
-        outer.addStretch(3)
+        outer.addStretch(1)
         self.agent = self.window_.ui_state.get('last_agent') or 'opencode'
 
     # -- where -------------------------------------------------------------------
@@ -149,8 +156,8 @@ class NewConversationView(QWidget):
             self.folder_path = str(self.window_.chat_dir())   # no project: just talk
         self._place_changed()
         self.error.hide()
-        self.refresh_recent()
-        self.composer.text.setFocus()
+        if not self.embedded:
+            self.composer.text.setFocus()
 
     def set_folder(self, folder: str) -> None:
         """Work in a folder outside the projects: only to continue next to an older conversation (Ctrl+N);
@@ -160,12 +167,16 @@ class NewConversationView(QWidget):
         self._place_changed()
 
     def set_project(self, pid: str) -> None:
-        self.pid = pid
-        self._place_changed()
+        if self.window_.pages.currentWidget() is self.window_.project_view:
+            self.window_.show_project(pid)
+        else:
+            self.pid = pid
+            self._place_changed()
+            self.window_.sidebar.refresh()
 
     def set_chat_only(self) -> None:
         """Just talk: the Agent works in AgentDock's own empty data/chat folder, with a cautious mode."""
-        self.set_folder(str(self.window_.chat_dir()))
+        self.window_.show_new(project=UNSORTED, folder=str(self.window_.chat_dir()))
 
     def chat_only(self) -> bool:
         return self.project() is None and self.window_.is_chat_dir(self.folder_path)
@@ -174,6 +185,28 @@ class NewConversationView(QWidget):
         return self.window_.projects.get(self.pid) if self.pid else None
 
     def _place_changed(self) -> None:
+        context = self.pid or self.folder_path
+        changed_context = context != self._draft_context
+        if changed_context:
+            if self._draft_context is not None:
+                if self.composer.text.toPlainText() or self.composer.files:
+                    self._drafts[self._draft_context] = (self.composer.text.toPlainText(), list(self.composer.files), self.agent,
+                                                       self.composer.settings.values(), self.composer.text.textCursor().position())
+                else:
+                    self._drafts.pop(self._draft_context, None)
+            self._draft_context = context
+            draft = self._drafts.get(context)
+            self.composer.clear()
+            if draft:
+                self.composer.text.setPlainText(draft[0])
+                self.composer.files = list(draft[1])
+                self.composer._chips()
+                cursor = self.composer.text.textCursor()
+                cursor.setPosition(min(draft[4], len(draft[0])))
+                self.composer.text.setTextCursor(cursor)
+        if not changed_context:
+            self._place_menu()
+            return
         project = self.project()
         if project:
             self.place.setText(project['name'])
@@ -189,6 +222,11 @@ class NewConversationView(QWidget):
             self.pick_agent(self.agent)
         self.place.icon_name = 'chat' if self.chat_only() else 'folder'
         self.place.restyle()
+        draft = self._drafts.get(context)
+        if draft:
+            self.pick_agent(draft[2])
+            options = self.composer.settings.options
+            self.composer.settings.set_options(options, self._chat_settings(self.agent, options, draft[3]))
         self._place_menu()
 
     def _place_menu(self) -> None:
@@ -223,6 +261,7 @@ class NewConversationView(QWidget):
 
     # -- which Agent -------------------------------------------------------------
     def pick_agent(self, kind: str) -> None:
+        project = self.project()
         ready = kind in self.window_.dispatcher.clients
         changed = kind != self.agent or not self.composer.settings.options
         self.agent = kind
@@ -237,6 +276,9 @@ class NewConversationView(QWidget):
             action.setChecked(key == kind)
             action.setEnabled(key in self.window_.dispatcher.clients or key == kind)
             group.addAction(action)
+        if project:
+            menu.addSeparator()
+            menu.addAction('設為專案預設', lambda: self.window_.projects.update(project['id'], agent=self.agent))
         self.error.setText('' if ready else f'{dict(AGENTS)[kind]} 尚未支援。')
         self.error.setVisible(not ready)
         self.composer.send.setEnabled(ready)
@@ -287,24 +329,6 @@ class NewConversationView(QWidget):
             self.set_folder(chosen)
         return bool(chosen)
 
-    # -- jump back in ------------------------------------------------------------
-    def refresh_recent(self) -> None:
-        rows = sorted(self.window_.store.dispatch.rows.items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
-        shown = [(key, row['title'], row.get('updated_at'), Sidebar._badge(row)) for key, row in rows[:self.RECENT]]
-        if shown == getattr(self, '_shown', None):
-            return
-        self._shown = shown
-        while self.recent.count():
-            item = self.recent.takeAt(0)
-            if item.widget():
-                item.widget().hide()
-                item.widget().deleteLater()
-        for key, row in rows[:self.RECENT]:
-            entry = RecentRow(key, row, Sidebar._badge(row))
-            entry.clicked.connect(lambda _c=False, k=key: self.window_.open_conversation(k))
-            self.recent.addWidget(entry)
-        self.recent_head.setVisible(bool(rows))
-
     def _take_files(self) -> list[str]:
         files = self.composer.take_files()
         self.window_.sent_files.update({os.path.basename(f): f for f in files})   # to show pictures sent
@@ -328,11 +352,12 @@ class NewConversationView(QWidget):
             self.error.show()
             return
         target = self.window_.target_for(self.agent)
+        files, bridge = self._take_files(), self.window_.bridge
         self.window_.dispatcher.start_task(os.path.normpath(folder), text, target['owner'],
                                            project=project['id'] if project else None,
-                                           started=self.window_.bridge.started.emit, client=self.agent,
-                                           settings=self.composer.settings.values(),
-                                           files=self._take_files())
+                                           started=bridge.started.emit, client=self.agent,
+                                           settings=self.composer.settings.values(), files=files,
+                                           failed=lambda: bridge.unsent.emit('', text, files))
         if not project and self.window_.ui_state.get('last_agent') != self.agent:
             self.window_.ui_state['last_agent'] = self.agent   # the next unsorted conversation starts with it
             self.window_.save_state()

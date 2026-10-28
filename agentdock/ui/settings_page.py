@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPu
                                QWidget)
 
 from agentdock.ui import theme
+from agentdock.ui.qa_view import button
 
 # Switch states (MCP / extension cells and plain on/off settings)
 ON, OFF = "on", "off"
@@ -25,6 +26,15 @@ LOCKED = (SYSTEM, NA)
 
 def _c(name: str, fallback: str = "#888888") -> QColor:
     return QColor(getattr(theme, name, "") or fallback)
+
+
+def _focus_ring(p: QPainter, widget: QWidget, radius: float = 8) -> None:
+    if widget.hasFocus() and widget.isEnabled():
+        p.save()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(_c("ACCENT"), 1.5, Qt.PenStyle.DashLine))
+        p.drawRoundedRect(QRectF(widget.rect()).adjusted(2, 2, -2, -2), radius, radius)
+        p.restore()
 
 
 def heart_path(c: QPointF, s: float) -> QPainterPath:
@@ -101,6 +111,7 @@ class NavButton(QPushButton):
         p.setPen(_c("ACCENT_DEEP") if self.isChecked() else _c("INK"))
         text_rect = r.adjusted(32 if theme.decorated("settings_nav") else 16, 0, -40, 0)
         p.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
+        _focus_ring(p, self, r.height() / 2)
         if self.badge:
             small = QFont(self.font())
             if small.pointSizeF() > 0:
@@ -126,6 +137,7 @@ class Switch(QAbstractButton):
     def __init__(self, state: str = OFF, *, checkable: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("Switch")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCheckable(checkable)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(46, 26)
@@ -149,9 +161,9 @@ class Switch(QAbstractButton):
         r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
         state = self.current()
         hovered = self.underMouse() and self.isEnabled()
-        if theme.decorate("switch", p, r, state, hovered):
-            return
-        paint_switch(p, r, state, hovered)
+        if not theme.decorate("switch", p, r, state, hovered):
+            paint_switch(p, r, state, hovered)
+        _focus_ring(p, self, r.height() / 2)
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(46, 26)
@@ -198,6 +210,7 @@ class ThemeTile(QAbstractButton):
         super().__init__()
         self.key, self.config = key, config
         self.setObjectName("ThemeTile")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCheckable(True)
         self.setAutoExclusive(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -247,6 +260,7 @@ class ThemeTile(QAbstractButton):
         p.setPen(_c("ACCENT_DEEP") if self.isChecked() else _c("INK"))
         p.drawText(QRectF(r.left(), shot.bottom() + 4, r.width(), r.bottom() - shot.bottom() - 4),
                    Qt.AlignmentFlag.AlignCenter, self.text())
+        _focus_ring(p, self, 18)
 
 
 def setting_row(title: str, control: QWidget, note: str = "") -> QWidget:
@@ -279,7 +293,8 @@ def page_heading(text: str) -> QLabel:
 class GeneralPage(QWidget):
     """一般: what the tray menu also offers, as switches. `items`: (key, title, on, toggled)."""
 
-    def __init__(self, items: list[tuple[str, str, bool, Callable[[bool], None]]]) -> None:
+    def __init__(self, items: list[tuple[str, str, bool, Callable[[bool], None]]],
+                 restart: Callable[[], None] | None = None) -> None:
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -293,6 +308,11 @@ class GeneralPage(QWidget):
             self.switches[key] = switch
             self.card.lay.addWidget(setting_row(title, switch))
         lay.addWidget(self.card)
+        self.cards = [self.card]
+        if restart is not None:
+            self.restart_button = button("重新啟動")
+            self.restart_button.clicked.connect(restart)
+            self.card.lay.addWidget(setting_row("AgentDock", self.restart_button))
         lay.addStretch(1)
 
     def set_on(self, key: str, on: bool) -> None:
@@ -304,7 +324,8 @@ class GeneralPage(QWidget):
             switch.update()
 
     def restyle(self) -> None:
-        self.card.restyle()
+        for card in self.cards:
+            card.restyle()
 
 
 class LookPage(QWidget):

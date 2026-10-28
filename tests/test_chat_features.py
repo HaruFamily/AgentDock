@@ -1,6 +1,5 @@
 """Chat window conveniences: list menu actions, delete, rename, keys, copy, retry, queued messages."""
 import json
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -105,45 +104,6 @@ def done(store, key):
     return lambda: store.dispatch.get(key)['state'] in ('done', 'failed', 'interrupted')
 
 
-@pytest.mark.parametrize('client', ['opencode', 'claude-code', 'codex', 'grok-cli'])
-def test_delete_in_the_client_then_from_the_list(clients, client):
-    store, sender, notes, events, work, tmp, fake = clients
-    key = start(sender, work, client, 'hello')
-    if client == 'opencode':
-        fake.reply(key.split(':', 1)[1], 'ok')
-    wait(done(store, key))
-    sid = key.split(':', 1)[1]
-    if client == 'claude-code':
-        transcript = tmp / 'claude-config' / 'projects' / 'x' / f'{sid}.jsonl'
-        transcript.parent.mkdir(parents=True)
-        transcript.write_text('{}\n', encoding='utf-8')
-        (transcript.parent / sid).mkdir()
-    removed = []
-    sender.delete(key, True, done=lambda: removed.append(key))
-    wait(lambda: removed or notes)
-    assert removed == [key] and notes == []
-    if client == 'opencode':
-        assert ('DELETE', f'api/session/{sid}', None) in fake.calls
-    elif client == 'claude-code':
-        assert not transcript.exists() and not (transcript.parent / sid).exists()
-    elif client == 'codex':
-        assert any(l.get('method') == 'thread/delete' for l in lines(tmp / 'codex.log'))
-    else:
-        assert any(l.get('method') == '_x.ai/session/delete' for l in lines(tmp / 'grok.log'))
-        assert sid not in json.loads((tmp / 'grok-sessions.json').read_text(encoding='utf-8'))
-
-
-def test_delete_refuses_a_running_conversation(clients):
-    store, sender, notes, events, work, tmp, fake = clients
-    key = start(sender, work, 'claude-code', 'SLOW')
-    removed = []
-    sender.delete(key, True, done=lambda: removed.append(key))
-    wait(lambda: notes)
-    assert '還在執行' in notes[0] and removed == []
-    sender.interrupt(key)
-    wait(done(store, key))
-
-
 @pytest.mark.parametrize('client', ['claude-code', 'grok-cli'])
 def test_messages_sent_while_running_queue_up(clients, client):
     store, sender, notes, events, work, tmp, fake = clients
@@ -223,29 +183,17 @@ def test_list_actions_rename_move_delete(window, monkeypatch):
     assert store.dispatch.get(key)['project'] == ''
     win.move_conversation(key, project['id'])
     assert projects.project_of(store.dispatch.get(key)) == project['id']
-    # Delete: a cancelled dialog keeps it; deleting only from AgentDock leaves Claude Code's history.
-    monkeypatch.setattr(cw.DeleteDialog, 'exec', lambda self: cw.QDialog.DialogCode.Rejected)
+    # Delete: it leaves the list at once; 復原 brings it back, otherwise it goes for good.
+    win.open_conversation(key)
     win.delete_conversation(key)
-    assert store.dispatch.get(key) is not None
-    monkeypatch.setattr(cw.DeleteDialog, 'exec', lambda self: cw.QDialog.DialogCode.Accepted)
+    assert key not in win.rows() and store.dispatch.get(key) is not None
+    assert win.undo_bar.isVisible() and win.pages.currentWidget() is win.new_view
+    win.undo_delete()
+    assert key in win.rows() and win.current_key == key and not win.undo_bar.isVisible()
     win.delete_conversation(key)
+    win._delete_timer.timeout.emit()
     assert store.dispatch.get(key) is None and win.pages.currentWidget() is win.new_view
-    assert 'last_conversation' not in state and notes == []
-
-
-def test_delete_with_client_history_waits_for_the_client(window, monkeypatch):
-    from agentdock.ui import chat_window as cw
-    win, make, store, sender, notes, work, projects, state, app = window
-    key = start(sender, work, 'codex', 'hello')
-    wait(done(store, key), app=app)
-
-    def accept(self):
-        self.remote.setChecked(True)
-        return cw.QDialog.DialogCode.Accepted
-    monkeypatch.setattr(cw.DeleteDialog, 'exec', accept)
-    win.delete_conversation(key)
-    wait(lambda: store.dispatch.get(key) is None, app=app)
-    assert notes == []
+    assert 'last_conversation' not in state and notes == [] and not win.undo_bar.isVisible()
 
 
 def test_keyboard_new_step_stop_search(window):
@@ -504,20 +452,16 @@ def test_pasted_image_is_saved_and_attached(window, tmp_path):
     assert composer.files == [] and composer.chips.isHidden()
 
 
-def test_fork_context_git_and_import_in_the_window(window, monkeypatch):
+def test_fork_context_and_import_in_the_window(window, monkeypatch):
     from PySide6.QtWidgets import QPushButton
     from agentdock.ui import chat_window as cw
     win, make, store, sender, notes, work, projects, state, app = window
-    subprocess.run(['git', '-C', str(work), 'init', '-q', '-b', 'main'], check=True)
-    (work / 'x.txt').write_text('x')
     key = start(sender, work, 'codex', 'hello')
     wait(done(store, key), app=app)
     win.open_conversation(key)
     view = win.conversation
     wait(lambda: not view.loading and view.context_chip.isVisibleTo(win), app=app)
     assert view.context_chip.text() == '上下文 12%'
-    wait(lambda: view.git_chip.isVisibleTo(win), app=app)
-    assert view.git_chip.text() == 'main · 1 個變更'
     # Fork from the reply: the new conversation opens.
     reply = next(w for w in view.widgets.values() if w.item['kind'] == 'assistant')
     buttons = {b.text(): b for b in reply.actions.findChildren(QPushButton)}
@@ -539,3 +483,106 @@ def test_fork_context_git_and_import_in_the_window(window, monkeypatch):
     dialog.adopt()
     wait(lambda: win.current_key == key and store.dispatch.get(key) is not None, app=app)
     assert notes == []
+
+
+def test_conversation_shows_its_agents_quota(window):
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtWidgets import QLabel
+    from agentdock.tools.tokengauge import gauge
+    win, make, store, sender, notes, work, projects, state, app = window
+
+    class Quota(QObject):
+        changed = Signal()
+        busy, last = False, None
+        results = [gauge.ProviderResult('codex', 'Codex', [gauge.Account('a', [gauge.Window('5h', 30, None),
+                                                                              gauge.Window('week', 60, None)])])]
+
+        def visible_results(self):
+            return self.results
+    quota = Quota()
+    win.set_quota(quota)
+    view = win.conversation
+    key = start(sender, work, 'codex', 'hello')
+    wait(done(store, key), app=app)
+    win.open_conversation(key)
+    wait(lambda: view.quota.isVisibleTo(win), app=app)
+    assert view.quota.shown == 1
+    # Every window is listed, not only the tightest.
+    assert len([l for l in view.quota.findChildren(QLabel) if l.objectName() == 'CardKind' and l.isVisibleTo(view.quota)]) == 2
+    # Narrow: under the message box; wide: in the corner beside it.
+    win.resize(1000, 720)
+    wait(lambda: view.quota.parentWidget() is view.quota_slot, app=app)
+    win.resize(1900, 900)
+    wait(lambda: view.quota.parentWidget() is view, app=app)
+    assert view.quota.geometry().left() > view.composer.geometry().right()
+    # A new look redraws it in place; it must not be measured empty (0 high, so unseen).
+    win.refresh_theme()
+    assert view.quota.isVisibleTo(win) and view.quota.height() > 20
+    # An Agent without quota data shows nothing.
+    other = start(sender, work, 'grok-cli', 'hello')
+    wait(done(store, other), app=app)
+    win.open_conversation(other)
+    wait(lambda: not view.quota.isVisibleTo(win), app=app)
+
+
+def test_reopened_conversation_shows_at_once_then_refreshes(window, monkeypatch):
+    win, make, store, sender, notes, work, projects, state, app = window
+    first = start(sender, work, 'codex', 'hello')
+    wait(done(store, first), app=app)
+    second = start(sender, work, 'grok-cli', 'hello')
+    wait(done(store, second), app=app)
+    view = win.conversation
+    win.open_conversation(first)
+    wait(lambda: not view.loading and view.transcript.items, app=app)
+    shown = [i['id'] for i in view.transcript.items]
+    win.open_conversation(second)
+    wait(lambda: not view.loading, app=app)
+    # Back to the first: on screen before the client answers, then the client's copy is checked.
+    win.open_conversation(first)
+    assert [i['id'] for i in view.transcript.items] == shown and view.refreshing is not None
+    assert view.status.isHidden()
+    wait(lambda: view.refreshing is None and not view.loading, app=app)
+    assert [i['id'] for i in view.transcript.items] == shown
+    # A changed copy replaces what was cached.
+    messages, older = view.history_cache[first]
+    view.history_cache[first] = (messages[:1], older)
+    win.open_conversation(second)
+    win.open_conversation(first)
+    assert len(view.transcript.items) < len(shown)
+    wait(lambda: view.refreshing is None and [i['id'] for i in view.transcript.items] == shown, app=app)
+
+
+def test_a_message_that_did_not_get_out_comes_back(window, monkeypatch):
+    from agentdock.dispatch.adapter import ClientError
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'codex', 'hello')
+    wait(done(store, key), app=app)
+    win.open_conversation(key)
+    view = win.conversation
+    wait(lambda: not view.loading, app=app)
+
+    def refuse(*_args, **_kw):
+        raise ClientError('沒有連線')
+    monkeypatch.setattr(sender.adapters['codex'], 'prompt', refuse)
+    view.composer.text.setPlainText('a long message')
+    view.send()
+    assert view.composer.text.toPlainText() == ''
+    wait(lambda: view.composer.text.toPlainText() == 'a long message', app=app)
+    assert any('沒有連線' in n for n in notes)
+
+
+def test_running_turn_shows_its_time(window):
+    win, make, store, sender, notes, work, projects, state, app = window
+    key = start(sender, work, 'codex', 'SLOW')
+    wait(lambda: store.dispatch.get(key)['state'] == 'running', app=app)
+    win.open_conversation(key)
+    view = win.conversation
+    win.refresh()
+    win.run_started[key] = time.monotonic() - 83
+    wait(lambda: not view.loading, app=app)
+    view._tick()
+    assert '1:23' in view.status.text() or '1:24' in view.status.text()
+    sender.interrupt(key)
+    wait(done(store, key), app=app)
+    win.refresh()
+    assert key not in win.run_started

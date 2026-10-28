@@ -117,6 +117,9 @@ class TrayApp(Dock):
         if self.quota is not None:
             self.quota_float = QuotaFloat(self.quota)
             self.quota_float.moved.connect(self._float_moved)
+            self.quota_float.close_requested.connect(lambda: self.set_quota_float(False))
+            self.chat.set_quota(self.quota)
+            self.chat.closed.connect(self._quota_activity)
 
         self._tray_sync = QTimer(self, singleShot=True, interval=150)
         self._tray_sync.timeout.connect(self._sync_tray)
@@ -185,7 +188,17 @@ class TrayApp(Dock):
             items.append(('quota_float', '額度浮動視窗', bool(self.ui.get('quota_float')), self.set_quota_float))
         if winutil.IS_WINDOWS:
             items.insert(0, ('autostart', '開機自動啟動', winutil.autostart_get() is not None, self._autostart_toggled))
-        self.general_page = GeneralPage(items)
+        self.general_page = GeneralPage(items, restart=self.restart)
+        from agentdock.ui.external_tools import ExternalToolsCard
+        external = ExternalToolsCard(self.ui, self._save_ui)
+        from PySide6.QtWidgets import QWidget, QVBoxLayout
+        external_page = QWidget()
+        external_layout = QVBoxLayout(external_page)
+        external_layout.setContentsMargins(0, 0, 0, 0)
+        external_layout.addWidget(external)
+        external_layout.addStretch(1)
+        external_page.restyle = external.restyle
+        self.agents.set_page('external', external_page)
         self.agents.set_page('general', self.general_page)
         self.look_page = LookPage(theme.THEMES, theme.NAME, {k: v[0] for k, v in theme.TEXT_SIZES.items()},
                                   self.ui.get('text_size', 'large'))
@@ -225,8 +238,8 @@ class TrayApp(Dock):
 
     def _quota_activity(self) -> None:
         if self.quota is not None:
-            shown = (self.chat.isVisible() and self.chat.rail.current == 'tools') or \
-                    bool(self.quota_float and self.quota_float.isVisible())
+            # The conversation shows its Agent's quota too, so an open window keeps the numbers fresh.
+            shown = self.chat.isVisible() or bool(self.quota_float and self.quota_float.isVisible())
             if shown != self.quota.active:
                 self.quota.set_active(shown)
 
@@ -297,6 +310,7 @@ class TrayApp(Dock):
             self._autostart_action = auto
             menu.addAction(auto)
         menu.addSeparator()
+        menu.addAction(QAction('重新啟動', menu, triggered=self.restart))
         menu.addAction(QAction('結束 AgentDock', menu, triggered=self.quit))
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda reason: self.toggle_card()
@@ -322,6 +336,7 @@ class TrayApp(Dock):
         key = f"{row['client']}:{row['session_id']}"
         if self.chat.isVisible() and self.chat.isActiveWindow() and self.chat.current_key == key:
             return
+        self.chat.flash()
         if self.tray is None or not self.ui.get('notify_attention', True):
             return
         what = '待授權' if row.get('permissions') else '待回答'
@@ -387,7 +402,19 @@ class TrayApp(Dock):
         except OSError:
             logging.exception('save ui')
 
-    def quit(self) -> None:
+    def restart(self) -> None:
+        """Quit and start again from the source, so changes to the code and settings take effect."""
+        running = sum(1 for r in self.store.dispatch.rows.values() if r['state'] == 'running')
+        if running:
+            from PySide6.QtWidgets import QMessageBox
+            answer = QMessageBox.question(self.chat if self.chat.isVisible() else None, '重新啟動',
+                                          f'{running} 個對話進行中，重新啟動會中斷。')
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self.quit(restart=True)
+
+    def quit(self, restart: bool = False) -> None:
+        shown = self.chat.isVisible()
         self.chat.conversation.composer.save_draft()
         self.chat.remember()
         self.chat.hide()
@@ -409,4 +436,10 @@ class TrayApp(Dock):
             pass
         if self.tray:
             self.tray.hide()
+        if restart:
+            from agentdock import launch
+            try:
+                launch.start('--restart', *(() if shown else ('--background',)))   # waits for this one to exit
+            except OSError:
+                logging.exception('restart')
         self.app.quit()

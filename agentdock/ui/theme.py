@@ -239,6 +239,7 @@ def _chevron(color: str) -> str:
 
 
 def _build(c: dict) -> str:
+    from agentdock.ui.control_style import control_style
     ACCENT, ACCENT_DEEP, ACCENT_SOFT, LAVENDER, ALERT, INK, MUTED, LINE, CANVAS, CARD, DANGER, OK, HOVER, DIM, ERR_BG, WARN_BG, WARN_INK, FONT = (
         c[k] for k in ("ACCENT", "ACCENT_DEEP", "ACCENT_SOFT", "LAVENDER", "ALERT", "INK", "MUTED", "LINE", "CANVAS", "CARD", "DANGER",
                        "OK", "HOVER", "DIM", "ERR_BG", "WARN_BG", "WARN_INK", "FONT"))
@@ -365,7 +366,7 @@ QMenu::item:selected {{ background: {ACCENT_SOFT}; color: {ACCENT_DEEP}; }}
 QMenu::separator {{ height: 1px; background: {LINE}; margin: 4px 8px; }}
 QToolTip {{ background: {CARD}; color: {INK}; border: 1px solid {LINE}; border-radius: 8px; padding: 4px 8px; }}
 QProgressBar {{ background: {ACCENT_SOFT}; border: none; border-radius: 4px; }}
-"""
+""" + control_style(c)
 
 
 apply("clean")

@@ -31,18 +31,25 @@ from agentdock.ui import web_transcript
 from agentdock.ui.question_text import QuestionText
 from agentdock.ui.web_transcript import tool_name
 from agentdock.ui.widgets import ElidedLabel, icon_button
-from agentdock.ui.chat_common import AGENTS, ROLE, when
+from agentdock.ui.chat_common import AGENTS, COLUMN, ROLE, icon, when
 from agentdock.ui.chat_sidebar import Sidebar
+from agentdock.ui.chat_new import NewConversationView, RecentRow
 
 
 # --------------------------------------------------------------------------- project page
 class ProjectView(QWidget):
+    """A project's own page: its name and folder, a message box that starts a conversation there,
+    and its conversations. Less used actions sit in the ⋯ menu."""
+
     def __init__(self, window):
         super().__init__()
         self.window_ = window
         self.pid = ''
+        self.root_path = ''
+        self._shown = None
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
@@ -51,81 +58,145 @@ class ProjectView(QWidget):
         row.setContentsMargins(32, 28, 32, 28)
         row.addStretch(1)
         column = QWidget()
-        column.setMaximumWidth(760)
+        column.setMaximumWidth(COLUMN)
         lay = QVBoxLayout(column)
-        lay.setSpacing(18)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
         head = QHBoxLayout()
-        self.name = QLineEdit()
-        self.name.setObjectName('PageTitle')
-        self.name.editingFinished.connect(self._rename)
-        head.addWidget(self.name, 1)
-        git = button('Git')
-        git.clicked.connect(lambda: self.window_.open_git(self.root.text(), report=True))
-        head.addWidget(git)
-        adopt = button('匯入對話')
-        adopt.clicked.connect(lambda: self.window_.import_conversations(self.pid))
-        head.addWidget(adopt)
-        new = button('＋ 在此專案開新對話', primary=True)
-        new.clicked.connect(lambda: self.window_.show_new(self.pid))
-        head.addWidget(new)
+        head.setSpacing(6)
+        self.icon_preview = QLabel()
+        self.icon_preview.setFixedSize(36, 36)
+        head.addWidget(self.icon_preview)
+        heading = label('專案設定', name='PageTitle')
+        head.addWidget(heading, 1)
         lay.addLayout(head)
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        root_row = QHBoxLayout()
+        lay.addSpacing(24)
+        lay.addWidget(label('名稱', name='FieldLabel'))
+        self.name = QLineEdit()
+        self.name.setAccessibleName('專案名稱')
+        self.name.editingFinished.connect(self._rename)
+        lay.addWidget(self.name)
+        lay.addSpacing(28)
+        lay.addWidget(label('圖示', name='FieldLabel'))
+        symbols = QHBoxLayout()
+        symbols.setSpacing(8)
+        self.icon_buttons = {}
+        for key, title in (('folder', '資料夾'), ('tools', '工具'), ('chat', '對話'),
+                           ('shield', '盾牌'), ('agent', '機器人')):
+            choice = QPushButton()
+            choice.setCheckable(True)
+            choice.setFixedSize(38, 36)
+            choice.setAccessibleName(title)
+            choice.setToolTip(title)
+            choice.clicked.connect(lambda _checked=False, value=key: self._pick_icon(value))
+            self.icon_buttons[key] = choice
+            symbols.addWidget(choice)
+        symbols.addStretch(1)
+        self.color_button = button('顏色', flat=True)
+        self.color_button.clicked.connect(self._pick_color)
+        symbols.addWidget(self.color_button)
+        reset = button('預設顏色', flat=True)
+        reset.clicked.connect(lambda: self._appearance(color=''))
+        symbols.addWidget(reset)
+        lay.addLayout(symbols)
+        lay.addSpacing(28)
+        lay.addWidget(label('資料夾', name='FieldLabel'))
+        place = QHBoxLayout()
+        place.setSpacing(8)
         self.root = QLineEdit()
         self.root.setReadOnly(True)
-        root_row.addWidget(self.root, 1)
-        change = button('更換')
-        change.clicked.connect(self._change_root)
-        root_row.addWidget(change)
-        form.addRow('根目錄', root_row)
-        self.agent = QComboBox()
-        for kind, name in AGENTS:
-            self.agent.addItem(name, kind)
-        self.agent.currentIndexChanged.connect(lambda _i: self._set_agent())
-        form.addRow('預設 Agent', self.agent)
-        lay.addLayout(form)
-        section = QLabel('對話')
-        section.setObjectName('SectionLabel')
-        lay.addWidget(section)
-        self.conversations = QVBoxLayout()
-        self.conversations.setSpacing(6)
-        lay.addLayout(self.conversations)
-        remove = button('刪除專案', danger=True, flat=True)
+        self.root.setAccessibleName('目前資料夾')
+        self.root.setMinimumWidth(0)
+        place.addWidget(self.root, 1)
+        self.change_root = button('瀏覽…', flat=True)
+        self.change_root.clicked.connect(self._change_root)
+        place.addWidget(self.change_root)
+        self.open_root = button('開啟資料夾', flat=True)
+        self.open_root.clicked.connect(self._open_root)
+        place.addWidget(self.open_root)
+        lay.addLayout(place)
+        lay.addSpacing(24)
+        from agentdock.ui.git_view import GitView
+        from agentdock.ui.settings_page import Card
+        self.git_card = Card()
+        self.git_view = GitView(external=window.external_tools.open, embedded=True)
+        self.git_card.lay.addWidget(self.git_view)
+        lay.addWidget(self.git_card)
+        lay.addSpacing(24)
+        actions = QHBoxLayout()
+        self.import_button = button('匯入對話', flat=True)
+        self.import_button.clicked.connect(lambda: self.window_.import_conversations(self.pid))
+        actions.addWidget(self.import_button)
+        actions.addStretch(1)
+        remove = button('刪除專案', danger=True)
         remove.clicked.connect(self._remove)
-        lay.addWidget(remove, 0, Qt.AlignmentFlag.AlignLeft)
+        actions.addWidget(remove)
+        lay.addLayout(actions)
         lay.addStretch(1)
+        self.starter = window.new_view
+        self.composer = self.starter.composer
         row.addWidget(column, 100)
         row.addStretch(1)
         scroll.setWidget(body)
+        self.restyle()
+
+    def restyle(self) -> None:
+        self.git_card.restyle()
+        self.git_view.restyle()
+        self.refresh()
+        self.composer.restyle()
+        self.starter.agent_chip.restyle()
 
     def show_project(self, pid: str) -> None:
         self.pid = pid
+        self._shown = None
+        before = self.git_view.directory
         self.refresh()
+        if before == self.root_path:
+            self.git_view.set_root(self.root_path, force=True)
 
     def refresh(self) -> None:
         project = self.window_.projects.get(self.pid)
         if project is None:
             return
-        self.name.setText(project['name'])
-        self.root.setText(project['root'])
-        self.agent.blockSignals(True)
-        self.agent.setCurrentIndex(max(0, self.agent.findData(project.get('agent', 'opencode'))))
-        self.agent.blockSignals(False)
-        while self.conversations.count():
-            widget = self.conversations.takeAt(0).widget()
-            if widget:
-                widget.deleteLater()
-        rows = sorted(((k, r) for k, r in self.window_.store.dispatch.rows.items()
-                       if self.window_.projects.project_of(r) == self.pid),
-                      key=lambda kv: kv[1]['updated_at'], reverse=True)
-        for key, row in rows:
-            b = button(f"{row['title']}    {Sidebar._badge(row)}", flat=True)
-            b.setStyleSheet('text-align: left;')
-            b.clicked.connect(lambda _c=False, k=key: self.window_.open_conversation(k))
-            self.conversations.addWidget(b)
-        if not rows:
-            self.conversations.addWidget(label('還沒有對話。', muted=True))
+        if not self.name.hasFocus():
+            self.name.setText(project['name'])
+        self.icon_preview.setPixmap(icon(project.get('icon', 'folder'), project.get('color') or theme.MUTED or '#888888', 22).pixmap(22, 22))
+        for key, choice in self.icon_buttons.items():
+            choice.setIcon(icon(key, project.get('color') or theme.MUTED or '#888888', 20))
+            choice.setChecked(key == project.get('icon', 'folder'))
+        self.root_path = project['root']
+        if hasattr(self, 'git_view'):
+            self.git_view.set_root(self.root_path)
+        if self.root.text() != self.root_path:
+            self.root.setText(self.root_path)
+            self.root.setCursorPosition(0)
+
+    def _pick_color(self) -> None:
+        from PySide6.QtWidgets import QColorDialog
+        from PySide6.QtGui import QColor
+        project = self.window_.projects.get(self.pid)
+        if project is None:
+            return
+        chosen = QColorDialog.getColor(QColor(project.get('color') or theme.MUTED), self, '專案圖示顏色')
+        if chosen.isValid():
+            self.window_.projects.update(self.pid, color=chosen.name())
+            self.refresh()
+            self.window_.sidebar.refresh()
+
+    def _appearance(self, **changes) -> None:
+        self.window_.projects.update(self.pid, **changes)
+        self.refresh()
+        self.window_.sidebar.refresh()
+
+    def _pick_icon(self, value: str) -> None:
+        self._appearance(icon=value)
+
+    def _open_root(self) -> None:
+        if os.path.isdir(self.root_path):
+            os.startfile(self.root_path)   # noqa: S606 - Explorer, no console
+        else:
+            self.window_.notify('找不到這個資料夾。')
 
     def _rename(self) -> None:
         try:
@@ -134,15 +205,14 @@ class ProjectView(QWidget):
             self.window_.notify(str(e))
 
     def _change_root(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(self, '選擇根目錄', self.root.text())
+        chosen = QFileDialog.getExistingDirectory(self, '選擇根目錄', self.root_path)
         if chosen:
             try:
                 self.window_.projects.update(self.pid, root=chosen)
+                self.refresh()
+                self.window_.sidebar.refresh()
             except (KeyError, ValueError) as e:
                 self.window_.notify(str(e))
-
-    def _set_agent(self) -> None:
-        self.window_.projects.update(self.pid, agent=self.agent.currentData())
 
     def _remove(self) -> None:
         project = self.window_.projects.get(self.pid)
@@ -199,31 +269,6 @@ class RenameDialog(QDialog):
         save.setDefault(True)
         save.clicked.connect(self.accept)
         buttons.addWidget(save)
-        layout.addLayout(buttons)
-        self.resize(420, 0)
-
-
-class DeleteDialog(QDialog):
-    """Removing from AgentDock is the default; deleting the client's own history is a separate choice."""
-
-    def __init__(self, parent, title: str, source: str):
-        super().__init__(parent)
-        self.setWindowTitle('刪除對話')
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        text = label(f'刪除「{title}」？')
-        layout.addWidget(text)
-        self.remote = QCheckBox(f'同時刪除 {source} 裡的紀錄')
-        layout.addWidget(self.remote)
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        cancel = button('取消', flat=True)
-        cancel.setDefault(True)
-        cancel.clicked.connect(self.reject)
-        buttons.addWidget(cancel)
-        delete = button('刪除', danger=True)
-        delete.clicked.connect(self.accept)
-        buttons.addWidget(delete)
         layout.addLayout(buttons)
         self.resize(420, 0)
 
@@ -386,7 +431,7 @@ class SearchPalette(QFrame):
     def fill(self) -> None:
         w = self.window_
         query = self.query.text().strip().lower()
-        rows = sorted(w.store.dispatch.rows.items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
+        rows = sorted(w.rows().items(), key=lambda kv: kv[1]['updated_at'], reverse=True)
         hits = [(k, r) for k, r in rows
                 if not query or any(query in str(r.get(n, '')).lower()
                                     for n in ('title', 'prompt', 'reply', 'source', 'directory'))]

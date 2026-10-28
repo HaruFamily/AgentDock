@@ -46,7 +46,7 @@ def setup(tmp_path, monkeypatch):
     claude = ClaudeClient(find=lambda: [sys.executable, str(FAKES / 'fake_claude.py')])
     codex = CodexClient(find=lambda: [sys.executable, str(FAKES / 'fake_codex.py')])
     grok = GrokClient(find=lambda: [sys.executable, str(FAKES / 'fake_grok.py')])
-    sender = Dispatcher(store.dispatch, notify=notes.append, connect=lambda _s: None, adapters=[claude, codex, grok])
+    sender = Dispatcher(store.dispatch, notify=notes.append, adapters=[claude, codex, grok])
     sender.listeners.append(lambda key, event: events.append((key, event)))
     yield store, sender, notes, events, started, work, tmp_path
     sender.close()
@@ -102,6 +102,8 @@ def test_send_reply_and_continue(setup, client):
         assert new == {'cwd': str(work), 'mcpServers': []}   # never yolo: Grok's own permission mode applies
     else:
         log = lines(tmp / 'codex.log')
+        argv = next(l for l in log if l.get('method') == 'process/start')['argv']
+        assert argv == ['-c', 'mcp_optional_startup_grace_ms=0', 'app-server']
         assert [l['method'] for l in log if l.get('method') in ('thread/start', 'turn/start')] == \
             ['thread/start', 'turn/start', 'turn/start']
         assert next(l for l in log if l.get('method') == 'thread/start')['params']['cwd'] == str(work)
@@ -227,7 +229,7 @@ def test_crash_is_reported_and_next_message_restarts(setup, client, detail):
 def test_missing_cli_is_explained(tmp_path):
     store = QuestionStore(tmp_path)
     notes = []
-    sender = Dispatcher(store.dispatch, notify=notes.append, connect=lambda _s: None,
+    sender = Dispatcher(store.dispatch, notify=notes.append,
                         adapters=[ClaudeClient(find=lambda: None), CodexClient(find=lambda: None),
                                   GrokClient(find=lambda: None)])
     for client in ('claude-code', 'codex', 'grok-cli'):
@@ -448,7 +450,7 @@ def test_grok_history_after_restart_replays_the_session(setup):
     sender.reply_permission(key, next(iter(store.dispatch.get(key)['permissions'])), 'once')
     wait(settled(store, key))
     # A new AgentDock (new agent process) opens the session with session/load and shows its replay.
-    fresh = Dispatcher(store.dispatch, connect=lambda _s: None,
+    fresh = Dispatcher(store.dispatch,
                        adapters=[GrokClient(find=lambda: [sys.executable, str(FAKES / 'fake_grok.py')])])
     got = []
     fresh.history(key, None, lambda messages, older: got.append(messages), failed=got.append)

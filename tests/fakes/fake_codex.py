@@ -24,6 +24,9 @@ def out(message):
     sys.stdout.flush()
 
 
+log({'method': 'process/start', 'argv': sys.argv[1:]})
+
+
 def new_id(prefix):
     counter[0] += 1
     return f'{prefix}_{counter[0]}'
@@ -181,9 +184,6 @@ while True:
     elif method == 'thread/list':
         out({'id': mid, 'result': {'data': [{'id': t, 'preview': f'preview {t}', 'name': None, 'cwd': '/w',
                                              'updatedAt': 1700000000} for t in threads]}})
-    elif method == 'thread/delete':
-        threads.pop(params['threadId'], None)
-        out({'id': mid, 'result': {}})
     elif method == 'turn/start':
         turn = new_id('turn')
         out({'id': mid, 'result': {'turn': {'id': turn, 'status': 'inProgress', 'items': []}}})

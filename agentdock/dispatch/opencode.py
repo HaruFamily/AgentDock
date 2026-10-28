@@ -267,8 +267,6 @@ class OpenCodeService:
     def reply_form(self, session_id: str, form_id: str, answer: dict) -> None:
         self.request('POST', f'/api/session/{_q(session_id)}/form/{_q(form_id)}/reply', {'answer': answer})
 
-    def delete_session(self, session_id: str) -> None:
-        self.request('DELETE', f'/api/session/{_q(session_id)}')
 
     def cancel_form(self, session_id: str, form_id: str) -> None:
         self.request('DELETE', f'/api/session/{_q(session_id)}/form/{_q(form_id)}')

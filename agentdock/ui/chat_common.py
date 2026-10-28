@@ -139,6 +139,7 @@ def context_text(usage: dict | None) -> str:
 
 
 def _style() -> str:
+    from agentdock.ui.control_style import control_style
     t = theme
     # The sweet look rounds everything more; parts the local look paints itself drop their plain box.
     big, mid, small = (26, 20, 14) if t.CUTE else (18, 14, 8)
@@ -159,6 +160,11 @@ def _style() -> str:
 #ChatRail {{ background: {rail_bg}; border-right: {rail_line}; }}
 #ChatRail QPushButton {{ border: none; border-radius: {small}px; padding: 10px; background: transparent; }}
 #ChatRail QPushButton:hover {{ background: {t.ACCENT_SOFT}; }}
+#UndoBar {{ background: {t.INK}; border-radius: {pill + 4}px; }}
+#UndoBar QLabel {{ color: {t.CANVAS}; }}
+QPushButton#UndoButton {{ background: transparent; border: none; color: {t.ACCENT_SOFT}; font-weight: 700;
+                         padding: 4px 10px; }}
+QPushButton#UndoButton:hover {{ text-decoration: underline; }}
 #ChatRail QPushButton[current="true"] {{ background: {t.ACCENT_SOFT}; color: {t.ACCENT_DEEP}; font-weight: 700; }}
 #ChatSidebar {{ background: {side_bg}; border-right: {side_line}; }}
 #ChatSplit::handle {{ background: transparent; }}
@@ -182,8 +188,12 @@ QPushButton#RowMore:hover {{ background: {t.ACCENT_SOFT}; }}
 #PageTitle {{ font-size: 22px; font-weight: 700; }}
 #ChatChip {{ border: none; border-radius: 8px; padding: 3px 8px; color: {t.MUTED}; font-size: 12px; background: transparent; }}
 QPushButton#ChatChip:hover {{ background: {t.HOVER}; color: {t.INK}; }}
-QPushButton#NewChat {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: 10px; padding: 7px 14px; color: {t.INK}; font-weight: 600; }}
-QPushButton#NewChat:hover {{ border-color: {t.ACCENT}; color: {t.ACCENT_DEEP}; }}
+QPushButton#NewChat {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 7px 10px; color: {t.INK}; font-weight: 600; text-align: left; }}
+QPushButton#NewChat:hover {{ background: {t.HOVER}; }}
+QPushButton#NewChat:focus {{ border-color: {t.ACCENT}; }}
+QLineEdit#SidebarSearch {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 7px 8px; }}
+QLineEdit#SidebarSearch:hover {{ background: {t.HOVER}; }}
+QLineEdit#SidebarSearch:focus {{ background: {t.CARD}; border-color: {t.LINE}; }}
 #EndLine {{ color: {t.MUTED}; font-size: 12px; }}
 #EndLine[failed="true"] {{ color: {t.DANGER}; }}
 #CodeBlock {{ background: {code_bg}; border: {code_line}; border-radius: {small}px; }}
@@ -231,7 +241,7 @@ QPushButton[seg="true"] {{ border-radius: 10px; padding: 5px 14px; }}
 #SettingsPage[wide="true"] QWidget#SectionHead {{ background: transparent; }}
 #SettingsPage[wide="true"] QWidget#WideList {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
 #QuotaCard {{ background: {t.CARD}; border: 1px solid {t.LINE}; border-radius: {mid}px; }}
-""" + t.extra_style('chat'))
+""" + control_style(vars(t)) + t.extra_style('chat'))
 
 
 class Bridge(QObject):
@@ -240,15 +250,15 @@ class Bridge(QObject):
     history_failed = Signal(str, str)
     live = Signal(str, dict)
     started = Signal(str)
-    deleted = Signal(str)
     replaced = Signal(str, str)        # a conversation that started over in a new session: old key, new key
     reload = Signal(str)               # show again what the client holds for this conversation
+    unsent = Signal(str, str, list)    # a message that did not get out: conversation key ('' new), text, files
     options = Signal(str, str, dict)   # client, conversation key ('' for a new one), choices
-    git = Signal(str, str, str)        # conversation key, repository root ('' when none), status summary
     sessions = Signal(str, list)       # client, its saved sessions
 
 
 ICONS = {
+    'search': 'M21 21l-5-5 M18 10a8 8 0 1 1-16 0a8 8 0 1 1 16 0',
     'chat': 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z',
     'tools': 'M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z',
     'settings': 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3 1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8 1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
@@ -269,7 +279,7 @@ ICONS = {
 GAP = 14   # between messages of the conversation
 
 
-COLUMN = 720   # the reading column: header, messages and the message box share its edges
+COLUMN = 720   # the reading column: messages and the message box share its edges
 
 
 def heart_icon(filled: bool, color: str, size: int = 14):

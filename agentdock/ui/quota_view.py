@@ -17,6 +17,8 @@ class QuotaView(QWidget):
     def __init__(self, model, compact: bool = False, columns: int = 1, show_head: bool = True):
         super().__init__()
         self.model, self.compact, self.columns = model, compact, columns
+        self.keys: set[str] | None = None   # only these providers (None: all)
+        self.shown = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -74,13 +76,17 @@ class QuotaView(QWidget):
         from agentdock.tools.tokengauge import gauge
         when = time.strftime('%H:%M', time.localtime(q.last)) if q.last else ''
         self.updated.setText(theme.t('updating') if q.busy else (theme.t('updated', t=when) if when else theme.t('no_quota')))
-        results = q.visible_results()
+        results = [r for r in q.visible_results() if self.keys is None or r.key in self.keys]
+        self.shown = len(results)
         for n, r in enumerate(results):
+            box = self._provider(r, gauge)
             if self.columns > 1:
-                self.rows.addWidget(self._provider(r, gauge), n // self.columns, n % self.columns,
-                                    Qt.AlignmentFlag.AlignTop)
+                self.rows.addWidget(box, n // self.columns, n % self.columns, Qt.AlignmentFlag.AlignTop)
             else:
-                self.rows.addWidget(self._provider(r, gauge))
+                self.rows.addWidget(box)
+            # Shown now, not on the next turn of the event loop: whoever sizes this view right after
+            # (the conversation's corner) would otherwise measure it as empty, 0 high.
+            box.show()
         if self.columns > 1:
             self.rows.setRowStretch((len(results) + self.columns - 1) // self.columns, 1)
         elif not self.compact:
@@ -149,6 +155,7 @@ class QuotaView(QWidget):
 class QuotaFloat(QFrame):
     """The only floating window left: small, always on top, dragged anywhere, never takes focus."""
     moved = Signal(QPoint)
+    close_requested = Signal()   # its menu's 關閉: the app turns the float setting off
 
     def __init__(self, model):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool |
@@ -157,6 +164,7 @@ class QuotaFloat(QFrame):
         self.setObjectName('PanelFrame')
         self.setWindowTitle('AgentDock 額度')
         self.layout_ = QVBoxLayout(self)
+        self.model = model
         self.view = QuotaView(model, compact=True)
         self.layout_.addWidget(self.view)
         self._drag: QPoint | None = None
@@ -214,6 +222,14 @@ class QuotaFloat(QFrame):
         from agentdock.ui.cute import round_mask
         round_mask(self, 22 if self.laced() else 18)
         super().resizeEvent(event)
+
+    def contextMenuEvent(self, event):  # noqa: N802
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.addAction('立即更新', lambda: self.model and self.model.collect())
+        menu.addSeparator()
+        menu.addAction('關閉', self.close_requested.emit)
+        menu.exec(event.globalPos())
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:

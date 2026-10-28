@@ -2,6 +2,29 @@
  "schema": 1,
  "servers": [
   {
+   "key": "unityMCP",
+   "type": "uvx",
+   "description": "CoplayDev Unity MCP。Unity 專案需安裝 com.coplaydev.unity-mcp，並在 Window → MCP for Unity 啟用 stdio 連線。",
+   "package": "mcp-for-unity",
+   "options": [
+    "--from",
+    "mcpforunityserver"
+   ],
+   "args": [
+    "--transport",
+    "stdio"
+   ],
+   "env": {
+    "UV_CACHE_DIR": "{AGENTDOCK}/runtime/cache",
+    "UV_TOOL_DIR": "{AGENTDOCK}/runtime/uv-tools",
+    "UV_PYTHON_INSTALL_DIR": "{AGENTDOCK}/runtime/python",
+    "UV_PYTHON_PREFERENCE": "only-managed",
+    "PYTHONIOENCODING": "utf-8",
+    "PYTHONUTF8": "1"
+   },
+   "timeout_sec": 120
+  },
+  {
    "type": "uvx",
    "key": "google-sheets",
    "description": "Google Sheets（xing5/mcp-google-sheets），使用 OAuth。先啟用 Google Sheets／Drive API 並建立桌面應用程式 OAuth 憑證；在本機祕密填 CREDENTIALS_PATH（憑證 JSON 完整路徑）與 TOKEN_PATH（登入 token 儲存完整路徑，父目錄須存在且可寫）。首次啟動需瀏覽器登入，每台電腦各自授權。",

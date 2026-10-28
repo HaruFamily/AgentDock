@@ -8,13 +8,15 @@ sandbox settings decide what needs asking.
 from __future__ import annotations
 
 import os
+import logging
 import shutil
 import threading
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any
 
-from agentdock.dispatch.adapter import (MAX_OUTPUT, Adapter, ChildProcess, ClientError, child_env, first_file,
+from agentdock.dispatch.adapter import (MAX_OUTPUT, Adapter, ChildProcess, ClientError, ReplyTransportError, child_env, first_file,
                                         image_type, npm_dir, page, text_content, with_file_list)
 
 CLIENT = 'codex'
@@ -185,6 +187,8 @@ class CodexClient(Adapter):
         self._requests: dict[str, dict] = {}           # our request id -> {'id', 'method', 'params', 'thread'}
         self._items: dict[str, dict] = {}              # item id -> item, for approval details
         self._errors: dict[str, str] = {}              # thread -> last error of the running turn
+        self._finished: dict[str, deque[str]] = {}     # ignore late completions after terminal errors
+        self._reply_lock = threading.Lock()
         self._ready = threading.Event()                # the current process answered initialize
         self._closed = False
 
@@ -204,7 +208,11 @@ class CodexClient(Adapter):
                     self._ready.clear()
                     holder: dict = {}
                     command = list(exe) if isinstance(exe, (list, tuple)) else [exe]
-                    current = ChildProcess([*command, 'app-server'], os.path.expanduser('~'), child_env(), self._line,
+                    # The default optional-MCP grace is only 1s. A turn sent immediately
+                    # after start/resume/revert can otherwise omit still-starting tools.
+                    # Zero waits for each server's own bounded startup timeout.
+                    current = ChildProcess([*command, '-c', 'mcp_optional_startup_grace_ms=0', 'app-server'],
+                                           os.path.expanduser('~'), child_env(), self._line,
                                            lambda code, err: self._exit(holder.get('process'), code, err), 'Codex')
                     holder['process'] = self._process = current
             if not starting:
@@ -215,8 +223,10 @@ class CodexClient(Adapter):
                     return current
                 continue
             try:
-                self._call(current, 'initialize', {'clientInfo': {'name': 'agentdock', 'title': 'AgentDock',
+                initialized = self._call(current, 'initialize', {'clientInfo': {'name': 'agentdock', 'title': 'AgentDock',
                                                                   'version': '1'}})
+                logging.info('Codex connected: executable=%s userAgent=%s codexHome=%s',
+                             command[0], initialized.get('userAgent'), initialized.get('codexHome'))
                 current.send({'method': 'initialized'})
             except ClientError:
                 current.stop()
@@ -351,10 +361,21 @@ class CodexClient(Adapter):
 
     def _take(self, row: dict, rid: str) -> dict:
         with self._lock:
-            request = self._requests.pop(rid, None)
+            request = self._requests.get(rid)
         if request is None:
             raise ClientError('這個請求已失效（Codex 已不在等待）。')
         return request
+
+    def _send_reply(self, row: dict, rid: str, result: dict) -> dict:
+        with self._reply_lock:
+            request = self._take(row, rid)
+            try:
+                self._respond(request, result)
+            except ClientError as e:
+                raise ReplyTransportError(str(e)) from e
+            with self._lock:
+                self._requests.pop(rid, None)
+            return request
 
     def reply_permission(self, row: dict, request_id: str, decision: str) -> None:
         request = self._take(row, request_id)
@@ -366,14 +387,14 @@ class CodexClient(Adapter):
             result = {'permissions': granted, 'scope': 'session' if decision == 'always' else 'turn'}
         else:
             result = {'decision': COMMAND_DECISIONS.get(decision, 'decline')}
-        self._respond(request, result)
+        self._send_reply(row, request_id, result)
         self.event(request['thread'], 'permission.replied', requestID=request_id)
 
     def reply_form(self, row: dict, form_id: str, answer: dict | None) -> None:
         request = self._take(row, form_id)
         answers = {} if answer is None else {
             k: {'answers': [str(x) for x in v] if isinstance(v, list) else [str(v)]} for k, v in answer.items()}
-        self._respond(request, {'answers': answers})
+        self._send_reply(row, form_id, {'answers': answers})
         self.event(request['thread'], 'form.cancelled' if answer is None else 'form.replied', id=form_id)
 
     def _resolved(self, thread: str, rid: str, request: dict) -> None:
@@ -409,10 +430,21 @@ class CodexClient(Adapter):
             if last.get('totalTokens'):
                 self.event(thread, 'session.context', used=int(last['totalTokens']),
                            limit=int(usage.get('modelContextWindow') or 0))
-        elif method == 'error' and not params.get('willRetry'):
+        elif method == 'error':
             error = params.get('error') or {}
+            logging.warning('Codex error: thread=%s turn=%s willRetry=%s code=%s', thread,
+                            params.get('turnId'), params.get('willRetry'),
+                            error.get('codexErrorInfo') if isinstance(error, dict) else None)
+            if params.get('willRetry'):
+                self.event(thread, 'session.execution.retrying')
+                return
             with self._lock:
-                self._errors[thread] = str(error.get('message') if isinstance(error, dict) else error)
+                turn_id = str(params.get('turnId') or self._turns.get(thread) or '')
+                active = self._turns.get(thread)
+                if active and turn_id and active != turn_id:
+                    return
+            self._notification('turn/completed', {'threadId': thread, 'turn': {
+                'id': turn_id, 'status': 'failed', 'error': error}})
         elif method == 'serverRequest/resolved':
             rid = f"r{params.get('requestId')}"
             with self._lock:
@@ -422,6 +454,11 @@ class CodexClient(Adapter):
         elif method == 'turn/completed':
             turn = params.get('turn') or {}
             with self._lock:
+                tid = str(turn.get('id') or '')
+                if tid and (tid in self._finished.get(thread, ()) or
+                            (self._turns.get(thread) and self._turns[thread] != tid)):
+                    return
+                self._finished.setdefault(thread, deque(maxlen=64)).append(tid)
                 self._turns.pop(thread, None)
                 last_error = self._errors.pop(thread, '')
                 stale = [rid for rid, r in self._requests.items() if r['thread'] == thread]
@@ -538,6 +575,8 @@ class CodexClient(Adapter):
             params['effort'] = row['effort']
         if row.get('mode') in MODE_POLICY:
             params['approvalPolicy'], params['sandboxPolicy'] = MODE_POLICY[row['mode']]
+        logging.info('Codex turn/start: thread=%s model=%s effort=%s', thread,
+                     params.get('model', 'configured default'), params.get('effort', 'configured default'))
         self.call('turn/start', params)
 
     def options(self, row: dict | None, directory: str) -> dict:
@@ -599,10 +638,18 @@ class CodexClient(Adapter):
 
     def sessions(self) -> list[dict]:
         out = []
-        for t in self.call('thread/list', {'limit': 100}).get('data') or []:
-            if isinstance(t, dict) and t.get('id') and not t.get('parentThreadId'):
-                out.append({'id': str(t['id']), 'title': str(t.get('name') or t.get('preview') or t['id'])[:80],
-                            'directory': str(t.get('cwd') or ''), 'updated': float(t.get('updatedAt') or 0)})
+        cursor = None
+        seen = set()
+        while True:
+            result = self.call('thread/list', {'limit': 100, **({'cursor': cursor} if cursor else {})})
+            for t in result.get('data') or []:
+                if isinstance(t, dict) and t.get('id') and not t.get('parentThreadId'):
+                    out.append({'id': str(t['id']), 'title': str(t.get('name') or t.get('preview') or t['id'])[:80],
+                                'directory': str(t.get('cwd') or ''), 'updated': float(t.get('updatedAt') or 0)})
+            cursor = result.get('nextCursor')
+            if not cursor or cursor in seen:
+                break
+            seen.add(cursor)
         return out
 
     def compact(self, row: dict) -> None:
@@ -621,13 +668,6 @@ class CodexClient(Adapter):
             self.event(thread, 'session.execution.interrupted', f'end:{uuid.uuid4().hex}')
             return
         self.call('turn/interrupt', {'threadId': thread, 'turnId': turn})
-
-    def delete(self, row: dict) -> None:
-        if self.running(row['session_id']):
-            raise ClientError('這個對話還在執行。')
-        self.call('thread/delete', {'threadId': row['session_id']})
-        with self._lock:
-            self._loaded.discard(row['session_id'])
 
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         result = self.call('thread/read', {'threadId': row['session_id'], 'includeTurns': True})

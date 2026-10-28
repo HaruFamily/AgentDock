@@ -2,7 +2,7 @@
 
 ## 系統匣 App（2026-10-22）
 
-`main()` 預設建立 `ui/tray_app.py` 的 TrayApp（Dock 子類別，重用外觀、字型、開機自動啟動與啟動器檢查，但不建立浮動卡片、小圖示與 DockLayout）。ChatWindow 啟動時建立並隱藏，`add_page` 放入 AgentsView（設定）與 ToolsPage（工具）；QuotaModel 只在工具頁顯示或額度浮動視窗開著時取數字。系統匣角標由 dispatch 列計算；`dispatch-attention` 事件觸發通知。Broker 以 `inbox=False` 建立；Library `inbox_retired=True`。`ui.json` 的 `"shell": "card"` 才走舊 Dock。
+`main()` 預設建立 `ui/tray_app.py` 的 TrayApp（Dock 子類別，重用外觀、字型、開機自動啟動與啟動器檢查，但不建立浮動卡片、小圖示與 DockLayout）。ChatWindow 啟動時建立並隱藏，`add_page` 放入 AgentsView（設定）與 ToolsPage（工具）；QuotaModel 只在對話視窗或額度浮動視窗開著時取數字。系統匣角標由 dispatch 列計算；`dispatch-attention` 事件觸發通知。Broker 以 `inbox=False` 建立；Library `inbox_retired=True`。`ui.json` 的 `"shell": "card"` 才走舊 Dock。
 
 ## 對話視窗（2026-10-22）
 
@@ -84,7 +84,7 @@ Inbox 可送任務給 OpenCode 2.x 並在卡片上授權、回答、接續與停
   裝飾繪圖由本機主題的 draw_frame、draw_icon、draw_bar 提供，共用程式只包含預設極簡外觀；Ctrl+Alt+H 切回極簡時也關閉舊外觀的選擇題泡泡。全螢幕偵測在 winutil.foreground_is_fullscreen()。
 - `ui/theme.py`：內建黑綠極簡外觀，load_private() 從 data/private_theme.py 載入 CONFIG 與三個繪圖函式。對話視窗另可選用 `draw_canvas(p, rect)`、`draw_panel(p, rect, radius)`（對話清單）、`draw_box(p, rect, radius)`（輸入框）、`draw_heading(p, rect, text_rect)`（新對話標題）：`theme.decorated(name)`／`theme.decorate(name, ...)` 只在可愛外觀且本機主題有該函式時使用，畫了的部分樣式表改為透明並留出邊距，函式出錯只記 log、退回一般外觀。另有 `draw_titlebar(p, rect, title, button_rects, hovered, maximized)`（有它時主視窗改無框透明、自畫標題列：拖曳用 startSystemMove、邊緣 9px 用 startSystemResize、雙擊放大；canvas 會收到邊框寬度以畫圓角外框）、`draw_rail`、`draw_reply`（AI 回覆卡片與頭像，訊息邊距 54/14/18/12）、`draw_code`、`draw_mascot`（新對話標題上方 96px）、`draw_bubble(p, rect)`（自己的訊息）、`draw_round(p, rect, icon, enabled, hovered)`（送出／停止）與 `draw_dialog(p, rect, title, close_rect, hovered)`。
 - 本機主題也可提供 `STYLE_APP`／`STYLE_CHAT`（字串或回傳字串的函式），可愛外觀時接在全域與對話視窗樣式表之後（`theme.extra_style`）。WORDS 的 fold_closed／fold_open 是收合符號（可愛外觀 ♡／♥）。
-- `ui/cute.py`：App 層級的事件過濾器（TrayApp 安裝）。本機主題有 draw_dialog 時，所有 QDialog（含 QMessageBox、QInputDialog，不含原生檔案對話框）在 Polish 時改為無框透明，由主題畫外框、標題與關閉鈕，標題列可拖曳、點關閉＝reject；可愛外觀下 QMenu 與提示框改透明視窗，圓角才不會露出方角；QMessageBox 按鈕改中文，可愛外觀用 draw_icon 取代系統圖示。`tint_caption()` 在 Windows 11 用 DWM 把主視窗標題列與邊框換成主題色並圓角。檔案缺少、無效或 DEVICE 不符合本機名稱時退回極簡；私人檔案不納入 Git 或設定匯出。
+- `ui/cute.py`：App 層級的事件過濾器（TrayApp 安裝）。本機主題有 draw_dialog 時，所有 QDialog（含 QMessageBox、QInputDialog，不含原生檔案對話框與設了 `cute_plain` 的 GitDialog）在 Polish 時改為無框透明，由主題畫外框、標題與關閉鈕，標題列可拖曳、點關閉＝reject；可愛外觀下 QMenu 與提示框改透明視窗，圓角才不會露出方角；QMessageBox 按鈕改中文，可愛外觀用 draw_icon 取代系統圖示。`tint_caption()` 在 Windows 11 用 DWM 把主視窗標題列與邊框換成主題色並圓角。檔案缺少、無效或 DEVICE 不符合本機名稱時退回極簡；私人檔案不納入 Git 或設定匯出。
   本機主題可使用額外字型，字型快取放在 data/fonts。新問題通知仍由 app.py 負責。
 - `ui/settings_page.py`：對話視窗設定頁的零件（Card、NavButton、Switch、ThemeTile、GeneralPage、LookPage），只負責畫；`agents_view.AgentsView(wide=True)` 用它們組出分類頁。`agent_info.py`（不匯入 PySide6）提供 Agent 卡片的程式版本（背景執行 `--version`，CREATE_NO_WINDOW）、預設模型與帳號。
 - `agents_view._track_known()`：ui.json 的 `known_mcp` 記住各 Agent 設定檔裡的 MCP 名稱；少掉的（不是經 AgentDock 移除的）標成「被移除了」並排入「全部更新」的補回。

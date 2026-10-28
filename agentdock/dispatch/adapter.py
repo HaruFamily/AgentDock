@@ -34,6 +34,10 @@ class ClientError(RuntimeError):
     """A message that can be shown to the user as is."""
 
 
+class ReplyTransportError(ClientError):
+    """A reply could not be sent; keep the request available for a user retry."""
+
+
 class Adapter:
     client = ''
     name = ''
@@ -66,10 +70,6 @@ class Adapter:
 
     def history(self, row: dict, cursor: str | None) -> tuple[list[dict], str | None]:
         raise NotImplementedError
-
-    def delete(self, row: dict) -> None:
-        """Delete the session in the client itself (its saved history)."""
-        raise ClientError(f'{self.name} 不支援刪除。')
 
     def options(self, row: dict | None, directory: str) -> dict:
         """Models (with their efforts) and permission modes this client offers; may start the client."""

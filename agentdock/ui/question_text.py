@@ -156,8 +156,9 @@ class QuestionText(QTextBrowser):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setOpenLinks(False)
         self.setOpenExternalLinks(False)
+        self.anchorClicked.connect(self._open_url)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -165,6 +166,11 @@ class QuestionText(QTextBrowser):
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.setStyleSheet('QTextBrowser { background: transparent; border: none; padding: 0; }')
         self.refresh_theme()
+
+    def _open_url(self, url):
+        if url.scheme() in ('http', 'https'):
+            from agentdock.ui.external_tools import open_target
+            open_target('browser', url.toString())
 
     def refresh_theme(self):
         cursor = self.textCursor()

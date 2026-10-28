@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Callable
 
-from agentdock.dispatch.adapter import Adapter, ClientError
+from agentdock.dispatch.adapter import Adapter, ClientError, ReplyTransportError
 from agentdock.dispatch.opencode import CLIENT, OpenCodeError, OpenCodeService, message_text
 from agentdock.dispatch.store import FINAL, SETTINGS, DispatchStore, key_for
 
@@ -69,14 +69,16 @@ class Dispatcher:
 
     def start_task(self, directory: str, text: str, owner: str, project: str | None = None,
                    started: Callable[[str], None] | None = None, client: str = CLIENT,
-                   settings: dict | None = None, files: list[str] | None = None) -> None:
+                   settings: dict | None = None, files: list[str] | None = None,
+                   failed: Callable[[], None] = lambda: None) -> None:
+        """`failed`: the task did not get out (the UI gives the text back)."""
         settings = {k: v for k, v in (settings or {}).items() if v}
         if client in self.adapters:
             self._work(lambda: self._start_adapter(self.adapters[client], directory, text, owner, project, started,
-                                                   settings, files or []), '無法送出任務')
+                                                   settings, files or []), '無法送出任務', failed=failed)
         else:
             self._work(lambda: self._start(directory, text, owner, project, started, settings, files or []),
-                       '無法送出任務')
+                       '無法送出任務', failed=failed)
 
     def options(self, client: str, key: str | None, directory: str, done: Callable[[dict], None]) -> None:
         """The pickers' choices: cached ones at once, then the client's current list."""
@@ -129,7 +131,7 @@ class Dispatcher:
                 else:
                     with self._listening():
                         self._service_for(True).compact(row['session_id'])
-            except (ClientError, OpenCodeError) as e:
+            except Exception as e:
                 self.store.update(key, state='failed', error=str(e))
                 raise
         self._work(run, '無法壓縮對話', key)
@@ -168,7 +170,9 @@ class Dispatcher:
             done(list(reversed(messages)), older)
         self._work(run, '無法讀取對話紀錄', key)
 
-    def send(self, key: str, text: str, files: list[str] | None = None) -> None:
+    def send(self, key: str, text: str, files: list[str] | None = None,
+             failed: Callable[[], None] = lambda: None) -> None:
+        """`failed`: the message did not get out (the UI gives the text back)."""
         def run():
             row = self._row(key)
             adapter = self._adapter(row)
@@ -176,7 +180,7 @@ class Dispatcher:
                 self.store.update(key, state='running', prompt=text, error='')
                 try:
                     adapter.prompt(row, text, files or [])
-                except ClientError as e:
+                except Exception as e:
                     self.store.update(key, state='failed', error=str(e))
                     raise
                 return
@@ -185,10 +189,10 @@ class Dispatcher:
                 self.store.update(key, state='running', prompt=text, error='')
                 try:
                     service.prompt(row['session_id'], text, files or [])
-                except OpenCodeError as e:
+                except Exception as e:
                     self.store.update(key, state='failed', error=str(e))
                     raise
-        self._work(run, '無法送出訊息', key)
+        self._work(run, '無法送出訊息', key, failed=failed)
 
     def interrupt(self, key: str) -> None:
         def run():
@@ -209,6 +213,8 @@ class Dispatcher:
                     adapter.reply_permission(row, request_id, decision)
                 else:
                     self._service_for(True).reply_permission(row['session_id'], request_id, decision)
+            except ReplyTransportError:
+                raise
             except ClientError:
                 self._drop_request(key, 'permissions', request_id)   # it no longer waits; do not keep asking
                 raise
@@ -226,6 +232,8 @@ class Dispatcher:
                     self._service_for(True).cancel_form(row['session_id'], form_id)
                 else:
                     self._service_for(True).reply_form(row['session_id'], form_id, answer)
+            except ReplyTransportError:
+                raise
             except ClientError:
                 self._drop_request(key, 'forms', form_id)
                 raise
@@ -236,21 +244,6 @@ class Dispatcher:
         row = self.store.get(key)
         if row is not None:
             self.store.update(key, **{field: {k: v for k, v in row.get(field, {}).items() if k != request_id}})
-
-    def delete(self, key: str, remote: bool, done: Callable[[], None] = lambda: None) -> None:
-        """Remove a conversation; with `remote`, delete it in the client first (then only on success)."""
-        def run():
-            row = self._row(key)
-            if row['state'] == 'running':
-                raise ValueError('這個對話還在執行，請先停止。')
-            if remote:
-                adapter = self._adapter(row)
-                if adapter is not None:
-                    adapter.delete(row)
-                else:
-                    self._service_for(True).delete_session(row['session_id'])
-            done()
-        self._work(run, '無法刪除對話', key)
 
     def adopt(self, client: str, session_id: str, owner: str, title: str, directory: str = '',
               project: str | None = None, done: Callable[[str], None] = lambda _k: None) -> None:
@@ -324,7 +317,7 @@ class Dispatcher:
                 self.store.update(key, state='running', prompt=text, error='')
                 try:
                     adapter.prompt(row, text, files or [])
-                except ClientError as e:
+                except Exception as e:
                     self.store.update(key, state='failed', error=str(e))
                     raise
                 return
@@ -336,7 +329,7 @@ class Dispatcher:
                 self.store.update(key, state='running', prompt=text, error='')
                 try:
                     service.prompt(row['session_id'], text, files or [])
-                except OpenCodeError as e:
+                except Exception as e:
                     self.store.update(key, state='failed', error=str(e))
                     raise
 
@@ -395,7 +388,7 @@ class Dispatcher:
         replaced(old, key)
         try:
             adapter.prompt(self._row(key), text, files)
-        except ClientError as e:
+        except Exception as e:
             self.store.update(key, state='failed', error=str(e))
             raise
 
@@ -443,15 +436,20 @@ class Dispatcher:
                 logging.exception('dispatch close')
 
     # -- internals ------------------------------------------------------------
-    def _work(self, job: Callable[[], None], failure: str, key: str | None = None) -> None:
+    def _work(self, job: Callable[[], None], failure: str, key: str | None = None,
+              failed: Callable[[], None] | None = None) -> None:
         def run():
             try:
                 job()
             except (OpenCodeError, ClientError, KeyError, ValueError) as e:
                 self.notify(f'{failure}：{e}')
+                if failed is not None:
+                    failed()
             except Exception as e:  # never let a worker kill the app
                 logging.exception('dispatch')
                 self.notify(f'{failure}：{e}')
+                if failed is not None:
+                    failed()
         threading.Thread(target=run, name='AgentDock dispatch', daemon=True).start()
 
     def _row(self, key: str) -> dict:
@@ -464,8 +462,8 @@ class Dispatcher:
         return self.adapters.get(row.get('client', CLIENT))
 
     def _start_adapter(self, adapter: Adapter, directory: str, text: str, owner: str, project: str | None,
-                       started: Callable[[str], None] | None, settings: dict | None = None,
-                       files: list[str] | None = None) -> None:
+               started: Callable[[str], None] | None, settings: dict | None = None,
+               files: list[str] | None = None) -> None:
         if not text.strip():
             raise ValueError('內容是空的。')
         session_id = adapter.new_session(directory, settings or {})
@@ -476,7 +474,7 @@ class Dispatcher:
             started(key)
         try:
             adapter.prompt(self._row(key), text, files or [])
-        except ClientError as e:
+        except Exception as e:
             self.store.update(key, state='failed', error=str(e))
             raise
 
@@ -508,7 +506,7 @@ class Dispatcher:
                 started(key)
             try:
                 service.prompt(session['id'], text, files or [])
-            except OpenCodeError as e:
+            except Exception as e:
                 self.store.update(key, state='failed', error=str(e))
                 raise
 
@@ -638,6 +636,8 @@ class Dispatcher:
                 logging.exception('dispatch listener')
         if kind == 'session.execution.started':
             self.store.update(key, state='running', error='')
+        elif kind == 'session.execution.retrying':
+            self.store.update(key, doing='連線重試中')
         elif kind == 'session.inbox.enqueued' and (data.get('item') or {}).get('type') == 'user':
             self.store.update(key, prompt=str((data['item'].get('payload') or {}).get('text', '')))
         elif kind == 'session.tool.input.started':

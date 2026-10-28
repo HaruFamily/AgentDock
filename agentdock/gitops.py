@@ -56,7 +56,7 @@ class Status:
 
 def run(root: str, *args: str, timeout: float = TIMEOUT, check: bool = True) -> str:
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-    env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'LC_ALL': 'C.UTF-8'}
+    env = {**os.environ, 'GIT_OPTIONAL_LOCKS': '0', 'GIT_TERMINAL_PROMPT': '0', 'LC_ALL': 'C.UTF-8'}
     try:
         done = subprocess.run(['git', '-C', root, *args], capture_output=True, timeout=timeout, env=env,
                               creationflags=flags, stdin=subprocess.DEVNULL)
@@ -125,7 +125,7 @@ def diff(root: str, change: Change, staged: bool) -> str:
         except OSError as e:
             return f'（無法讀取：{e}）'
         return ''.join(f'+{line}\n' for line in text.splitlines())
-    args = ['diff', '--no-color', '--no-ext-diff']
+    args = ['diff', '--no-color', '--no-ext-diff', '--no-textconv']
     if staged:
         args.append('--cached')
     paths = [change.old, change.path] if change.old and staged else [change.path]
@@ -192,7 +192,7 @@ def branches(root: str) -> list[str]:
 def numstat(root: str, staged: bool) -> dict[str, tuple[int, int]]:
     """Lines added and removed per changed path (binary files left out); {} when git cannot say."""
     try:
-        out = run(root, 'diff', '--numstat', '--no-color', '--no-ext-diff', '-M', *(['--cached'] if staged else []))
+        out = run(root, 'diff', '--numstat', '--no-color', '--no-ext-diff', '--no-textconv', '-M', *(['--cached'] if staged else []))
     except GitError:
         return {}
     found = {}

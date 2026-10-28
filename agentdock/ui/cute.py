@@ -59,7 +59,8 @@ class Dresser(QObject):
         if widget.isVisible() or widget.property('cute_seen'):
             return
         widget.setProperty('cute_seen', True)
-        if isinstance(widget, QDialog) and widget.isWindow() and not isinstance(widget, QFileDialog):
+        if isinstance(widget, QDialog) and widget.isWindow() and not isinstance(widget, QFileDialog) \
+                and not widget.property('cute_plain'):
             if theme.decorated('dialog'):
                 widget.setProperty('cute_dressed', True)
                 widget.setWindowFlags(widget.windowFlags() | Qt.WindowType.FramelessWindowHint)

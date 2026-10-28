@@ -10,7 +10,7 @@ from agentdock.dispatch.runner import Dispatcher
 from agentdock.dispatch.opencode import OpenCodeService
 from agentdock.dispatch.transcript import Transcript, item_from_message, tool_summary
 from agentdock.qa.store import QuestionStore
-from agentdock.ui.chat_common import hidden
+from agentdock.ui.chat_common import hidden, ROLE
 from test_dispatch import OWNER, PASSWORD, FakeOpenCode
 
 TARGETS = lambda: [{'label': 'OpenCode', 'client': 'opencode', 'owner': OWNER}]
@@ -71,10 +71,10 @@ def test_projects_validate_persist_and_match_folders(tmp_path):
 
 def test_explicit_move_survives_retrack(tmp_path):
     store = QuestionStore(tmp_path)
-    store.dispatch.track('opencode', 'ses_1', owner=OWNER, title='t', project='p1')
-    store.dispatch.set_project('opencode:ses_1', '')
-    store.dispatch.track('opencode', 'ses_1', owner=OWNER, title='t', state='unknown')
-    assert QuestionStore(tmp_path).dispatch.get('opencode:ses_1')['project'] == ''
+    store.dispatch.track('codex', 'ses_1', owner=OWNER, title='t', project='p1')
+    store.dispatch.set_project('codex:ses_1', '')
+    store.dispatch.track('codex', 'ses_1', owner=OWNER, title='t', state='unknown')
+    assert QuestionStore(tmp_path).dispatch.get('codex:ses_1')['project'] == ''
 
 
 # --------------------------------------------------------------------------- transcript
@@ -231,8 +231,8 @@ def test_drag_moves_between_projects_and_search_filters(window, tmp_path):
     (tmp_path / 'b').mkdir()
     a = projects.add('A', str(tmp_path / 'a'))
     b = projects.add('B', str(tmp_path / 'b'))
-    store.dispatch.track('opencode', 'ses_x', owner=OWNER, title='修登入', directory=str(tmp_path / 'a'), state='done')
-    store.dispatch.track('opencode', 'ses_y', owner=OWNER, title='寫測試', directory=str(tmp_path / 'z'), state='done')
+    store.dispatch.track('codex', 'ses_x', owner=OWNER, title='修登入', directory=str(tmp_path / 'a'), state='done')
+    store.dispatch.track('codex', 'ses_y', owner=OWNER, title='寫測試', directory=str(tmp_path / 'z'), state='done')
     win.refresh()
     tree = win.sidebar.tree
 
@@ -240,22 +240,32 @@ def test_drag_moves_between_projects_and_search_filters(window, tmp_path):
         out = {}
         for i in range(tree.topLevelItemCount()):
             top = tree.topLevelItem(i)
-            out[top.text(0)] = [top.child(j).text(0) for j in range(top.childCount())]
+            out[top.text(0)] = [top.child(j).text(0) for j in range(top.childCount()) if top.child(j).data(0, ROLE)[0] == 'conv']
         return out
     assert grouping() == {'A': ['修登入'], 'B': [], '未分類': ['寫測試']}
-    tree.moved.emit('opencode:ses_x', b['id'])
-    tree.moved.emit('opencode:ses_y', a['id'])
+    tree.moved.emit('codex:ses_x', b['id'])
+    tree.moved.emit('codex:ses_y', a['id'])
     assert grouping() == {'A': ['寫測試'], 'B': ['修登入']}
-    tree.moved.emit('opencode:ses_y', UNSORTED)
+    tree.moved.emit('codex:ses_y', UNSORTED)
     assert grouping()['未分類'] == ['寫測試']
     win.sidebar.search.setText('登入')
     assert grouping() == {'A': [], 'B': ['修登入']}
     # The project page lists its conversations and changes go to the store.
     win.show_project(b['id'])
-    assert win.project_view.root.text() == os.path.normpath(str(tmp_path / 'b'))
+    assert win.project_view.root_path == os.path.normpath(str(tmp_path / 'b'))
     win.project_view.name.setText('B2')
     win.project_view._rename()
     assert projects.get(b['id'])['name'] == 'B2'
+    assert 'codex:ses_x' in win.sidebar.keys()
+    # A draft choice changes the default only through the explicit action.
+    win.project_view.starter.pick_agent('codex')
+    assert projects.get(b['id'])['agent'] == 'opencode'
+    win.project_view.starter.agent_chip.menu_.actions()[-1].trigger()
+    assert projects.get(b['id'])['agent'] == 'codex'
+    win.show_project(a['id'])
+    assert win.project_view.starter.agent == projects.get(a['id'])['agent']
+    assert win.project_view.starter is win.new_view
+    assert win.new_view.place.text() == 'A'
 
 
 def test_unsupported_agents_cannot_send(window, tmp_path, fake):
@@ -311,11 +321,11 @@ def test_new_project_dialog_and_pasted_files(window, tmp_path, monkeypatch):
 
 def test_steps_of_one_answer_share_one_card(window, tmp_path):
     win, store, projects, notes, app = window
-    store.dispatch.track('opencode', 's9', owner='o', title='t', directory=str(tmp_path), state='done')
-    win.open_conversation('opencode:s9')
+    store.dispatch.track('codex', 's9', owner='o', title='t', directory=str(tmp_path), state='done')
+    win.open_conversation('codex:s9')
     view = win.conversation
     view.loading = True
-    view.history_loaded('opencode:s9', [
+    view.history_loaded('codex:s9', [
         {'id': 'u1', 'type': 'user', 'text': '問'},
         {'id': 'a0', 'type': 'assistant', 'content': [{'type': 'reasoning', 'text': ''}]},
         {'id': 'a1', 'type': 'assistant', 'content': [{'type': 'text', 'text': '先查一下'}]},
@@ -343,13 +353,13 @@ def test_steps_of_one_answer_share_one_card(window, tmp_path):
 def test_tools_in_a_row_fold_into_one_line(window, tmp_path):
     win, store, projects, notes, app = window
     from agentdock.ui.chat_window import ToolRow, tool_name
-    store.dispatch.track('opencode', 's8', owner='o', title='t', directory=str(tmp_path), state='done')
-    win.open_conversation('opencode:s8')
+    store.dispatch.track('codex', 's8', owner='o', title='t', directory=str(tmp_path), state='done')
+    win.open_conversation('codex:s8')
     view = win.conversation
     view.loading = True
     tool = lambda i: {'id': f'a{i}', 'type': 'assistant', 'content': [{'type': 'tool', 'id': f'c{i}', 'name': 'shell',
                                                                        'state': {'status': 'completed'}}]}
-    view.history_loaded('opencode:s8', [{'id': 'u1', 'type': 'user', 'text': '問'}, tool(1), tool(2), tool(3),
+    view.history_loaded('codex:s8', [{'id': 'u1', 'type': 'user', 'text': '問'}, tool(1), tool(2), tool(3),
                                         {'id': 'a4', 'type': 'assistant', 'content': [{'type': 'text', 'text': '答'}]}],
                         None)
     view._regroup()
@@ -420,11 +430,11 @@ def test_editing_a_message_replaces_it_and_what_followed(window, tmp_path, fake)
 def test_thinking_is_open_while_live_and_folds_when_done(window, tmp_path):
     win, store, projects, notes, app = window
     from agentdock.ui.chat_messages import ReasoningRow
-    store.dispatch.track('opencode', 's7', owner='o', title='t', directory=str(tmp_path), state='running')
-    win.open_conversation('opencode:s7')
+    store.dispatch.track('codex', 's7', owner='o', title='t', directory=str(tmp_path), state='running')
+    win.open_conversation('codex:s7')
     view = win.conversation
     view.loading = True
-    view.history_loaded('opencode:s7', [
+    view.history_loaded('codex:s7', [
         {'id': 'u1', 'type': 'user', 'text': '問'},
         {'id': 'a1', 'type': 'assistant', 'content': [{'type': 'reasoning', 'text': '想一想'}]},
         {'id': 'a2', 'type': 'assistant', 'content': [{'type': 'text', 'text': '答案'}]}], None)
@@ -432,7 +442,7 @@ def test_thinking_is_open_while_live_and_folds_when_done(window, tmp_path):
     think = next(p for p in view.widgets['a1'].parts.values() if isinstance(p, ReasoningRow))
     assert think.toggle.isChecked() and not hidden(think)    # live: every step shows, thinking open
     assert view.widgets['a1'].process is None
-    store.dispatch.update('opencode:s7', state='done')
+    store.dispatch.update('codex:s7', state='done')
     view.update_row()
     view._regroup()
     head = view.widgets['a1']
@@ -445,15 +455,15 @@ def test_editing_keeps_the_message_where_it_is(window, tmp_path):
     win, store, projects, notes, app = window
     from PySide6.QtCore import QPoint
     from PySide6.QtWidgets import QPushButton
-    store.dispatch.track('opencode', 's6', owner='o', title='t', directory=str(tmp_path), state='done')
-    win.open_conversation('opencode:s6')
+    store.dispatch.track('codex', 's6', owner='o', title='t', directory=str(tmp_path), state='done')
+    win.open_conversation('codex:s6')
     view = win.conversation
     view.loading = True
     history = []
     for i in range(30):
         history += [{'id': f'u{i}', 'type': 'user', 'text': f'question {i}'},
                     {'id': f'a{i}', 'type': 'assistant', 'content': [{'type': 'text', 'text': 'answer ' * 40}]}]
-    view.history_loaded('opencode:s6', history, None)
+    view.history_loaded('codex:s6', history, None)
     view._regroup()
     pump(app, lambda: view.scroll.verticalScrollBar().maximum() > 0)
     for target, value in (('u29', None), ('u12', 'middle')):   # at the bottom, then scrolled up
@@ -476,3 +486,151 @@ def test_editing_keeps_the_message_where_it_is(window, tmp_path):
         for _ in range(20):
             app.processEvents()
         assert abs(message.mapTo(view.scroll.viewport(), QPoint(0, 0)).y() - top) <= 2
+
+
+def test_project_drafts_and_hover_geometry(window, tmp_path):
+    win, store, projects, notes, app = window
+    a = projects.add('Alpha', str(tmp_path))
+    (tmp_path / 'b').mkdir()
+    b = projects.add('Beta', str(tmp_path / 'b'))
+    win.show_new(a['id'])
+    win.project_view.composer.text.setPlainText('draft A')
+    win.show_new(b['id'])
+    assert win.project_view.composer.text.toPlainText() == ''
+    win.project_view.composer.text.setPlainText('draft B')
+    win.show_new(a['id'])
+    assert win.project_view.composer.text.toPlainText() == 'draft A'
+    win.show_new()
+    assert win.new_view.pid == a['id']
+    win.show()
+    app.processEvents()
+    tree = win.sidebar.tree
+    item = tree.topLevelItem(0)
+    before = tree.visualItemRect(item)
+    win.sidebar._hovered(item)
+    app.processEvents()
+    assert tree.visualItemRect(item) == before
+    win.sidebar._unhover()
+    app.processEvents()
+    assert tree.visualItemRect(item) == before
+
+
+def test_project_and_new_share_fixed_composer_and_draft(window, tmp_path):
+    from PySide6.QtCore import QPoint
+    win, store, projects, notes, app = window
+    a = projects.add('Alpha', str(tmp_path))
+    (tmp_path / 'beta').mkdir()
+    b = projects.add('Beta', str(tmp_path / 'beta'))
+    attachment = tmp_path / 'note.txt'
+    attachment.write_text('attachment')
+    win.show_new(a['id'])
+    composer = win.new_view.composer
+    composer.text.setPlainText('draft Alpha')
+    composer.add_files([str(attachment)])
+    app.processEvents()
+    assert abs(composer.mapTo(win.workspace, composer.rect().center()).y() - win.workspace.height() / 2) < 30
+    position = composer.mapTo(win, QPoint(0, 0))
+    win.show_new()
+    app.processEvents()
+    assert composer is win.project_view.composer
+    assert composer.mapTo(win, QPoint(0, 0)) == position
+    assert abs(composer.mapTo(win.workspace, composer.rect().center()).y() - win.workspace.height() / 2) < 30
+    assert composer.text.toPlainText() == 'draft Alpha'
+    win.show_new(b['id'])
+    assert not composer.text.toPlainText() and not composer.files
+    composer.text.setPlainText('draft Beta')
+    win.show_new(a['id'])
+    assert composer.text.toPlainText() == 'draft Alpha'
+    assert composer.files == [str(attachment)]
+    win.show_new(a['id'])
+    assert composer.text.toPlainText() == 'draft Alpha'
+    assert win.sidebar.tree.currentItem().text(0) == 'Alpha'
+
+
+def test_project_row_only_toggles_expansion(window, tmp_path):
+    from PySide6.QtCore import Qt, QPoint
+    from PySide6.QtTest import QTest
+    win, store, projects, notes, app = window
+    project = projects.add('Project', str(tmp_path))
+    store.dispatch.track('codex', 'toggle', owner=OWNER, title='Conversation',
+                         directory=str(tmp_path), state='done')
+    win.refresh()
+    tree = win.sidebar.tree
+    item = tree.topLevelItem(0)
+    page = win.pages.currentWidget()
+    win.new_view.composer.text.setPlainText('keep this draft')
+    app.processEvents()
+    rect = tree.visualItemRect(item)
+    point = QPoint(rect.left() + 40, rect.center().y())
+    assert item.isExpanded()
+    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    assert not item.isExpanded()
+    assert win.pages.currentWidget() is page
+    assert win.new_view.composer.text.toPlainText() == 'keep this draft'
+    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    assert item.isExpanded()
+    assert not tree.rootIsDecorated()
+
+
+def test_project_settings_preserves_current_draft(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+    from agentdock.ui.chat_dialogs import ProjectView
+    win, store, projects, notes, app = window
+    a = projects.add('Alpha', str(tmp_path))
+    (tmp_path / 'settings-beta').mkdir()
+    b = projects.add('Beta', str(tmp_path / 'settings-beta'))
+    win.show_new(a['id'])
+    win.new_view.composer.text.setPlainText('Alpha draft')
+    page = win.pages.currentWidget()
+    win.project_settings(b['id'])
+    assert win.pages.currentWidget() is win.project_view
+    assert not win.compose_area.isVisible()
+    details = win.project_view
+    details.name.setText('Beta renamed')
+    details._rename()
+    assert projects.get(b['id'])['name'] == 'Beta renamed'
+    assert win.new_view.pid == a['id']
+    assert win.new_view.composer.text.toPlainText() == 'Alpha draft'
+
+
+def test_empty_project_icon_color_and_direct_details(window, tmp_path, monkeypatch):
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QColorDialog
+    win, store, projects, notes, app = window
+    p = projects.add('Empty', str(tmp_path))
+    win.refresh()
+    item = win.sidebar.tree.topLevelItem(0)
+    assert item.child(0).text(0) == '沒有對話'
+    assert win.sidebar.keys() == []
+    assert not item.icon(0).isNull()
+    win.sidebar._hovered(item)
+    win.sidebar.hover_button.click()
+    assert win.pages.currentWidget() is win.project_view
+    assert win.project_view.pid == p['id']
+    monkeypatch.setattr(QColorDialog, 'getColor', lambda *a: QColor('#4c82dd'))
+    win.project_view.color_button.click()
+    assert projects.get(p['id'])['color'] == '#4c82dd'
+    assert ProjectStore(tmp_path).get(p['id'])['color'] == '#4c82dd'
+    with pytest.raises(ValueError):
+        projects.update(p['id'], color='invalid')
+
+
+def test_project_page_direct_controls(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    win, store, projects, notes, app = window
+    project = projects.add('Direct', str(tmp_path))
+    win.project_settings(project['id'])
+    view = win.project_view
+    view.icon_buttons['tools'].click()
+    assert ProjectStore(tmp_path).get(project['id'])['icon'] == 'tools'
+    assert view.icon_buttons['tools'].isChecked()
+    assert not view.icon_buttons['folder'].isChecked()
+    replacement = tmp_path / 'replacement'
+    replacement.mkdir()
+    monkeypatch.setattr(QFileDialog, 'getExistingDirectory', lambda *a: str(replacement))
+    view.change_root.click()
+    assert view.root_path == str(replacement)
+    assert not hasattr(view, 'git')
+    assert view.git_view.directory == str(replacement)
+    with pytest.raises(ValueError):
+        projects.update(project['id'], icon='unknown')

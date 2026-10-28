@@ -1,7 +1,63 @@
 """The conversation as a web page: what Python sends to it (WebEngine itself is not started here)."""
 import json
+import os
+import subprocess
+import sys
+import textwrap
 
 from agentdock.ui import web_transcript as wt
+
+
+def test_edit_navigation_keeps_live_transcript(tmp_path):
+    # Separate process: WebEngine must be prepared before QApplication exists.
+    script = textwrap.dedent('''
+        import json, time
+        from agentdock.ui import web_transcript as wt
+        wt.prepare()
+        from PySide6.QtWidgets import QApplication
+        app = QApplication([])
+        actions, loads = [], []
+        web = wt.WebTranscript(768, lambda action, arg: actions.append((action, arg)))
+        web.view.loadFinished.connect(loads.append)
+        def until(check):
+            end = time.monotonic() + 10
+            while not check() and time.monotonic() < end:
+                app.processEvents()
+                time.sleep(.01)
+            assert check(), (loads, web.ready)
+        def js(code):
+            result = []
+            web.view.page().runJavaScript(code, result.append)
+            until(lambda: bool(result))
+            return result[0]
+        until(lambda: web.ready)
+        user = {'kind': 'user', 'id': 'u1', 'text': 'same text', 'files': []}
+        web.show([user], '', False, '')
+        assert js("document.querySelector('.bubble .text').textContent") == 'same text'
+        for attempt in range(2):
+            js("startEdit(document.getElementById('u-u1'), 'u1'); document.querySelector('.send').click()")
+            until(lambda: len(actions) == attempt + 1 and loads[-1] is False)
+            assert actions[-1] == ('edit', json.dumps(['u1', 'same text'], separators=(',', ':')))
+            assert web.ready
+            # Editing removes the old turn, then the resent prompt and answer stream in.
+            web.clear()
+            assert js("document.getElementById('log').textContent") == ''
+            answer = {'kind': 'assistant', 'id': 'a1', 'parts': [
+                {'type': 'text', 'key': 't', 'text': 'new answer'}]}
+            web.show([user, answer], '', False, '', True)
+            assert js("document.querySelector('.turn').textContent").startswith('new answer')
+        web.style = ''
+        web.restyle()
+        assert not web.ready
+        until(lambda: web.ready)
+        assert js("document.querySelector('.turn').textContent").startswith('new answer')
+    ''')
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QTWEBENGINE_DISABLE_SANDBOX='1',
+               QTWEBENGINE_CHROMIUM_FLAGS='--disable-gpu', XDG_CACHE_HOME=str(tmp_path))
+    result = subprocess.run([sys.executable, '-c', script], env=env, capture_output=True,
+                            text=True, encoding='utf-8', timeout=60,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_markdown_never_lets_agent_markup_or_images_through(ui_app):

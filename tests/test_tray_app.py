@@ -111,14 +111,20 @@ def test_tray_app_runs_without_the_floating_card(tmp_path, monkeypatch):
     dock.chat.rail.buttons['tools'].click()
     assert dock.chat.pages.currentWidget() is dock.tools_page and dock.quota.active
     dock.chat.rail.buttons['chat'].click()
-    assert dock.chat.pages.currentWidget() is dock.chat.new_view and not dock.quota.active
+    # The conversation shows quota too: numbers stay fresh while the window is open, not after it closes.
+    assert dock.chat.pages.currentWidget() is dock.chat.new_view and dock.quota.active
+    dock.chat.close()
+    assert not dock.quota.active
+    dock.open_chat()
     # The quota float is the only floating window, remembered across starts.
     dock.tools_page.float_switch.setChecked(True)
     assert dock.quota_float.isVisible() and dock.quota.active and dock.ui['quota_float'] is True
     dock.quota_float.moved.emit(dock.quota_float.pos())
     assert 'quota_float_pos' in json.loads((tmp_path / 'ui.json').read_text(encoding='utf-8'))
-    dock.set_quota_float(False)
+    # Its own menu's 關閉 turns the setting off, as the switch does.
+    dock.quota_float.close_requested.emit()
     assert not dock.quota_float.isVisible() and not dock.tools_page.float_switch.isChecked()
+    assert dock.ui['quota_float'] is False
     # Approvals and questions pop a notice unless that conversation is already in front.
     store = dock.store.dispatch
     store.track('opencode', 'ses_1', owner=OWNER, title='修登入')
@@ -139,9 +145,20 @@ def test_tray_app_runs_without_the_floating_card(tmp_path, monkeypatch):
     dock.chat.hide()
     dock.bus.show_requested.emit()
     assert dock.chat.isVisible()
-    QTimer.singleShot(0, dock.quit)
+    # 重新啟動 asks first while a conversation runs, then quits and starts the app again.
+    from PySide6.QtWidgets import QMessageBox
+    from agentdock import launch
+    started, answers = [], [QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes]
+    monkeypatch.setattr(launch, 'start', lambda *args: started.append(args))
+    monkeypatch.setattr(QMessageBox, 'question', staticmethod(lambda *_a, **_k: answers.pop(0)))
+    assert dock.general_page.restart_button.text() == '重新啟動'
+    store.update('opencode:ses_1', state='running')
+    dock.restart()
+    assert started == [] and dock.chat.isVisible()
+    QTimer.singleShot(0, dock.restart)
     app.exec()
     assert not dock.chat.isVisible() and 'chat_geometry' in dock.ui
+    assert started == [('--restart',)]
     dock.chat.deleteLater()
     dock.quota_float.deleteLater()
 
@@ -186,10 +203,10 @@ def test_wide_settings_have_categories_and_one_switch_per_agent(tmp_path, ui_app
     view.agent_info = lambda kind: {'program': '2.1.0' if kind == 'claude-code' else None, 'model': 'Opus 5.5 · 中'}
     view.resize(1200, 800)
     view.show()
-    assert list(view.tabs) == ['general', 'look', 'agents', 'library', 'extensions', 'backup']
-    assert view.tabs['agents'].isChecked() and view.tabs['general'].isHidden()   # 一般/外觀 come from the tray app
+    assert list(view.tabs) == ['general', 'look', 'tools', 'external', 'backup']
+    assert view.tabs['tools'].isChecked() and view.tabs['general'].isHidden()   # 一般/外觀 come from the tray app
     assert view.extra_pages['backup'].isHidden() and not view.tabs['backup'].isHidden()
-    view.tabs['library'].click()
+    view.tool_tabs.setCurrentIndex(1)
     assert view.sections['library'].isVisible() and not view.sections['agents'].isVisible()
     assert state['settings_tab'] == 'library' and saved
     view.refresh()                 # a rebuild keeps the chosen category
@@ -207,7 +224,17 @@ def test_wide_settings_have_categories_and_one_switch_per_agent(tmp_path, ui_app
     assert view.ops[0]['op'] == 'remove' and view.ops[0]['profile'] == claude.id
     texts = [w.text() for w in view.sections['library'].findChildren(QLabel)]
     assert any('Claude 將移除' in t for t in texts)
-    view.tabs['agents'].click()
+    view.tool_tabs.setCurrentIndex(0)
+    view.tabs['backup'].click()
+    assert view.tool_tabs.isHidden() and view.bar.isHidden()
+    assert view.ops[0]['op'] == 'remove'
+    view.tabs['tools'].click()
+    assert view.current_section == 'agents' and view.apply_btn.isVisibleTo(view)
+    view.tool_tabs.setCurrentIndex(1)
+    view.tabs['backup'].click()
+    view.tabs['tools'].click()
+    assert view.current_section == 'library' and state['settings_tool_tab'] == 'library'
+    view.tool_tabs.setCurrentIndex(0)
     facts = [w.text() for w in view.sections['agents'].findChildren(QLabel)]
     assert '2.1.0' in facts and '找不到程式' in facts and 'Opus 5.5 · 中' in facts
     narrow = AgentsView(manager, library)
@@ -216,3 +243,30 @@ def test_wide_settings_have_categories_and_one_switch_per_agent(tmp_path, ui_app
 
 def o_profile(view):
     return view.ops[0]['profile']
+
+
+def test_settings_preserve_page_input_and_scroll(ui_app, tmp_path):
+    from PySide6.QtWidgets import QWidget, QVBoxLayout, QLineEdit
+    from agentdock.agents import AgentManager
+    from agentdock.library import Library
+    from agentdock.ui.agents_view import AgentsView
+    view = AgentsView(AgentManager(tmp_path / 'data'), Library(tmp_path / 'repo', tmp_path / 'data'), wide=True)
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    edit = QLineEdit()
+    layout.addWidget(edit)
+    page.setMinimumHeight(1800)
+    view.set_page('external', page)
+    view.resize(1000, 650)
+    view.show()
+    view.show_section('external')
+    ui_app.processEvents()
+    edit.setText('unfinished')
+    view.scroll.verticalScrollBar().setValue(350)
+    view.tabs['backup'].click()
+    ui_app.processEvents()
+    view.tabs['external'].click()
+    ui_app.processEvents()
+    assert edit.text() == 'unfinished'
+    assert view.scroll.verticalScrollBar().value() == 350
+    view.close()
