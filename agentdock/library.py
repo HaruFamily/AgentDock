@@ -615,7 +615,8 @@ class Library:
         if t == "builtin":
             return {"command": console_python(), "args": ["-m", "agentdock.mcp_server"],
                     "env": {"AGENTDOCK_SOURCE": profile.name, "AGENTDOCK_CLIENT_ID": f"agentdock-{profile.id}",
-                            "AGENTDOCK_DATA_DIR": str(self.data), "PYTHONPATH": str(self.root), "PYTHONIOENCODING": "utf-8"}}
+                            "AGENTDOCK_DATA_DIR": str(self.data), "PYTHONPATH": str(self.root),
+                            "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}}
         if t == "remote":
             return {"url": entry["url"]}
         args = [self._expand(a, key) for a in entry.get("args", [])]
@@ -638,6 +639,13 @@ class Library:
         if missing:
             raise ValueError(f"{key} 缺少祕密：{'、'.join(missing)}。請編輯這個 MCP 並填入。")
         env.update({s: secrets[s] for s in entry.get("secrets", [])})
+        # MCP stdio is UTF-8 even on Windows with a legacy console code page.
+        # Apply at the shared launch-spec boundary so every client and sync check
+        # gets the same defaults, including imported/custom Python commands.
+        runner = str(command).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if t == "uvx" or re.fullmatch(r"(?:uvx|py|pythonw?(?:\d+(?:\.\d+)*)?)(?:\.exe)?", runner):
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+            env.setdefault("PYTHONUTF8", "1")
         return {"command": command, "args": args, "env": env}
 
     # Hosts that cut a single tool call short. QAI then waits in slices and asks the agent to keep polling.

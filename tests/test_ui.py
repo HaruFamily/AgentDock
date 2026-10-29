@@ -274,7 +274,8 @@ def test_mcp_dialog_and_agent_page(tmp_path, monkeypatch):
     assert len(view.ops) == 2 and view.bar.isVisibleTo(view)
     m.apply(m.prepare(view.ops))
     data = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]
-    assert data["sheets"] == {"command": runner, "args": ["mcp-google-sheets@latest"], "env": {"API_TOKEN": "abc"}} and "x" not in data
+    assert data["sheets"] == {"command": runner, "args": ["mcp-google-sheets@latest"],
+                              "env": {"API_TOKEN": "abc", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}} and "x" not in data
 
 
 def test_agent_page_collapse_remove_adopts_and_edit(tmp_path):

@@ -7,6 +7,50 @@ from agentdock.agents import Profile
 P = Profile(id="11111111-1111-1111-1111-111111111111", name="Codex", kind="codex", path="x")
 
 
+@pytest.mark.parametrize("kind", ["codex", "grok-cli", "opencode", "claude-code", "claude-desktop"])
+def test_python_mcp_encoding_update_transaction(tmp_path, kind):
+    from agentdock.agents import AgentManager
+    L = Library(tmp_path / "repo", tmp_path / "data")
+    entry = {"key": "python-service", "type": "uvx", "package": "example-mcp"}
+    manager = AgentManager(tmp_path / "data")
+    cfg = tmp_path / ("config.toml" if kind in ("codex", "grok-cli") else "config.json")
+    profile = manager.add("Test", kind, str(cfg))
+    wanted = L.render(entry, kind, profile)
+    env_key = "environment" if kind == "opencode" else "env"
+    assert wanted[env_key] == {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    old = {k: v for k, v in wanted.items() if k != env_key}
+    manager.apply(manager.prepare([{"profile": profile.id, "server": entry["key"], "op": "add", "entry": old}]))
+    assert not L.in_sync(entry, kind, profile, old)
+    before = cfg.read_bytes()
+    plan = manager.prepare([{"profile": profile.id, "server": entry["key"], "op": "update", "entry": wanted}])
+    assert cfg.read_bytes() == before
+    result = manager.apply(plan)
+    assert result[0]["backup"]
+    current = manager.inspect()[0]["servers"][0]["config"]
+    assert L.in_sync(entry, kind, profile, current)
+    assert current[env_key] == wanted[env_key]
+
+
+@pytest.mark.parametrize("command", [r"C:\Python\python.exe", "python3.12", "py.exe", "pythonw.exe", r"C:\Tools\uvx.exe"])
+def test_custom_python_encoding_and_explicit_override(tmp_path, command):
+    L = Library(tmp_path / "repo", tmp_path / "data")
+    entry = {"key": "custom", "type": "command", "command": command}
+    assert L.spec(entry, P)["env"] == {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    entry["env"] = {"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp950", "CUSTOM": "keep"}
+    assert L.spec(entry, P)["env"] == entry["env"]
+    imported, _ = L.from_config("imported", {"command": command, "args": ["server"]})
+    assert L.spec(imported, P)["env"]["PYTHONUTF8"] == "1"
+
+
+@pytest.mark.parametrize("entry", [
+    {"key": "node", "type": "npx", "package": "example"},
+    {"key": "native", "type": "command", "command": "server.exe"},
+    {"key": "wrapper", "type": "command", "command": "python-wrapper.cmd"},
+])
+def test_non_python_mcp_has_no_python_environment(tmp_path, entry):
+    assert Library(tmp_path / "repo", tmp_path / "data").spec(entry, P)["env"] == {}
+
+
 def test_local_uvx_uses_only_existing_portable_runner(tmp_path, monkeypatch):
     from agentdock import paths
     monkeypatch.setattr(paths, "ROOT", tmp_path)
