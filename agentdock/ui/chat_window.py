@@ -156,6 +156,7 @@ class ChatWindow(QWidget):
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._commit_delete)
+            app.installEventFilter(self)
         attach_dir = Path(store.dispatch.file).parent / 'attachments' / 'chat'
         self.new_view.composer.attach_dir = self.project_view.composer.attach_dir = self.conversation.composer.attach_dir = attach_dir
         dispatcher.listeners.append(self.bridge.live.emit)
@@ -592,16 +593,20 @@ class ChatWindow(QWidget):
             state = self.windowState()
             geometry = self.normalGeometry() if state & (Qt.WindowState.WindowMaximized
                                                          | Qt.WindowState.WindowFullScreen) else self.geometry()
+            # Hide before changing native flags: Windows must finish changing the frame before
+            # it is asked to restore the previous window mode.
+            self.hide()
             self.frameless = frameless
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint, frameless)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, frameless)
             # Turning transparency on also set "no system background"; turning it off does not undo that,
             # and the plain window then shows black wherever nothing paints.
             self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, frameless)
+            self.setGeometry(geometry)
+            self.setWindowState(state)
             if shown:
-                self.setGeometry(geometry)
-                self.setWindowState(state & ~Qt.WindowState.WindowMinimized)
                 self.show()
+        self.unsetCursor()
         self.titlebar.setVisible(frameless)
         b = self._border()
         self.outer.setContentsMargins(b, b, b, b)
@@ -653,6 +658,18 @@ class ChatWindow(QWidget):
         else:
             self.setCursor(shape)
         super().mouseMoveEvent(event)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        # Child widgets inherit the window cursor, but their mouse moves do not reach
+        # mouseMoveEvent above. Clear the resize cursor as soon as a child is entered.
+        if event.type() == QEvent.Type.Enter and isinstance(obj, QWidget) and obj is not self \
+                and obj.window() is self:
+            self.unsetCursor()
+        return super().eventFilter(obj, event)
+
+    def leaveEvent(self, event):  # noqa: N802
+        self.unsetCursor()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event):  # noqa: N802
         edges = self._edges(event.position().toPoint())

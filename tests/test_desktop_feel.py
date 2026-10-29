@@ -2,6 +2,8 @@
 the Ctrl+K palette and the jump to the latest message."""
 from pathlib import Path
 
+import pytest
+
 from agentdock.qa.store import QuestionStore
 from test_chat_features import clients, done, start, wait, window  # noqa: F401  (fixtures)
 
@@ -375,6 +377,64 @@ def test_window_draws_its_own_title_bar(window, monkeypatch):
     win.show()
     win.refresh_theme()
     assert not win.frameless and win.titlebar.isHidden() and win.rail.y() == 0
+
+
+def test_resize_cursor_clears_on_content_and_window_leave(window, monkeypatch):
+    import types
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from agentdock.ui import theme
+    win, *_, app = window
+    monkeypatch.setattr(theme, 'CUTE', True)
+    monkeypatch.setattr(theme, 'PRIVATE', types.SimpleNamespace(draw_titlebar=lambda *args: None))
+    win.refresh_theme()
+    app.processEvents()
+    def move(x, y):
+        app.sendEvent(win, QMouseEvent(QEvent.Type.MouseMove, QPointF(x, y),
+                                      QPointF(win.mapToGlobal(QPointF(x, y).toPoint())),
+                                      Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                                      Qt.KeyboardModifier.NoModifier))
+
+    move(1, win.height() // 2)
+    assert win.cursor().shape() == Qt.CursorShape.SizeHorCursor
+    app.sendEvent(win.workspace, QEvent(QEvent.Type.Enter))
+    assert win.workspace.cursor().shape() == Qt.CursorShape.ArrowCursor
+    # Explicit child cursors remain intact.
+    assert win.new_view.composer.text.viewport().cursor().shape() == Qt.CursorShape.IBeamCursor
+    move(win.width() // 2, 1)
+    assert win.cursor().shape() == Qt.CursorShape.SizeVerCursor
+    app.sendEvent(win, QEvent(QEvent.Type.Leave))
+    assert win.cursor().shape() == Qt.CursorShape.ArrowCursor
+
+
+@pytest.mark.parametrize('mode', ['normal', 'maximized', 'fullscreen', 'minimized', 'hidden'])
+def test_theme_frame_switch_keeps_window_mode(window, monkeypatch, mode):
+    import types
+    from PySide6.QtWidgets import QWidget
+    from agentdock.ui import theme
+    win, *_, app = window
+    if mode == 'maximized':
+        win.showMaximized()
+    elif mode == 'fullscreen':
+        win.showFullScreen()
+    elif mode == 'minimized':
+        win.showMinimized()
+    elif mode == 'hidden':
+        win.hide()
+    app.processEvents()
+    state, visible, geometry = win.windowState(), win.isVisible(), win.normalGeometry()
+    # Opening settings uses the same page navigation as the appearance page.
+    win.add_page('settings', QWidget())
+    win.show_page('settings')
+    assert win.windowState() == state and win.isVisible() == visible
+    monkeypatch.setattr(theme, 'CUTE', True)
+    for private in (types.SimpleNamespace(draw_titlebar=lambda *args: None), None):
+        monkeypatch.setattr(theme, 'PRIVATE', private)
+        win.refresh_theme()
+        app.processEvents()
+        assert win.windowState() == state and win.isVisible() == visible
+        if mode == 'normal':
+            assert win.geometry() == geometry
 
 
 def test_codex_and_grok_report_their_real_defaults(window):
